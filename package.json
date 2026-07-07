@@ -1,0 +1,64 @@
+{
+  "name": "m-charts-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "WebGL2 charting library for large datasets, with high-performance scatter, histogram, and parallel-coordinate interactions.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MatthiasLettl/m-charts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MatthiasLettl/m-charts/issues"
+  },
+  "homepage": "https://github.com/MatthiasLettl/m-charts#readme",
+  "keywords": [
+    "webgl2",
+    "charts",
+    "visualization",
+    "scatterplot",
+    "histogram",
+    "parallel-coordinates",
+    "typescript"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @m-charts/demo dev",
+    "build": "pnpm --filter m-charts build && pnpm --filter @m-charts/demo build",
+    "build:vercel": "pnpm clean:data && pnpm generate:data:local && pnpm build",
+    "typecheck": "tsc -b",
+    "lint": "eslint .",
+    "test": "pnpm test:unit",
+    "test:unit": "pnpm --filter m-charts build && tsx tests/unit/run-tests.ts",
+    "test:e2e": "playwright test",
+    "clean:data": "rm -f apps/demo/public/data/*",
+    "generate:data": "tsx scripts/generate-data.ts",
+    "generate:data:local": "pnpm generate:data -- --kind scatter-fast --count 1000000 --seed 1 --out apps/demo/public/data/scatter-fast-sample.json --schema-out apps/demo/public/data/scatter-fast-schema.json && pnpm generate:data -- --kind mixed-tables --count 1000000 --secondary-count 1000 --seed 1 --out apps/demo/public/data/mixed-table-fixture.json && pnpm generate:data -- --kind histogram-bars --seed 1 --out apps/demo/public/data/histogram-bars-sample.json && pnpm generate:data -- --kind scatter --count 1000000 --seed 1 --out apps/demo/public/data/scatter-sample.json && pnpm generate:data -- --kind parallel --count 100000 --seed 1 --out apps/demo/public/data/parallel-sample.json",
+    "benchmark:scatter:custom": "tsx scripts/benchmark-scatter-performance-gate.ts --target custom",
+    "benchmark:parallel:custom": "tsx scripts/benchmark-parallel-performance-gate.ts --target custom",
+    "benchmark:histogram:custom": "tsx scripts/benchmark-histogram-performance-gate.ts"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^6.0.3",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "m-charts": "workspace:*",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^8.1.3"
+  },
+  "packageManager": "pnpm@11.7.0"
+}

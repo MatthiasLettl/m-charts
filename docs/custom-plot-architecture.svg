@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">Event-based custom plot architecture</title>
+  <desc id="desc">Host apps own product state, color-rule policy, selection materialization, and persistence; optional bindings translate input into semantic plot commands or brush observation events with defaultAction metadata; plot engines reconcile controlled updates and emit typed events; visualization core owns data math and renderer code; shared plot-engine primitives provide lifecycle, input, scheduling, brush types, and typed events.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10" fill="none" stroke="#243447" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .paper { fill: #ffffff; }
+      .panel { stroke: #243447; stroke-width: 2; rx: 10; }
+      .host { fill: #e8f3ff; }
+      .bindings { fill: #fff5dd; }
+      .engine { fill: #eaf8ef; }
+      .vizcore { fill: #f1edff; }
+      .render { fill: #edf7f8; }
+      .shared { fill: #f8fafc; }
+      .title { fill: #111827; font: 700 30px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .heading { fill: #111827; font: 700 20px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small-heading { fill: #111827; font: 700 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #243447; font: 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { fill: #243447; font: 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #111827; font: 700 14px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .arrow { fill: none; stroke: #243447; stroke-width: 2.2; marker-end: url(#arrow); }
+      .arrow-soft { fill: none; stroke: #607089; stroke-width: 2; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+      .arrow-back { fill: none; stroke: #607089; stroke-width: 2; marker-end: url(#arrow); }
+      .note { fill: #334155; font: 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    </style>
+  </defs>
+
+  <rect class="paper" width="1280" height="760"/>
+  <text class="title" x="60" y="58">Event-based custom plot architecture</text>
+
+  <rect class="panel host" x="70" y="106" width="310" height="180"/>
+  <text class="heading" x="100" y="145">Host app</text>
+  <text class="text" x="100" y="176">React route or product shell</text>
+  <text class="text" x="100" y="203">URL, panels, export, history</text>
+  <text class="text" x="100" y="230">selection IDs and color rules</text>
+  <text class="text" x="100" y="257">product policy and persistence</text>
+
+  <rect class="panel bindings" x="70" y="392" width="310" height="150"/>
+  <text class="heading" x="100" y="432">Optional bindings</text>
+  <text class="text" x="100" y="463">pointer, wheel, keyboard</text>
+  <text class="text" x="100" y="490">default examples or custom maps</text>
+  <text class="text" x="100" y="517">commands or brush observation</text>
+
+  <rect class="panel engine" x="500" y="160" width="350" height="310"/>
+  <text class="heading" x="532" y="199">Plot engine</text>
+  <text class="text" x="532" y="232">createPlot(host, options)</text>
+  <text class="text" x="532" y="260">plot.commands.*</text>
+  <text class="small" x="552" y="282">semantic actions emit events</text>
+  <text class="text" x="532" y="314">plot.update(partialOptions)</text>
+  <text class="small" x="552" y="336">controlled host-state sync</text>
+  <text class="text" x="532" y="368">plot.on(event, handler)</text>
+  <text class="text" x="532" y="396">plot.use(binding)</text>
+  <text class="text" x="532" y="424">brush events + defaultAction</text>
+  <text class="text" x="532" y="452">canvas, WebGL, overlays, snapshots</text>
+
+  <rect class="panel vizcore" x="950" y="104" width="280" height="190"/>
+  <text class="heading" x="982" y="143">Visualization core</text>
+  <text class="text" x="982" y="176">typed arrays and schemas</text>
+  <text class="text" x="982" y="203">domains, layout, transforms</text>
+  <text class="text" x="982" y="230">hit tests and selection math</text>
+  <text class="text" x="982" y="257">projection or plot coordinates</text>
+  <text class="text" x="982" y="284">aggregation helpers</text>
+
+  <rect class="panel render" x="950" y="404" width="280" height="150"/>
+  <text class="heading" x="982" y="444">Renderer code</text>
+  <text class="text" x="982" y="476">WebGL2 buffers and programs</text>
+  <text class="text" x="982" y="503">draw and renderer metrics</text>
+  <text class="text" x="982" y="530">owned by engine lifecycle</text>
+
+  <rect class="panel shared" x="190" y="616" width="950" height="92"/>
+  <text class="small-heading" x="250" y="650">Shared plot-engine/core primitives</text>
+  <text class="small" x="250" y="674">typed emitters, disposables, normalized input, brush contracts, RAF scheduling</text>
+  <text class="small" x="250" y="696">resize/WebGL lifecycle, metrics, and primitive geometry</text>
+
+  <path class="arrow" d="M380 164 H500"/>
+  <text class="label" x="402" y="141">options + controlled update</text>
+
+  <path class="arrow-back" d="M500 248 H380"/>
+  <text class="label" x="402" y="279">typed events</text>
+
+  <path class="arrow" d="M380 466 H500"/>
+  <text class="label" x="410" y="431">semantic</text>
+  <text class="label" x="410" y="449">commands</text>
+
+  <path class="arrow-soft" d="M225 286 V392"/>
+  <text class="label" x="246" y="344">user input</text>
+
+  <path class="arrow" d="M850 232 H950"/>
+  <text class="label" x="881" y="211">compute</text>
+
+  <path class="arrow" d="M850 410 H950"/>
+  <text class="label" x="870" y="391">render data</text>
+
+  <path class="arrow-soft" d="M1090 294 V404"/>
+  <text class="label" x="1110" y="354">draw</text>
+
+  <path class="arrow-soft" d="M675 470 V616"/>
+  <text class="label" x="696" y="548">uses primitives</text>
+
+  <path class="arrow-soft" d="M1090 554 V616"/>
+  <text class="label" x="1110" y="588">uses primitives</text>
+
+  <path class="arrow-soft" d="M225 542 V616"/>
+  <text class="label" x="246" y="584">uses input</text>
+
+  <text class="note" x="70" y="735">Reusable boundary: host apps own policy, color rules, and persistence; engines expose commands, events, and updates.</text>
+</svg>

@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+.DS_Store
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+apps/demo/dist/
+packages/m-charts/dist/
+apps/demo/public/data/*
+!apps/demo/public/data/.gitkeep
+notes.md

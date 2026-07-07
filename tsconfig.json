@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/m-charts" },
+    { "path": "./apps/demo" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}

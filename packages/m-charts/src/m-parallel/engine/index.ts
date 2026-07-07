@@ -1,0 +1,85 @@
+export {
+  createParallelFastPlot,
+  createParallelFastPlot as createParallelPlot,
+} from './createParallelPlot.js';
+export {
+  createDefaultParallelBindings,
+  createParallelDomBrushHitTest,
+} from './defaultParallelBindings.js';
+export type {
+  DefaultParallelBindingsOptions,
+  ParallelDomBrushHitTestOptions,
+  ParallelFastAxisBounds,
+  ParallelFastBrushDragKind,
+  ParallelFastBrushHit,
+  ParallelFastBrushHitTest,
+  ParallelFastInspectionOptions,
+} from './defaultParallelBindings.js';
+export type {
+  ParallelFastBrushCommandOptions,
+  ParallelFastInspectionCommandOptions,
+  ParallelFastLineOpacityAdjustCommandOptions,
+  ParallelFastLineOpacityAdjustCommandOptions as ParallelLineOpacityAdjustCommandOptions,
+  ParallelFastPlotCommands,
+  ParallelFastPlotCommands as ParallelPlotCommands,
+  ParallelFastSelectionCommandOptions,
+} from './parallelCommands.js';
+export type {
+  ParallelFastBrushChangeReason,
+  ParallelFastBrushEvent,
+  ParallelFastBrushPhase,
+  ParallelFastContextEvent,
+  ParallelFastDisposeEvent,
+  ParallelFastEngineEventName,
+  ParallelFastEngineEvents,
+  ParallelFastHoverVisualChangeEvent,
+  ParallelFastInspectionChangeEvent,
+  ParallelFastInspectionLookupSource,
+  ParallelFastInteractionSource,
+  ParallelFastLineOpacityAdjustment,
+  ParallelFastLineOpacityAdjustment as ParallelLineOpacityAdjustment,
+  ParallelFastLineOpacityAdjustRequestEvent,
+  ParallelFastOverlayChangeEvent,
+  ParallelFastRendererKind,
+  ParallelFastRendererMetricsEvent,
+  ParallelFastRenderStateEvent,
+  ParallelFastSelectionCategoryValue,
+  ParallelFastSelectionChangeEvent,
+  ParallelFastSelectionFilter,
+} from './parallelEvents.js';
+export type {
+  ParallelFastAxisBrushOverlay,
+  ParallelFastColorRuleBrushOverlay,
+  ParallelFastInspectionOverlay,
+  ParallelFastOverlayDescriptor,
+  ParallelFastOverlayKind,
+} from './parallelOverlays.js';
+export type {
+  ParallelFastBrushStateSnapshot,
+  ParallelFastRenderSnapshot,
+  ParallelFastRenderState,
+  ParallelFastRenderState as ParallelRenderState,
+  ParallelFastSelectionStateSnapshot,
+  ParallelFastStateSnapshot,
+  ParallelFastStateSnapshot as ParallelStateSnapshot,
+} from './parallelState.js';
+export type {
+  ParallelFastBinding,
+  ParallelFastBinding as ParallelBinding,
+  ParallelFastHoverRendererFactory,
+  ParallelFastHoverRendererFactory as ParallelHoverRendererFactory,
+  ParallelFastHoverRendererLike,
+  ParallelFastHoverRendererLike as ParallelHoverRendererLike,
+  ParallelFastHoverVisualState,
+  ParallelFastHoverVisualState as ParallelHoverVisualState,
+  ParallelFastInspectionState,
+  ParallelFastInspectionState as ParallelInspectionState,
+  ParallelFastPlotInstance,
+  ParallelFastPlotInstance as ParallelPlotInstance,
+  ParallelFastPlotOptions,
+  ParallelFastPlotOptions as ParallelPlotOptions,
+  ParallelFastRendererFactory,
+  ParallelFastRendererFactory as ParallelRendererFactory,
+  ParallelFastRendererLike,
+  ParallelFastRendererLike as ParallelRendererLike,
+} from './types.js';

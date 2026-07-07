@@ -1,0 +1,75 @@
+{
+  "name": "m-charts",
+  "version": "0.1.0",
+  "description": "WebGL2 charting library for large datasets, with high-performance scatter, histogram, and parallel-coordinate interactions.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MatthiasLettl/m-charts.git",
+    "directory": "packages/m-charts"
+  },
+  "bugs": {
+    "url": "https://github.com/MatthiasLettl/m-charts/issues"
+  },
+  "homepage": "https://github.com/MatthiasLettl/m-charts/tree/main/packages/m-charts#readme",
+  "keywords": [
+    "webgl2",
+    "charts",
+    "visualization",
+    "scatterplot",
+    "histogram",
+    "parallel-coordinates",
+    "typescript"
+  ],
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./plot-engine": {
+      "types": "./dist/plot-engine/index.d.ts",
+      "import": "./dist/plot-engine/index.js"
+    },
+    "./m-scatter": {
+      "types": "./dist/m-scatter/index.d.ts",
+      "import": "./dist/m-scatter/index.js"
+    },
+    "./m-parallel": {
+      "types": "./dist/m-parallel/index.d.ts",
+      "import": "./dist/m-parallel/index.js"
+    },
+    "./m-histogram": {
+      "types": "./dist/m-histogram/index.d.ts",
+      "import": "./dist/m-histogram/index.js"
+    },
+    "./scatter": {
+      "types": "./dist/m-scatter/index.d.ts",
+      "import": "./dist/m-scatter/index.js"
+    },
+    "./parallel": {
+      "types": "./dist/m-parallel/index.d.ts",
+      "import": "./dist/m-parallel/index.js"
+    },
+    "./histogram": {
+      "types": "./dist/m-histogram/index.d.ts",
+      "import": "./dist/m-histogram/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
