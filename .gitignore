@@ -10,6 +10,7 @@ test-results/
 *.tsbuildinfo
 apps/demo/dist/
 packages/m-charts/dist/
+packages/m-charts-wasm/target/
 apps/demo/public/data/*
 !apps/demo/public/data/.gitkeep
 notes.md

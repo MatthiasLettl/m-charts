@@ -40,7 +40,10 @@ export function formatFastScatterAxisValue(
   encodedValue: number,
 ): string {
   if (axis === undefined || axis.kind === 'numeric') {
-    return formatNumericValue(encodedValue, axis?.unit);
+    return formatNumericValue(
+      encodedValue * (axis?.encodedScale ?? 1) + (axis?.encodedOffset ?? 0),
+      axis?.unit,
+    );
   }
 
   if (axis.kind === 'datetime-ns') {
@@ -127,7 +130,7 @@ function createDatetimeNsTicks(
 ): FastScatterAxisTick[] {
   const safeCount = Math.max(2, Math.floor(count));
   const span = Math.max(1e-9, range.max - range.min);
-  const precision = selectDatetimeTickPrecision(span);
+  const precision = selectDatetimeTickPrecision(span * (axis.encodedScaleMs ?? 1));
 
   return Array.from({ length: safeCount }, (_, index) => {
     const value = range.min + (span * index) / (safeCount - 1);
@@ -155,7 +158,7 @@ function formatDatetimeNsValue(
   axis: FastScatterDatetimeNsAxis,
   encodedMs: number,
 ): string {
-  const offsetNs = BigInt(Math.round(encodedMs * 1_000_000));
+  const offsetNs = BigInt(Math.round(encodedMs * (axis.encodedScaleMs ?? 1) * 1_000_000));
   const epochNs = axis.datetimeOriginNsBigInt + offsetNs;
 
   return formatDatetimeNsEpochValue(epochNs);
@@ -188,7 +191,9 @@ function formatDatetimeNsTickValue(
   encodedMs: number,
   precision: DatetimeTickPrecision,
 ): string {
-  const epochNs = axis.datetimeOriginNsBigInt + BigInt(Math.round(encodedMs * 1_000_000));
+  const epochNs = axis.datetimeOriginNsBigInt + BigInt(
+    Math.round(encodedMs * (axis.encodedScaleMs ?? 1) * 1_000_000),
+  );
   const parts = getUtcDateTimeParts(epochNs);
 
   if (precision === 'date') {
@@ -219,7 +224,9 @@ function getSharedUtcDateLabel(
   const dates = new Set(
     ticks.map((tick) =>
       getUtcDateTimeParts(
-        axis.datetimeOriginNsBigInt + BigInt(Math.round(tick.value * 1_000_000)),
+        axis.datetimeOriginNsBigInt + BigInt(
+          Math.round(tick.value * (axis.encodedScaleMs ?? 1) * 1_000_000),
+        ),
       ).date,
     ),
   );

@@ -4,7 +4,12 @@ import type {
   FastScatterAggregationMembershipSpan,
 } from './aggregation.js';
 
-export type FastScatterTypedNumericArray = Float32Array | Float64Array;
+export type FastScatterTypedNumericArray =
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array;
 
 export type FastScatterColorArray = Uint8Array | Uint32Array;
 
@@ -214,6 +219,36 @@ export interface FastScatterPointColumns {
   tableBySourceIndex?: readonly string[];
 }
 
+export interface FastScatterHoverGridIndex {
+  readonly cellOffsets: Uint32Array;
+  readonly pointIndices: Uint32Array;
+  readonly xBinCount: number;
+  readonly xMax: number;
+  readonly xMin: number;
+  readonly yBinCount: number;
+  readonly yMax: number;
+  readonly yMin: number;
+  readonly yKey: string;
+}
+
+export interface FastScatterCompactHoverIndex {
+  readonly blockOccupancy: Uint32Array;
+  readonly blockSize: number;
+  readonly occupancyWordsPerBlock: number;
+  readonly overviewIndices: Uint32Array;
+  readonly yBinCount: number;
+  readonly yBins: Uint8Array;
+  readonly yKey: string;
+  readonly yMax: number;
+  readonly yMin: number;
+}
+
+export interface FastScatterHoverIndexSet {
+  readonly compactByYKey?: Readonly<Record<string, FastScatterCompactHoverIndex>>;
+  readonly gridsByYKey: Readonly<Record<string, FastScatterHoverGridIndex>>;
+  readonly pointCount: number;
+}
+
 export interface FastScatterRecordIdentity {
   datasetKey?: string;
   id: string;
@@ -413,6 +448,7 @@ export interface FastScatterEasterEggPlaybackOptions {
 
 export interface FastScatterControllerOptions {
   columns: FastScatterPointColumns;
+  hoverIndex?: FastScatterHoverIndexSet | null;
   focusedPlotId?: string | null;
   spec: FastScatterPlotSpec;
   viewport: FastScatterViewport;
@@ -437,6 +473,11 @@ export interface FastScatterControllerOptions {
   onHoverChange?: (hover: FastScatterHoverEvent | null) => void;
   onMeasurementChange?: (measurement: FastScatterMeasurementEvent | null) => void;
   onMetrics?: (metrics: FastScatterMetricsEvent) => void;
+}
+
+/** Backend-neutral renderer input shared by the WebGL2 and WebGPU adapters. */
+export interface FastScatterRendererOptions extends FastScatterControllerOptions {
+  canvas: HTMLCanvasElement;
 }
 
 export interface FastScatterController {

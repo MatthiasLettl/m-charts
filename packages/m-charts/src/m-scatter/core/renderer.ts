@@ -11,8 +11,10 @@ import { buildFastScatterAggregation } from './aggregation.js';
 import { FAST_SCATTER_MAX_OPACITY_SCALE } from './opacityScale.js';
 import {
   createFastScatterEasterEggColorArray,
-  createFastScatterEasterEggPointLayout,
-  type FastScatterEasterEggPointLayout,
+  createFastScatterEasterEggPlayback,
+  getFastScatterEasterEggTotalDurationMs,
+  updateFastScatterEasterEggPositions,
+  type FastScatterEasterEggPlayback,
 } from './easterEgg.js';
 import type {
   FastScatterAggregationSet,
@@ -26,6 +28,7 @@ import type {
   FastScatterMetricsEvent,
   FastScatterPlotSpec,
   FastScatterPointColumns,
+  FastScatterRendererOptions,
   FastScatterTheme,
   FastScatterVisualizationMode,
 } from './types.js';
@@ -40,8 +43,7 @@ import {
 import { createFastScatterGpuTimer, type FastScatterGpuTimer } from './webgl/timing.js';
 
 export interface FastScatterWebglRendererOptions
-  extends FastScatterControllerOptions {
-  canvas: HTMLCanvasElement;
+  extends FastScatterRendererOptions {
   preserveDrawingBuffer?: boolean;
 }
 
@@ -110,21 +112,10 @@ interface EasterEggBuffers {
   yBuffer: WebGLBuffer;
 }
 
-interface EasterEggPlayback {
-  layout: FastScatterEasterEggPointLayout;
-  options: Required<Pick<
-    FastScatterEasterEggPlaybackOptions,
-    'enterDurationMs' | 'exitDurationMs' | 'holdDurationMs' | 'pointSizePx' | 'staggerMs' | 'word'
-  >> & {
-    color?: readonly [number, number, number, number];
-  };
-  startedAt: number;
-}
-
 interface EasterEggFrame {
   elapsedMs: number;
   item: FastScatterSubplotRenderPlanItem;
-  playback: EasterEggPlayback;
+  playback: FastScatterEasterEggPlayback;
 }
 
 export interface FastScatterSubplotRenderPlanItem {
@@ -169,12 +160,6 @@ const DEFAULT_THEME: FastScatterTheme = {
 const DEFAULT_OPACITY = 1;
 const DEFAULT_POINT_SIZE_PX = 4;
 const DEFAULT_ROTATION_RADIANS = 0;
-const DEFAULT_EASTER_EGG_WORD = 'Future';
-const DEFAULT_EASTER_EGG_ENTER_MS = 720;
-const DEFAULT_EASTER_EGG_HOLD_MS = 3000;
-const DEFAULT_EASTER_EGG_EXIT_MS = 720;
-const DEFAULT_EASTER_EGG_STAGGER_MS = 130;
-const DEFAULT_EASTER_EGG_POINT_SIZE_PX = 5;
 const DEFAULT_EASTER_EGG_COLOR_RGBA8: readonly [number, number, number, number] = [
   22,
   124,
@@ -266,7 +251,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
   private drawScheduledAt = 0;
   private disposed = false;
   private easterEggBuffers: EasterEggBuffers | null = null;
-  private easterEggPlayback: EasterEggPlayback | null = null;
+  private easterEggPlayback: FastScatterEasterEggPlayback | null = null;
   private firstCanvasRenderScheduleMs: number | null = null;
   private heightCssPx = 0;
   private hoverSourceIndex: number | null = null;
@@ -539,12 +524,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
       return false;
     }
 
-    const playbackOptions = normalizeFastScatterEasterEggPlaybackOptions(options);
-    this.easterEggPlayback = {
-      layout: createFastScatterEasterEggPointLayout(playbackOptions.word),
-      options: playbackOptions,
-      startedAt: performance.now(),
-    };
+    this.easterEggPlayback = createFastScatterEasterEggPlayback(options);
     this.scheduleDraw();
     return true;
   }
@@ -1172,7 +1152,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
     }
 
     const elapsedMs = performance.now() - playback.startedAt;
-    if (elapsedMs >= getEasterEggTotalDurationMs(playback)) {
+    if (elapsedMs >= getFastScatterEasterEggTotalDurationMs(playback)) {
       this.easterEggPlayback = null;
       this.deleteEasterEggBuffers();
       return null;
@@ -1195,7 +1175,12 @@ export class FastScatterWebglRenderer implements FastScatterController {
       return 0;
     }
 
-    updateEasterEggPositions(buffers, frame);
+    updateFastScatterEasterEggPositions(
+      frame.playback,
+      frame.elapsedMs,
+      buffers.currentX,
+      buffers.currentY,
+    );
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.xBuffer);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, buffers.currentX);
@@ -1935,7 +1920,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
   }
 
   private ensureEasterEggBuffers(
-    playback: EasterEggPlayback,
+    playback: FastScatterEasterEggPlayback,
     theme: FastScatterTheme,
   ): EasterEggBuffers {
     const existing = this.easterEggBuffers;
@@ -2350,89 +2335,6 @@ function clearSubplotBackgrounds(
   }
 }
 
-function normalizeFastScatterEasterEggPlaybackOptions(
-  options: FastScatterEasterEggPlaybackOptions,
-): EasterEggPlayback['options'] {
-  return {
-    color: options.color === undefined ? undefined : normalizeEasterEggColor(options.color),
-    enterDurationMs: normalizePositiveMs(
-      options.enterDurationMs,
-      DEFAULT_EASTER_EGG_ENTER_MS,
-    ),
-    exitDurationMs: normalizePositiveMs(
-      options.exitDurationMs,
-      DEFAULT_EASTER_EGG_EXIT_MS,
-    ),
-    holdDurationMs: normalizeNonNegativeMs(
-      options.holdDurationMs,
-      DEFAULT_EASTER_EGG_HOLD_MS,
-    ),
-    pointSizePx: normalizePositiveNumber(
-      options.pointSizePx,
-      DEFAULT_EASTER_EGG_POINT_SIZE_PX,
-    ),
-    staggerMs: normalizeNonNegativeMs(options.staggerMs, DEFAULT_EASTER_EGG_STAGGER_MS),
-    word: DEFAULT_EASTER_EGG_WORD,
-  };
-}
-
-function updateEasterEggPositions(buffers: EasterEggBuffers, frame: EasterEggFrame): void {
-  const { playback } = frame;
-  const options = playback.options;
-  const wordMinX = 0.14;
-  const wordMaxX = 0.92;
-  const wordMinY = 0.2;
-  const wordMaxY = 0.8;
-  const startX = -0.3;
-  const endX = 1.3;
-  const enterSequenceMs = getEasterEggEnterSequenceDurationMs(playback);
-  const holdStartMs = enterSequenceMs;
-  const exitStartMs = holdStartMs + options.holdDurationMs;
-
-  for (let index = 0; index < playback.layout.points.length; index += 1) {
-    const point = playback.layout.points[index]!;
-    const targetX = wordMinX + point.x * (wordMaxX - wordMinX);
-    const targetY = wordMinY + point.y * (wordMaxY - wordMinY);
-    const charDelay = point.charIndex * options.staggerMs;
-    const enterT = easeOutCubic(
-      clampUnitFraction((frame.elapsedMs - charDelay) / options.enterDurationMs),
-    );
-    const exitT = easeInCubic(
-      clampUnitFraction((frame.elapsedMs - exitStartMs - charDelay) / options.exitDurationMs),
-    );
-    const wave =
-      Math.sin((index * 12.9898 + frame.elapsedMs * 0.009) % (Math.PI * 2)) *
-      0.018 *
-      (1 - enterT);
-
-    if (frame.elapsedMs < exitStartMs + charDelay) {
-      buffers.currentX[index] = startX + (targetX - startX) * enterT;
-      buffers.currentY[index] = targetY + wave;
-    } else {
-      buffers.currentX[index] = targetX + (endX - targetX) * exitT;
-      buffers.currentY[index] = targetY;
-    }
-  }
-}
-
-function getEasterEggEnterSequenceDurationMs(playback: EasterEggPlayback): number {
-  return (
-    Math.max(0, playback.layout.charCount - 1) * playback.options.staggerMs +
-    playback.options.enterDurationMs
-  );
-}
-
-function getEasterEggTotalDurationMs(playback: EasterEggPlayback): number {
-  const staggerSequenceMs = Math.max(0, playback.layout.charCount - 1) *
-    playback.options.staggerMs;
-  return (
-    getEasterEggEnterSequenceDurationMs(playback) +
-    playback.options.holdDurationMs +
-    staggerSequenceMs +
-    playback.options.exitDurationMs
-  );
-}
-
 function normalizeEasterEggColor(
   color: readonly [number, number, number, number] | undefined,
   theme?: FastScatterTheme,
@@ -2451,32 +2353,6 @@ function normalizeRgba8Channel(value: number): number {
     return 255;
   }
   return Math.max(0, Math.min(255, Math.round(value)));
-}
-
-function normalizePositiveMs(value: number | undefined, fallback: number): number {
-  return normalizePositiveNumber(value, fallback);
-}
-
-function normalizeNonNegativeMs(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value) || value < 0) {
-    return fallback;
-  }
-  return value;
-}
-
-function normalizePositiveNumber(value: number | undefined, fallback: number): number {
-  if (value === undefined || !Number.isFinite(value) || value <= 0) {
-    return fallback;
-  }
-  return value;
-}
-
-function easeOutCubic(value: number): number {
-  return 1 - Math.pow(1 - value, 3);
-}
-
-function easeInCubic(value: number): number {
-  return value * value * value;
 }
 
 function getMaxBubbleCount(

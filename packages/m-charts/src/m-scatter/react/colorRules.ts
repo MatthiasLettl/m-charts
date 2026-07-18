@@ -1,4 +1,8 @@
-import type { FastScatterDisplayColumns, FastScatterRange } from '../core/index.js';
+import type {
+  FastScatterDisplayColumns,
+  FastScatterRange,
+  FastScatterTypedNumericArray,
+} from '../core/index.js';
 
 export type ScatterColorRule =
   | {
@@ -90,7 +94,7 @@ function createScatterRouteColorBuffer(columns: FastScatterDisplayColumns): Uint
 function getScatterColorRuleValues(
   columns: FastScatterDisplayColumns,
   parameterKey: string,
-): Float32Array | Float64Array | null {
+): FastScatterTypedNumericArray | null {
   if (columns.y[parameterKey] !== undefined) {
     return columns.y[parameterKey]!;
   }

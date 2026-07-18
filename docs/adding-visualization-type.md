@@ -27,7 +27,7 @@ Put framework-neutral visualization logic in `core`:
 - Typed-array buffer builders.
 - Domains, transforms, layout, and formatting.
 - Hit testing, hover or inspection lookup, selection math, and aggregation.
-- WebGL renderer helpers and renderer-owned draw data.
+- Backend-specific renderer helpers and renderer-owned draw data.
 
 Do not import React, React Router, demo routes, generated fixtures, app state,
 theme modules, environment setup, or app-only code from `core`.
@@ -38,7 +38,7 @@ Put the reusable plot API in `engine`:
 
 - `create<Viz>Plot(host, options)`.
 - Public option, command, event, snapshot, and binding types.
-- Canvas, resize, WebGL context, render-loop, and dispose lifecycle.
+- Canvas, resize, renderer context/device, render-loop, and dispose lifecycle.
 - `plot.commands`, `plot.on(...)`, `plot.update(...)`, `plot.use(...)`, and
   `plot.dispose()`.
 - Plain overlay descriptors for host-rendered UI.
@@ -74,7 +74,11 @@ Those concerns must stay out of reusable `core` and `engine` modules.
 
 Keep `packages/m-charts/src/plot-engine/core` visualization-agnostic:
 lifecycle, typed events, input normalization, RAF scheduling, disposables,
-resize/WebGL helpers, brush metadata, metrics, and primitive geometry.
+resize and WebGL2 helpers, brush metadata, metrics, and primitive geometry.
+Keep WebGPU adapter/device lifecycle and profiling in
+`packages/m-charts/src/plot-engine-webgpu/core`. A visualization that supports
+multiple renderers should inject backend construction into a shared engine, as
+scatter does, instead of importing both renderers into that engine.
 
 Leave chart-specific coordinate models in the visualization package until at
 least two chart families need the same behavior. If scatter and another

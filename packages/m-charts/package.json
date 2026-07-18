@@ -1,7 +1,8 @@
 {
   "name": "m-charts",
+  "private": true,
   "version": "0.1.0",
-  "description": "WebGL2 charting library for large datasets, with high-performance scatter, histogram, and parallel-coordinate interactions.",
+  "description": "WebGL2 and WebGPU charting library for large datasets, with high-performance scatter, histogram, and parallel-coordinate interactions.",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -15,6 +16,7 @@
   "homepage": "https://github.com/MatthiasLettl/m-charts/tree/main/packages/m-charts#readme",
   "keywords": [
     "webgl2",
+    "webgpu",
     "charts",
     "visualization",
     "scatterplot",
@@ -34,9 +36,17 @@
       "types": "./dist/plot-engine/index.d.ts",
       "import": "./dist/plot-engine/index.js"
     },
+    "./plot-engine-webgpu": {
+      "types": "./dist/plot-engine-webgpu/index.d.ts",
+      "import": "./dist/plot-engine-webgpu/index.js"
+    },
     "./m-scatter": {
       "types": "./dist/m-scatter/index.d.ts",
       "import": "./dist/m-scatter/index.js"
+    },
+    "./m-scatter-webgpu": {
+      "types": "./dist/m-scatter-webgpu/index.d.ts",
+      "import": "./dist/m-scatter-webgpu/index.js"
     },
     "./m-parallel": {
       "types": "./dist/m-parallel/index.d.ts",

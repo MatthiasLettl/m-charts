@@ -194,6 +194,19 @@ const viewport: FastScatterViewport = {
   assert.equal(result.markers.every((marker) => marker.count > 1), true);
 }
 
+{
+  const result = computeFastScatterOutOfRangeMarkers({
+    columns: columns([10, 11, 12, 13], [20, 20, 20, 20]),
+    plotRects: [rect],
+    sampleStride: 2,
+    spec,
+    viewport,
+  });
+
+  assert.equal(result.candidateCount, 4);
+  assert.equal(result.markers.reduce((total, marker) => total + marker.count, 0), 4);
+}
+
 function columns(
   x: readonly number[],
   y: readonly number[],

@@ -13,6 +13,11 @@ import {
   type MixedTableRecord,
 } from '../apps/demo/src/data/mixedTableFixtures.ts';
 import {
+  createScatterWebgpuDatasetGenerator,
+  SCATTER_WEBGPU_SCHEMA,
+  type ScatterWebgpuGeneratedPage,
+} from '../apps/demo/src/data/scatterWebgpuDatasetFormat.ts';
+import {
   PARALLEL_PARAMETERS,
   SCATTER_CATEGORIES,
   SCATTER_SHAPES,
@@ -28,14 +33,22 @@ import {
 } from '../apps/demo/src/data/types.ts';
 import type { FastScatterDatasetSchema } from 'm-charts/m-scatter';
 
-type DatasetKind = 'scatter' | 'scatter-fast' | 'parallel' | 'mixed-tables' | 'histogram-bars';
+type DatasetKind =
+  | 'scatter'
+  | 'scatter-fast'
+  | 'scatter-webgpu'
+  | 'parallel'
+  | 'mixed-tables'
+  | 'histogram-bars';
 
 interface GeneratorOptions {
   columnarOut?: string;
   count: number;
   kind: DatasetKind;
+  pageSize: number;
   schemaOut?: string;
   secondaryCount: number;
+  secondaryOut?: string;
   seed: number;
   out: string;
 }
@@ -43,6 +56,7 @@ interface GeneratorOptions {
 const DEFAULT_OPTIONS: GeneratorOptions = {
   count: 1_000_000,
   kind: 'scatter',
+  pageSize: 250_000,
   secondaryCount: 1_000,
   seed: 1,
   out: 'apps/demo/public/data/scatter-sample.json',
@@ -52,13 +66,15 @@ const PARALLEL_DEFAULT_COUNT = 100_000;
 const PARALLEL_DEFAULT_OUT = 'apps/demo/public/data/parallel-sample.json';
 const SCATTER_FAST_DEFAULT_OUT = 'apps/demo/public/data/scatter-fast-sample.json';
 const SCATTER_FAST_DEFAULT_SCHEMA_OUT = 'apps/demo/public/data/scatter-fast-schema.json';
+const SCATTER_WEBGPU_DEFAULT_OUT = 'apps/demo/public/data/scatter-webgpu-10m.json';
+const SCATTER_WEBGPU_DEFAULT_COUNT = 10_000_000;
 const MIXED_TABLES_DEFAULT_OUT = 'apps/demo/public/data/mixed-table-fixture.json';
 const MIXED_TABLES_DEFAULT_COUNT = 1_000_000;
 const MIXED_TABLES_DEFAULT_SECONDARY_COUNT = 1_000;
 const HISTOGRAM_BARS_DEFAULT_OUT = 'apps/demo/public/data/histogram-bars-sample.json';
 const HISTOGRAM_BARS_DEFAULT_COUNT = 48;
 
-const USAGE = `Usage: pnpm generate:data -- [--kind scatter|scatter-fast|parallel|mixed-tables|histogram-bars] [--count <records-or-bars>] [--secondary-count <records>] [--seed <integer>] [--out <path>] [--schema-out <path>] [--columnar-out <path>]
+const USAGE = `Usage: pnpm generate:data -- [--kind scatter|scatter-fast|scatter-webgpu|parallel|mixed-tables|histogram-bars] [--count <records-or-bars>] [--page-size <records>] [--secondary-count <records>] [--secondary-out <path>] [--seed <integer>] [--out <path>] [--schema-out <path>] [--columnar-out <path>]
 
 Defaults:
   --kind ${DEFAULT_OPTIONS.kind}
@@ -75,10 +91,17 @@ Scatter-fast defaults when --kind scatter-fast is set without explicit --out/sch
   --schema-out ${SCATTER_FAST_DEFAULT_SCHEMA_OUT}
   --columnar-out ${deriveColumnarManifestPath(SCATTER_FAST_DEFAULT_OUT)}
 
+Scatter WebGPU streaming defaults when --kind scatter-webgpu is set without explicit --count/out:
+  --count ${SCATTER_WEBGPU_DEFAULT_COUNT}
+  --page-size ${DEFAULT_OPTIONS.pageSize}
+  --out ${SCATTER_WEBGPU_DEFAULT_OUT}
+  --schema-out ${SCATTER_FAST_DEFAULT_SCHEMA_OUT}
+
 Mixed-table defaults when --kind mixed-tables is set without explicit --count/out:
   --count ${MIXED_TABLES_DEFAULT_COUNT} primary records
   --secondary-count ${MIXED_TABLES_DEFAULT_SECONDARY_COUNT} secondary records
   --out ${MIXED_TABLES_DEFAULT_OUT}
+  --secondary-out optionally writes the exact secondary table as a compact sidecar
 
 Histogram bar-mode defaults when --kind histogram-bars is set without explicit --count/out:
   --count ${HISTOGRAM_BARS_DEFAULT_COUNT} bars per parameter
@@ -131,6 +154,14 @@ function parseArgs(argv: string[]): GeneratorOptions {
             options.out = SCATTER_FAST_DEFAULT_OUT;
           }
           options.schemaOut ??= SCATTER_FAST_DEFAULT_SCHEMA_OUT;
+        } else if (options.kind === 'scatter-webgpu') {
+          if (!countWasProvided) {
+            options.count = SCATTER_WEBGPU_DEFAULT_COUNT;
+          }
+          if (!outWasProvided) {
+            options.out = SCATTER_WEBGPU_DEFAULT_OUT;
+          }
+          options.schemaOut ??= SCATTER_FAST_DEFAULT_SCHEMA_OUT;
         } else if (options.kind === 'mixed-tables') {
           if (!countWasProvided) {
             options.count = MIXED_TABLES_DEFAULT_COUNT;
@@ -158,8 +189,14 @@ function parseArgs(argv: string[]): GeneratorOptions {
         options.count = parseCount(value);
         countWasProvided = true;
         break;
+      case '--page-size':
+        options.pageSize = parsePositiveCount(value, '--page-size');
+        break;
       case '--secondary-count':
         options.secondaryCount = parseCount(value);
+        break;
+      case '--secondary-out':
+        options.secondaryOut = value;
         break;
       case '--seed':
         options.seed = parseSeed(value);
@@ -186,6 +223,7 @@ function parseKind(value: string): DatasetKind {
   if (
     value === 'scatter' ||
     value === 'scatter-fast' ||
+    value === 'scatter-webgpu' ||
     value === 'parallel' ||
     value === 'mixed-tables' ||
     value === 'histogram-bars'
@@ -194,8 +232,16 @@ function parseKind(value: string): DatasetKind {
   }
 
   throw new Error(
-    `--kind must be "scatter", "scatter-fast", "parallel", "mixed-tables", or "histogram-bars". Received: ${value}`,
+    `--kind must be "scatter", "scatter-fast", "scatter-webgpu", "parallel", "mixed-tables", or "histogram-bars". Received: ${value}`,
   );
+}
+
+function parsePositiveCount(value: string, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${flag} must be a positive safe integer. Received: ${value}`);
+  }
+  return parsed;
 }
 
 function parseCount(value: string): number {
@@ -1066,6 +1112,11 @@ async function writeDataset(options: GeneratorOptions): Promise<void> {
   const outPath = resolve(options.out);
   await mkdir(dirname(outPath), { recursive: true });
 
+  if (options.kind === 'scatter-webgpu') {
+    await writeScatterWebgpuPagedDataset(options, outPath);
+    return;
+  }
+
   if (options.kind === 'histogram-bars') {
     await writeHistogramBarsDataset(options, outPath);
     return;
@@ -1123,6 +1174,48 @@ async function writeDataset(options: GeneratorOptions): Promise<void> {
   }
 }
 
+async function writeScatterWebgpuPagedDataset(
+  options: GeneratorOptions,
+  manifestPath: string,
+): Promise<void> {
+  await writeScatterFastSchema(options, SCATTER_WEBGPU_SCHEMA);
+  const generator = createScatterWebgpuDatasetGenerator({
+    count: options.count,
+    pageSize: options.pageSize,
+    seed: options.seed,
+  });
+  for (let pageIndex = 0; pageIndex < generator.pageCount; pageIndex += 1) {
+    const page = generator.createNextPage();
+    if (page === null) break;
+    await writeScatterWebgpuPage(dirname(manifestPath), page);
+    console.log(
+      `Wrote WebGPU scatter page ${pageIndex + 1}/${generator.pageCount} (${page.manifest.count} records).`,
+    );
+  }
+  const manifest = generator.createManifest();
+  const stream = createWriteStream(manifestPath, { encoding: 'utf8' });
+  const done = finished(stream);
+  stream.end(`${JSON.stringify(manifest, null, 2)}\n`);
+  await done;
+  console.log(
+    `Wrote ${options.count} deterministic scatter-fast records as ${manifest.pages.length} streamed WebGPU pages to ${manifestPath}.`,
+  );
+}
+
+async function writeScatterWebgpuPage(
+  directory: string,
+  page: ScatterWebgpuGeneratedPage,
+): Promise<void> {
+  const stream = createWriteStream(resolve(directory, page.manifest.binary));
+  const done = finished(stream);
+  stream.end(new Uint8Array(page.coordinateBuffer));
+  await done;
+  const styleStream = createWriteStream(resolve(directory, page.manifest.styleBinary));
+  const stylesDone = finished(styleStream);
+  styleStream.end(new Uint8Array(page.styleBuffer));
+  await stylesDone;
+}
+
 async function writeHistogramBarsDataset(options: GeneratorOptions, outPath: string): Promise<void> {
   const payload = createHistogramBarsPayload(options);
   const stream = createWriteStream(outPath, { encoding: 'utf8' });
@@ -1144,10 +1237,40 @@ async function writeMixedTableDataset(options: GeneratorOptions, outPath: string
   const idWidth = Math.max(6, String(Math.max(0, Math.max(...tableCounts) - 1)).length);
   const stream = createWriteStream(outPath, { encoding: 'utf8' });
   const finishedWriting = finished(stream);
+  const secondaryOutPath = options.secondaryOut === undefined
+    ? null
+    : resolve(options.secondaryOut);
+  if (secondaryOutPath === outPath) {
+    throw new Error('--secondary-out must differ from --out.');
+  }
+  if (secondaryOutPath !== null) {
+    await mkdir(dirname(secondaryOutPath), { recursive: true });
+  }
+  const secondaryStream = secondaryOutPath === null
+    ? null
+    : createWriteStream(secondaryOutPath, { encoding: 'utf8' });
+  const secondaryFinishedWriting = secondaryStream === null
+    ? null
+    : finished(secondaryStream);
 
   await writeChunk(stream, '{\n  "metadata": ');
   await writeChunk(stream, JSON.stringify(metadata, null, 2).replaceAll('\n', '\n  '));
   await writeChunk(stream, ',\n  "tables": [\n');
+  if (secondaryStream !== null) {
+    const secondaryMetadata = createMixedTableMetadata(
+      options,
+      [0, options.secondaryCount],
+    );
+    await writeChunk(secondaryStream, '{\n  "metadata": ');
+    await writeChunk(
+      secondaryStream,
+      JSON.stringify(secondaryMetadata, null, 2).replaceAll('\n', '\n  '),
+    );
+    await writeChunk(
+      secondaryStream,
+      `,\n  "tables": [\n    {"name":"${MIXED_TABLE_NAMES[1]}","records":[`,
+    );
+  }
 
   let globalIndex = 0;
   for (let tableIndex = 0; tableIndex < MIXED_TABLE_NAMES.length; tableIndex += 1) {
@@ -1172,6 +1295,9 @@ async function writeMixedTableDataset(options: GeneratorOptions, outPath: string
       );
       const prefix = localIndex === 0 ? '\n      ' : ',\n      ';
       await writeChunk(stream, `${prefix}${JSON.stringify(record)}`);
+      if (secondaryStream !== null && tableIndex === 1) {
+        await writeChunk(secondaryStream, `${prefix}${JSON.stringify(record)}`);
+      }
       globalIndex += 1;
     }
 
@@ -1181,24 +1307,40 @@ async function writeMixedTableDataset(options: GeneratorOptions, outPath: string
   await writeChunk(stream, '\n  ]\n}\n');
   stream.end();
   await finishedWriting;
+  if (secondaryStream !== null && secondaryFinishedWriting !== null) {
+    await writeChunk(
+      secondaryStream,
+      options.secondaryCount > 0 ? '\n    ]}\n  ]\n}\n' : ']}\n  ]\n}\n',
+    );
+    secondaryStream.end();
+    await secondaryFinishedWriting;
+  }
 
   console.log(
     `Wrote ${tableCounts.reduce((sum, count) => sum + count, 0)} mixed-table records across ${MIXED_TABLE_NAMES.length} tables to ${outPath} using seed ${options.seed}. ` +
       'metadata.createdAt is deterministic from seed and count.',
   );
+  if (secondaryOutPath !== null) {
+    console.log(
+      `Wrote ${options.secondaryCount} exact secondary-table records to ${secondaryOutPath}.`,
+    );
+  }
 }
 
 function createMixedTableCounts(count: number, secondaryCount: number): number[] {
   return [count, secondaryCount];
 }
 
-async function writeScatterFastSchema(options: GeneratorOptions): Promise<void> {
+async function writeScatterFastSchema(
+  options: GeneratorOptions,
+  schema = createScatterFastSchema(),
+): Promise<void> {
   const schemaOutPath = resolve(options.schemaOut ?? SCATTER_FAST_DEFAULT_SCHEMA_OUT);
   await mkdir(dirname(schemaOutPath), { recursive: true });
   const stream = createWriteStream(schemaOutPath, { encoding: 'utf8' });
   const finishedWriting = finished(stream);
 
-  stream.end(`${JSON.stringify(createScatterFastSchema(), null, 2)}\n`);
+  stream.end(`${JSON.stringify(schema, null, 2)}\n`);
   await finishedWriting;
 }
 

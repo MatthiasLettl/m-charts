@@ -72,6 +72,11 @@ assert.deepEqual(numericTicks, [
   { label: '100.0 ms', value: 100 },
 ]);
 assert.equal(formatFastScatterAxisValue(encoded.columns.axisByColumn.value, 12.345), '12.3 ms');
+const scaledNumericAxis = {
+  ...encoded.columns.axisByColumn.value!,
+  encodedScale: 0.0025,
+};
+assert.equal(formatFastScatterAxisValue(scaledNumericAxis, 400), '1.00 ms');
 
 const categoricalTicks = createFastScatterAxisTicks(encoded.columns.axisByColumn.stage, {
   range: { max: 2, min: 0 },
@@ -97,6 +102,14 @@ const datetimeTicks = createFastScatterAxisTicks(encoded.columns.axisByColumn.ti
   count: 3,
   range: { max: 500, min: 0 },
 });
+const scaledDatetimeAxis = {
+  ...encoded.columns.axisByColumn.time!,
+  encodedScaleMs: 250,
+};
+assert.equal(
+  formatFastScatterAxisValue(scaledDatetimeAxis, 2),
+  formatFastScatterAxisValue(encoded.columns.axisByColumn.time, 500),
+);
 assert.deepEqual(
   datetimeTicks.map((tick) => tick.label),
   ['00:00:00', '00:00:00.25', '00:00:00.5'],

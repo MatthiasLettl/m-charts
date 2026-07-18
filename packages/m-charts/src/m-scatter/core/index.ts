@@ -129,6 +129,8 @@ export {
 } from './selection.js';
 export type { FastScatterSelectedRecord } from './selection.js';
 export type {
+  CreateFastScatterCompactHoverIndexOptions,
+  CreateFastScatterHoverIndexOptions,
   FastScatterNearestPointHit,
   FastScatterNearestPointLookupDiagnostics,
   FastScatterNearestPointLookupInput,
@@ -136,6 +138,8 @@ export type {
 } from './hoverLookup.js';
 export type { FastScatterAggregateHoverHit } from './hoverLookup.js';
 export {
+  createFastScatterCompactHoverIndex,
+  createFastScatterHoverIndex,
   createFastScatterPointRef,
   lookupFastScatterAggregateHit,
   lookupFastScatterNearestPoint,
@@ -279,6 +283,7 @@ export type {
   FastScatterBubbleSubplotAggregation,
   FastScatterCanvasPoint,
   FastScatterColorArray,
+  FastScatterCompactHoverIndex,
   FastScatterController,
   FastScatterControllerOptions,
   FastScatterEasterEggPlaybackOptions,
@@ -287,6 +292,8 @@ export type {
   FastScatterHeatmapCellLocation,
   FastScatterHeatmapPalette,
   FastScatterHeatmapSubplotAggregation,
+  FastScatterHoverGridIndex,
+  FastScatterHoverIndexSet,
   FastScatterHoverEvent,
   FastScatterInteractionMode,
   FastScatterMeasurementEvent,
@@ -299,6 +306,7 @@ export type {
   FastScatterPointColumns,
   FastScatterPointRef,
   FastScatterRecordIdentity,
+  FastScatterRendererOptions,
   FastScatterRange,
   FastScatterRange as ScatterRange,
   FastScatterSelectionCategoryValue,

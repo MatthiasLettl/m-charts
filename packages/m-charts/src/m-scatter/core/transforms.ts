@@ -273,7 +273,15 @@ function createPaddedRangeForColumn(
   column: ArrayLike<number> | undefined,
   axis: FastScatterEncodedAxis | undefined,
 ): FastScatterRange {
-  return createPaddedFastScatterDomainRange(rangeForColumn(column), axis);
+  const encodedDomain = axis?.domain;
+  const range =
+    encodedDomain !== undefined &&
+    Number.isFinite(encodedDomain.min) &&
+    Number.isFinite(encodedDomain.max) &&
+    encodedDomain.max >= encodedDomain.min
+      ? encodedDomain
+      : rangeForColumn(column);
+  return createPaddedFastScatterDomainRange(range, axis);
 }
 
 function rangeForColumn(column: ArrayLike<number> | undefined): FastScatterRange {

@@ -6,6 +6,8 @@ import {
   buildFastScatterBubbleAggregation,
   buildFastScatterHeatmapAggregation,
   createFastScatterBubbleRadiusPx,
+  createFastScatterCompactHoverIndex,
+  createFastScatterHoverIndex,
   lookupFastScatterNearestPoint,
   type FastScatterPlotRect,
   type FastScatterPlotSpec,
@@ -66,6 +68,20 @@ assert.equal(denseHit.hit?.point.y, 5.05);
 assert.equal(denseHit.diagnostics.candidateCount, 3);
 assert.equal(denseHit.diagnostics.plotId, 'a');
 assert.equal(denseHit.diagnostics.yKey, 'a');
+
+const sampledHit = lookupFastScatterNearestPoint({
+  columns,
+  isPointEligible: (pointIndex, plotId) => plotId === 'a' && pointIndex !== 2,
+  maxDistanceCssPx: 4,
+  plotRects,
+  pointerCssX: densePointerX,
+  pointerCssY: densePointerY,
+  spec,
+  viewport,
+});
+
+assert.equal(sampledHit.hit?.point.id, 'id-1');
+assert.equal(sampledHit.diagnostics.candidateCount, 2);
 
 const sparsePointerX = axisToPixel(50, viewport.x, 40, 540);
 const sparsePointerY = axisToPixel(108, viewport.yByPlot.b, 220, 120);
@@ -184,6 +200,28 @@ assert.equal(mixedTableHit.hit?.point.id, 'secondary-0');
 assert.equal(mixedTableHit.hit?.point.sourceIndex, 2);
 assert.equal(mixedTableHit.hit?.pointIndex, 2);
 assert.equal(mixedTableHit.diagnostics.candidateCount, 1);
+
+const indexedParityColumns = createIndexedParityColumns();
+const indexedParityHoverIndex = createFastScatterHoverIndex(indexedParityColumns, {
+  yKeys: ['a'],
+});
+for (let sampleIndex = 0; sampleIndex < 100; sampleIndex += 1) {
+  const request = {
+    columns: indexedParityColumns,
+    maxDistanceCssPx: 12,
+    plotRects: [plotRects[0]!],
+    pointerCssX: 40 + ((sampleIndex * 137) % 500),
+    pointerCssY: 10 + ((sampleIndex * 61) % 100),
+    spec: { xLabel: 'x', plots: [spec.plots[0]!] },
+    viewport,
+  };
+  const fallback = lookupFastScatterNearestPoint(request);
+  const indexed = lookupFastScatterNearestPoint({
+    ...request,
+    hoverIndex: indexedParityHoverIndex,
+  });
+  assert.equal(indexed.hit?.pointIndex ?? null, fallback.hit?.pointIndex ?? null);
+}
 
 const aggregatePlotRects: FastScatterPlotRect[] = [
   { heightCssPx: 100, id: 'a', widthCssPx: 100, xCssPx: 0, yCssPx: 0 },
@@ -457,6 +495,123 @@ assert.equal(millionPointHit.diagnostics.candidateCount <= 16_100, true);
 assert.equal(millionPointHit.diagnostics.durationMs <= 16, true);
 assert.equal(measuredDurationMs <= 16, true);
 
+const millionPointHoverIndex = createFastScatterHoverIndex(millionPointColumns, {
+  yKeys: ['a'],
+});
+const indexedMillionPointStartedAt = performance.now();
+const indexedMillionPointHit = lookupFastScatterNearestPoint({
+  columns: millionPointColumns,
+  hoverIndex: millionPointHoverIndex,
+  maxDistanceCssPx: 8,
+  plotRects: [{ heightCssPx: 500, id: 'a', widthCssPx: 1000, xCssPx: 0, yCssPx: 0 }],
+  pointerCssX: 500,
+  pointerCssY: 250,
+  spec: { xLabel: 'x', plots: [spec.plots[0]!] },
+  viewport: {
+    x: { min: 0, max: 1000 },
+    yByPlot: { a: { min: 0, max: 100 } },
+  },
+});
+const indexedMeasuredDurationMs = performance.now() - indexedMillionPointStartedAt;
+
+assert.equal(indexedMillionPointHit.hit?.point.id, millionPointHit.hit?.point.id);
+assert.equal(indexedMillionPointHit.diagnostics.candidateCount < 1_000, true);
+assert.equal(indexedMillionPointHit.diagnostics.durationMs <= 4, true);
+assert.equal(indexedMeasuredDurationMs <= 4, true);
+
+const compactParityIndex = await createFastScatterCompactHoverIndex(indexedParityColumns, {
+  blockSize: 256,
+  yieldInterval: 100_000,
+  yKeys: ['a'],
+});
+const compactParityHit = lookupFastScatterNearestPoint({
+  columns: indexedParityColumns,
+  hoverIndex: compactParityIndex,
+  maxDistanceCssPx: 12,
+  plotRects: [{ heightCssPx: 500, id: 'a', widthCssPx: 1000, xCssPx: 0, yCssPx: 0 }],
+  pointerCssX: 503,
+  pointerCssY: 247,
+  spec: { xLabel: 'x', plots: [spec.plots[0]!] },
+  viewport: { x: { min: 0, max: 100 }, yByPlot: { a: { min: 0, max: 10 } } },
+});
+const compactParityFallback = lookupFastScatterNearestPoint({
+  columns: indexedParityColumns,
+  maxDistanceCssPx: 12,
+  plotRects: [{ heightCssPx: 500, id: 'a', widthCssPx: 1000, xCssPx: 0, yCssPx: 0 }],
+  pointerCssX: 503,
+  pointerCssY: 247,
+  spec: { xLabel: 'x', plots: [spec.plots[0]!] },
+  viewport: { x: { min: 0, max: 100 }, yByPlot: { a: { min: 0, max: 10 } } },
+});
+assert.equal(compactParityHit.hit?.point.id, compactParityFallback.hit?.point.id);
+const compactA = compactParityIndex.compactByYKey?.a;
+assert.notEqual(compactA, undefined);
+assert.equal(
+  (compactA?.yBins.byteLength ?? 0) + (compactA?.blockOccupancy.byteLength ?? 0) <
+    indexedParityColumns.x.length * 1.2,
+  true,
+);
+
+const categoricalY = new Uint8Array([0, 1, 0, 1, 1, 0]);
+const categoricalCompactIndex = await createFastScatterCompactHoverIndex({
+  x: new Float64Array([0, 1, 2, 3, 4, 5]),
+  y: { category: categoricalY },
+}, {
+  yDomainByKey: { category: { min: 0, max: 1 } },
+  yKeys: ['category'],
+});
+const categoricalCompact = categoricalCompactIndex.compactByYKey?.category;
+assert.equal(categoricalCompact?.yBins, categoricalY);
+assert.equal(categoricalCompact?.yBinCount, 2);
+assert.deepEqual(categoricalCompact?.overviewIndices, new Uint32Array([0, 1]));
+
+const overviewOutlierY = new Uint16Array(8_192);
+overviewOutlierY.fill(100);
+overviewOutlierY[123] = 0;
+overviewOutlierY[4_321] = 1_000;
+const overviewOutlierIndex = await createFastScatterCompactHoverIndex({
+  x: Uint32Array.from({ length: overviewOutlierY.length }, (_, index) => index),
+  y: { signal: overviewOutlierY },
+}, { sortedX: true, yKeys: ['signal'] });
+assert.equal(overviewOutlierIndex.compactByYKey?.signal.overviewIndices.includes(123), true);
+assert.equal(overviewOutlierIndex.compactByYKey?.signal.overviewIndices.includes(4_321), true);
+
+const denseCategoryCount = 250_000;
+const denseCategoryX = new Float64Array(denseCategoryCount);
+const denseCategoryY = new Uint8Array(denseCategoryCount);
+const denseCategoryIds = new Array<string>(denseCategoryCount);
+for (let index = 0; index < denseCategoryCount; index += 1) {
+  denseCategoryX[index] = (index / (denseCategoryCount - 1)) * 1_000;
+  denseCategoryY[index] = index & 1;
+  denseCategoryIds[index] = `dense-category-${index}`;
+}
+const denseCategoryColumns: FastScatterPointColumns = {
+  ids: denseCategoryIds,
+  x: denseCategoryX,
+  y: { category: denseCategoryY },
+};
+const denseCategoryIndex = await createFastScatterCompactHoverIndex(denseCategoryColumns, {
+  blockSize: 256,
+  yDomainByKey: { category: { min: 0, max: 1 } },
+  yKeys: ['category'],
+});
+const denseCategoryInput = {
+  columns: denseCategoryColumns,
+  maxDistanceCssPx: 18,
+  plotRects: [{ heightCssPx: 500, id: 'category', widthCssPx: 1_000, xCssPx: 0, yCssPx: 0 }],
+  pointerCssX: 500,
+  pointerCssY: 125,
+  spec: { xLabel: 'x', plots: [{ id: 'category', yKey: 'category' }] },
+  viewport: { x: { min: 0, max: 1_000 }, yByPlot: { category: { min: -0.5, max: 1.5 } } },
+} as const;
+const denseCategoryHit = lookupFastScatterNearestPoint({
+  ...denseCategoryInput,
+  hoverIndex: denseCategoryIndex,
+});
+const denseCategoryFallback = lookupFastScatterNearestPoint(denseCategoryInput);
+assert.equal(denseCategoryHit.hit?.point.id, denseCategoryFallback.hit?.point.id);
+assert.equal(denseCategoryHit.diagnostics.candidateCount <= 256, true);
+
 console.log('scatter-fast hover lookup tests passed');
 
 function createMillionPointColumns(): FastScatterPointColumns {
@@ -478,4 +633,17 @@ function createMillionPointColumns(): FastScatterPointColumns {
       a: y,
     },
   };
+}
+
+function createIndexedParityColumns(): FastScatterPointColumns {
+  const count = 10_000;
+  const ids = new Array<string>(count);
+  const x = new Float64Array(count);
+  const y = new Float64Array(count);
+  for (let index = 0; index < count; index += 1) {
+    ids[index] = `parity-${index}`;
+    x[index] = (index / (count - 1)) * 100;
+    y[index] = 5 + Math.sin(index * 0.173) * 4.5;
+  }
+  return { ids, x, y: { a: y } };
 }

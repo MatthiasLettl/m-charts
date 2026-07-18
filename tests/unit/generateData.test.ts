@@ -315,11 +315,69 @@ try {
     true,
   );
 
+  const scatterWebgpuManifestPath = join(tempDir, 'scatter-webgpu.json');
+  const scatterWebgpuSchemaPath = join(tempDir, 'scatter-webgpu-schema.json');
+  runScatterWebgpuGenerator(scatterWebgpuManifestPath, scatterWebgpuSchemaPath, 42);
+  const scatterWebgpuManifest = JSON.parse(
+    readFileSync(scatterWebgpuManifestPath, 'utf8'),
+  ) as {
+    count: number;
+    format: string;
+    pages: {
+      binary: string;
+      columns: Record<string, { byteLength: number; byteOffset: number; length: number; type: string }>;
+      count: number;
+      startIndex: number;
+      styleBinary: string;
+    }[];
+    styleStrideBytes: number;
+    version: number;
+    xScaleMs: number;
+    xStorage: string;
+  };
+  assert.equal(scatterWebgpuManifest.format, 'm-scatter-webgpu-paged');
+  assert.equal(scatterWebgpuManifest.version, 7);
+  assert.equal(scatterWebgpuManifest.xScaleMs, 250);
+  assert.equal(scatterWebgpuManifest.xStorage, 'generated-overlap-index');
+  assert.equal(scatterWebgpuManifest.styleStrideBytes, 4);
+  assert.equal(scatterWebgpuManifest.count, 12);
+  assert.equal(scatterWebgpuManifest.pages.length, 3);
+  assert.deepEqual(scatterWebgpuManifest.pages.map((page) => page.count), [5, 5, 2]);
+  const pagedPhase: number[] = [];
+  const pagedAccepted: number[] = [];
+  const pagedSignal: number[] = [];
+  const pagedStyles: number[] = [];
+  for (const page of scatterWebgpuManifest.pages) {
+    const binary = readFileSync(join(tempDir, page.binary));
+    pagedPhase.push(...readColumnarUint8(page, binary, 'phase'));
+    pagedAccepted.push(...readColumnarUint8(page, binary, 'accepted'));
+    pagedSignal.push(...readColumnarUint16(page, binary, 'signalValue'));
+    const styleBinary = readFileSync(join(tempDir, page.styleBinary));
+    pagedStyles.push(...new Uint32Array(
+      styleBinary.buffer.slice(
+        styleBinary.byteOffset,
+        styleBinary.byteOffset + styleBinary.byteLength,
+      ),
+    ));
+  }
+  assert.deepEqual(pagedPhase, scatterFastDataset.records.map((record) => encodePhase(record.phase)));
+  assert.deepEqual(pagedAccepted, scatterFastDataset.records.map((record) => record.accepted ? 1 : 0));
+  assert.deepEqual(
+    pagedSignal,
+    scatterFastDataset.records.map((record) => Math.round(record.signalValue / 0.0025)),
+  );
+  assert.equal(pagedStyles.length, scatterFastDataset.records.length);
+  for (const [index, record] of scatterFastDataset.records.entries()) {
+    const expected = expectedPackedStyle(record);
+    assert.equal(pagedStyles[index], expected);
+  }
+
   const firstMixedPath = join(tempDir, 'mixed-seed-42-a.json');
+  const firstMixedSecondaryPath = join(tempDir, 'mixed-seed-42-a.secondary.json');
   const secondMixedPath = join(tempDir, 'mixed-seed-42-b.json');
   const differentMixedSeedPath = join(tempDir, 'mixed-seed-43.json');
 
-  runMixedTablesGenerator(firstMixedPath, 42);
+  runMixedTablesGenerator(firstMixedPath, 42, firstMixedSecondaryPath);
   runMixedTablesGenerator(secondMixedPath, 42);
   runMixedTablesGenerator(differentMixedSeedPath, 43);
 
@@ -331,6 +389,9 @@ try {
   assert.notEqual(firstMixedOutput, differentMixedSeedOutput);
 
   const mixedFixture = JSON.parse(firstMixedOutput) as MixedTableFixture;
+  const secondaryFixture = JSON.parse(
+    readFileSync(firstMixedSecondaryPath, 'utf8'),
+  ) as MixedTableFixture;
   assert.equal(mixedFixture.metadata.version, 1);
   assert.equal(mixedFixture.metadata.count, 15);
   assert.equal(mixedFixture.metadata.seed, 42);
@@ -378,6 +439,14 @@ try {
   assert.equal(mixedFixture.tables[0]?.records[0]?.secondaryDrift, undefined);
   assert.equal(typeof mixedFixture.tables[1]?.records[0]?.secondarySignal, 'number');
   assert.equal(typeof mixedFixture.tables[1]?.records[0]?.secondaryDrift, 'number');
+  assert.deepEqual(
+    secondaryFixture.tables.map((table) => table.name),
+    ['benchmark-secondary'],
+  );
+  assert.deepEqual(
+    secondaryFixture.tables[0]?.records,
+    mixedFixture.tables[1]?.records,
+  );
 
   for (const table of mixedFixture.tables) {
     for (const record of table.records) {
@@ -556,6 +625,22 @@ function runScatterFastGenerator(
   );
 }
 
+function runScatterWebgpuGenerator(
+  outPath: string,
+  schemaOutPath: string,
+  seed: number,
+): void {
+  execFileSync(
+    'pnpm',
+    [
+      'generate:data', '--', '--kind', 'scatter-webgpu', '--count', '12',
+      '--page-size', '5', '--seed', String(seed), '--out', outPath,
+      '--schema-out', schemaOutPath,
+    ],
+    { cwd: repoRoot, stdio: 'pipe' },
+  );
+}
+
 function createExpectedScatterFastColumnarX(
   records: readonly { timestampNs: string }[],
 ): number[] {
@@ -576,6 +661,41 @@ function encodePhase(phase: string): number {
     default:
       throw new Error(`Unsupported scatter-fast phase ${phase}.`);
   }
+}
+
+function expectedPackedStyle(record: {
+  color: string;
+  opacity: number;
+  rotation: number;
+  shape: string;
+  size: number;
+}): number {
+  const color = Number.parseInt(record.color.slice(1), 16);
+  const fullTurn = Math.PI * 2;
+  const sourceRotation = Math.fround(((record.rotation * Math.PI) / 180) % fullTurn);
+  const rotation = ((sourceRotation + Math.PI) % fullTurn + fullTurn) % fullTurn - Math.PI;
+  const encodedRotation = Math.max(0, Math.min(63, Math.round(
+    ((rotation + Math.PI) / (Math.PI * 2)) * 63,
+  )));
+  const encodedSize = Math.max(0, Math.min(7, Math.round(record.size - 1)));
+  const red = (color >>> 16) & 0xff;
+  const green = (color >>> 8) & 0xff;
+  const blue = color & 0xff;
+  return (
+    Math.round((red / 255) * 31) |
+    (Math.round((green / 255) * 63) << 5) |
+    (Math.round((blue / 255) * 31) << 11) |
+    (Math.round(Math.fround(record.opacity) * 15) << 16) |
+    (encodeShape(record.shape) << 20) |
+    (encodedRotation << 23) |
+    (encodedSize << 29)
+  ) >>> 0;
+}
+
+function encodeShape(shape: string): number {
+  const index = (SCATTER_SHAPES as readonly string[]).indexOf(shape);
+  if (index < 0) throw new Error(`Unsupported scatter-fast shape ${shape}.`);
+  return index;
 }
 
 function collectScatterFastExactOverlapGroups(
@@ -669,6 +789,39 @@ function readColumnarFloat32(
   return new Float32Array(buffer, 0, column.length);
 }
 
+function readColumnarUint16(
+  manifest: {
+    columns: Record<
+      string,
+      { byteLength: number; byteOffset: number; length: number; type: string }
+    >;
+  },
+  binary: Uint8Array,
+  name: string,
+): Uint16Array {
+  const column = manifest.columns[name];
+  assert.ok(column, `Missing scatter-fast columnar column ${name}.`);
+  assert.equal(column.type, 'Uint16Array');
+  const buffer = binary.buffer.slice(
+    binary.byteOffset + column.byteOffset,
+    binary.byteOffset + column.byteOffset + column.byteLength,
+  );
+  return new Uint16Array(buffer, 0, column.length);
+}
+
+function readColumnarUint8(
+  manifest: {
+    columns: Record<string, { byteLength: number; byteOffset: number; length: number; type: string }>;
+  },
+  binary: Uint8Array,
+  name: string,
+): Uint8Array {
+  const column = manifest.columns[name];
+  assert.ok(column, `Missing scatter-fast columnar column ${name}.`);
+  assert.equal(column.type, 'Uint8Array');
+  return binary.slice(column.byteOffset, column.byteOffset + column.byteLength);
+}
+
 function collectStyleRangeSamples(
   records: readonly { opacity: number; rotation: number; size: number }[],
 ): {
@@ -705,7 +858,11 @@ function collectPresentNumbers(values: readonly number[], expected: readonly num
   return expected.filter((value) => valueSet.has(value));
 }
 
-function runMixedTablesGenerator(outPath: string, seed: number): void {
+function runMixedTablesGenerator(
+  outPath: string,
+  seed: number,
+  secondaryOutPath?: string,
+): void {
   execFileSync(
     'pnpm',
     [
@@ -721,6 +878,9 @@ function runMixedTablesGenerator(outPath: string, seed: number): void {
       String(seed),
       '--out',
       outPath,
+      ...(secondaryOutPath === undefined
+        ? []
+        : ['--secondary-out', secondaryOutPath]),
     ],
     {
       cwd: repoRoot,

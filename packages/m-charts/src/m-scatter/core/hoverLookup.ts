@@ -16,7 +16,10 @@ import type {
   FastScatterAggregationSet,
   FastScatterBubbleSubplotAggregation,
   FastScatterCanvasPoint,
+  FastScatterCompactHoverIndex,
   FastScatterHeatmapSubplotAggregation,
+  FastScatterHoverGridIndex,
+  FastScatterHoverIndexSet,
   FastScatterPlotSpec,
   FastScatterPointColumns,
   FastScatterPointRef,
@@ -35,11 +38,233 @@ export interface FastScatterNearestPointLookupInput {
     | 'y'
   >;
   readonly maxDistanceCssPx: number;
+  readonly hoverIndex?: FastScatterHoverIndexSet | null;
+  readonly isPointEligible?: (pointIndex: number, plotId: string) => boolean;
   readonly plotRects: readonly FastScatterPlotRect[];
   readonly pointerCssX: number;
   readonly pointerCssY: number;
   readonly spec: FastScatterPlotSpec;
   readonly viewport: FastScatterViewport;
+}
+
+export interface CreateFastScatterHoverIndexOptions {
+  readonly targetPointsPerCell?: number;
+  readonly xBinCount?: number;
+  readonly yBinCount?: number;
+  readonly yKeys?: readonly string[];
+}
+
+export interface CreateFastScatterCompactHoverIndexOptions {
+  readonly blockSize?: number;
+  readonly sortedX?: boolean;
+  readonly yBinCount?: number;
+  readonly yDomainByKey?: Readonly<Record<string, { max: number; min: number }>>;
+  readonly yieldInterval?: number;
+  readonly yKeys?: readonly string[];
+}
+
+const COMPACT_HOVER_INVALID_BIN = 0xff;
+const OVERVIEW_REPRESENTATIVE_BLOCK_SIZE = 4_096;
+const OVERVIEW_CATEGORY_LIMIT = 16;
+
+export async function createFastScatterCompactHoverIndex(
+  columns: Pick<FastScatterPointColumns, 'x' | 'xOrder' | 'y'>,
+  options: CreateFastScatterCompactHoverIndexOptions = {},
+): Promise<FastScatterHoverIndexSet> {
+  const pointCount = columns.x.length;
+  const compactByYKey: Record<string, FastScatterCompactHoverIndex> = {};
+  const blockSize = clampInteger(options.blockSize ?? 256, 32, 4096);
+  const requestedYBinCount = clampInteger(options.yBinCount ?? 255, 8, 255);
+  const yieldInterval = Math.max(1, Math.floor(options.yieldInterval ?? 250_000));
+  const xSorted = columns.xOrder === undefined && (
+    options.sortedX === true ||
+    await isNondecreasingFiniteAsync(columns.x, yieldInterval)
+  );
+  if (!xSorted) {
+    return { compactByYKey, gridsByYKey: {}, pointCount };
+  }
+
+  for (const yKey of options.yKeys ?? Object.keys(columns.y)) {
+    const y = columns.y[yKey];
+    if (y === undefined || y.length !== pointCount) continue;
+    const requestedDomain = options.yDomainByKey?.[yKey];
+    const yDomain =
+      requestedDomain !== undefined &&
+      Number.isFinite(requestedDomain.min) &&
+      Number.isFinite(requestedDomain.max) &&
+      requestedDomain.max >= requestedDomain.min
+        ? requestedDomain
+        : await finiteDomainAsync(y, yieldInterval);
+    if (yDomain === null) continue;
+    const reuseIntegerBins = y instanceof Uint8Array && yDomain.min === 0 &&
+      Number.isInteger(yDomain.max) && yDomain.max >= 0 && yDomain.max < 255;
+    const yBinCount = reuseIntegerBins
+      ? Math.max(1, Math.floor(yDomain.max) + 1)
+      : requestedYBinCount;
+    const occupancyWordsPerBlock = Math.ceil(yBinCount / 32);
+    const yBins = reuseIntegerBins ? y : new Uint8Array(pointCount);
+    if (!reuseIntegerBins) yBins.fill(COMPACT_HOVER_INVALID_BIN);
+    const blockCount = Math.ceil(pointCount / blockSize);
+    const blockOccupancy = new Uint32Array(blockCount * occupancyWordsPerBlock);
+    const overviewIndices: number[] = [];
+    const categoryFirstIndex = y instanceof Uint8Array ? new Int32Array(256) : null;
+    categoryFirstIndex?.fill(-1);
+    let overviewBlock = -1;
+    let overviewCategoryCount = 0;
+    let overviewCategoryOverflow = false;
+    let overviewMinIndex = -1;
+    let overviewMinValue = Number.POSITIVE_INFINITY;
+    let overviewMaxIndex = -1;
+    let overviewMaxValue = Number.NEGATIVE_INFINITY;
+    const finishOverviewBlock = () => {
+      const blockIndices: number[] = [];
+      if (categoryFirstIndex !== null && !overviewCategoryOverflow) {
+        for (const pointIndex of categoryFirstIndex) {
+          if (pointIndex >= 0) blockIndices.push(pointIndex);
+        }
+      } else {
+        if (overviewMinIndex >= 0) blockIndices.push(overviewMinIndex);
+        if (overviewMaxIndex >= 0 && overviewMaxIndex !== overviewMinIndex) {
+          blockIndices.push(overviewMaxIndex);
+        }
+      }
+      blockIndices.sort((left, right) => left - right);
+      overviewIndices.push(...blockIndices);
+    };
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      const value = y[pointIndex];
+      if (Number.isFinite(value)) {
+        const nextOverviewBlock = Math.floor(pointIndex / OVERVIEW_REPRESENTATIVE_BLOCK_SIZE);
+        if (nextOverviewBlock !== overviewBlock) {
+          if (overviewBlock >= 0) finishOverviewBlock();
+          overviewBlock = nextOverviewBlock;
+          overviewCategoryCount = 0;
+          overviewCategoryOverflow = false;
+          overviewMinIndex = -1;
+          overviewMinValue = Number.POSITIVE_INFINITY;
+          overviewMaxIndex = -1;
+          overviewMaxValue = Number.NEGATIVE_INFINITY;
+          categoryFirstIndex?.fill(-1);
+        }
+        if (value! < overviewMinValue) {
+          overviewMinValue = value!;
+          overviewMinIndex = pointIndex;
+        }
+        if (value! > overviewMaxValue) {
+          overviewMaxValue = value!;
+          overviewMaxIndex = pointIndex;
+        }
+        if (categoryFirstIndex !== null && !overviewCategoryOverflow) {
+          const category = value! & 0xff;
+          if (categoryFirstIndex[category] === -1) {
+            categoryFirstIndex[category] = pointIndex;
+            overviewCategoryCount += 1;
+            overviewCategoryOverflow = overviewCategoryCount > OVERVIEW_CATEGORY_LIMIT;
+          }
+        }
+        const yBin = reuseIntegerBins
+          ? value!
+          : gridBinIndex(value!, yDomain.min, yDomain.max, yBinCount);
+        if (!reuseIntegerBins) yBins[pointIndex] = yBin;
+        const wordIndex =
+          Math.floor(pointIndex / blockSize) * occupancyWordsPerBlock + (yBin >>> 5);
+        blockOccupancy[wordIndex] =
+          ((blockOccupancy[wordIndex] ?? 0) | (1 << (yBin & 31))) >>> 0;
+      }
+      if (pointIndex > 0 && pointIndex % yieldInterval === 0) await yieldToHost();
+    }
+    if (overviewBlock >= 0) finishOverviewBlock();
+    compactByYKey[yKey] = {
+      blockOccupancy,
+      blockSize,
+      occupancyWordsPerBlock,
+      overviewIndices: Uint32Array.from(overviewIndices),
+      yBinCount,
+      yBins,
+      yKey,
+      yMax: yDomain.max,
+      yMin: yDomain.min,
+    };
+    await yieldToHost();
+  }
+  return { compactByYKey, gridsByYKey: {}, pointCount };
+}
+
+export function createFastScatterHoverIndex(
+  columns: Pick<FastScatterPointColumns, 'x' | 'y'>,
+  options: CreateFastScatterHoverIndexOptions = {},
+): FastScatterHoverIndexSet {
+  const pointCount = columns.x.length;
+  const targetPointsPerCell = Math.max(1, Math.floor(options.targetPointsPerCell ?? 24));
+  const defaultCellCount = Math.max(1, Math.ceil(pointCount / targetPointsPerCell));
+  // Scatter plots are normally much wider than they are tall, and time-series
+  // data can be concentrated into a narrow Y band. Favor fine X buckets so a
+  // center-cell nearest-neighbor query remains bounded in that common case.
+  const defaultXBinCount = clampInteger(defaultCellCount, 1, 2048);
+  const defaultYBinCount = clampInteger(Math.ceil(defaultCellCount / defaultXBinCount), 1, 1024);
+  const xBinCount = clampInteger(options.xBinCount ?? defaultXBinCount, 1, 4096);
+  const yBinCount = clampInteger(options.yBinCount ?? defaultYBinCount, 1, 2048);
+  const xDomain = finiteDomain(columns.x);
+  const requestedYKeys = options.yKeys ?? Object.keys(columns.y);
+  const gridsByYKey: Record<string, FastScatterHoverGridIndex> = {};
+
+  if (xDomain === null || pointCount === 0) {
+    return { gridsByYKey, pointCount };
+  }
+
+  for (const yKey of requestedYKeys) {
+    const y = columns.y[yKey];
+    const yDomain = y === undefined ? null : finiteDomain(y);
+    if (y === undefined || y.length !== pointCount || yDomain === null) {
+      continue;
+    }
+
+    const cellCount = xBinCount * yBinCount;
+    const counts = new Uint32Array(cellCount);
+    let indexedPointCount = 0;
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      const xValue = columns.x[pointIndex];
+      const yValue = y[pointIndex];
+      if (!Number.isFinite(xValue) || !Number.isFinite(yValue)) continue;
+      counts[gridCellIndex(xValue, yValue, xDomain, yDomain, xBinCount, yBinCount)] += 1;
+      indexedPointCount += 1;
+    }
+
+    const cellOffsets = new Uint32Array(cellCount + 1);
+    for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
+      cellOffsets[cellIndex + 1] = cellOffsets[cellIndex] + counts[cellIndex];
+    }
+    const writeOffsets = cellOffsets.slice(0, cellCount);
+    const pointIndices = new Uint32Array(indexedPointCount);
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+      const xValue = columns.x[pointIndex];
+      const yValue = y[pointIndex];
+      if (!Number.isFinite(xValue) || !Number.isFinite(yValue)) continue;
+      const cellIndex = gridCellIndex(
+        xValue,
+        yValue,
+        xDomain,
+        yDomain,
+        xBinCount,
+        yBinCount,
+      );
+      pointIndices[writeOffsets[cellIndex]++] = pointIndex;
+    }
+
+    gridsByYKey[yKey] = {
+      cellOffsets,
+      pointIndices,
+      xBinCount,
+      xMax: xDomain.max,
+      xMin: xDomain.min,
+      yBinCount,
+      yKey,
+      yMax: yDomain.max,
+      yMin: yDomain.min,
+    };
+  }
+
+  return { gridsByYKey, pointCount };
 }
 
 export interface FastScatterNearestPointLookupDiagnostics {
@@ -201,18 +426,45 @@ export function lookupFastScatterNearestPoint(
   const xRange = normalizeRange(xMin, xMax);
   const scanStartIndex = lowerBoundByX(input.columns, xRange.min);
   const scanEndIndex = upperBoundByX(input.columns, xRange.max);
+  const pointerAxisX = pixelToAxis(
+    input.pointerCssX,
+    input.viewport.x,
+    plotRect.xCssPx,
+    plotRect.xCssPx + plotRect.widthCssPx,
+  );
+  const pointerXIndex = lowerBoundByX(input.columns, pointerAxisX);
+  const yMin = pixelToAxis(
+    input.pointerCssY + input.maxDistanceCssPx,
+    yRange,
+    plotRect.yCssPx + plotRect.heightCssPx,
+    plotRect.yCssPx,
+  );
+  const yMax = pixelToAxis(
+    input.pointerCssY - input.maxDistanceCssPx,
+    yRange,
+    plotRect.yCssPx + plotRect.heightCssPx,
+    plotRect.yCssPx,
+  );
+  const hoverYRange = normalizeRange(yMin, yMax);
   const maxDistanceSquared = input.maxDistanceCssPx * input.maxDistanceCssPx;
   let bestHit: FastScatterNearestPointHit | null = null;
   let bestDistanceSquared = Number.POSITIVE_INFINITY;
+  let candidateCount = 0;
 
-  for (let sortedIndex = scanStartIndex; sortedIndex < scanEndIndex; sortedIndex += 1) {
-    const pointIndex = getPointIndexAtXOrder(input.columns, sortedIndex);
+  const considerPoint = (pointIndex: number): void => {
+    if (input.isPointEligible?.(pointIndex, plot.id) === false) {
+      return;
+    }
     const x = input.columns.x[pointIndex];
     const y = yColumn[pointIndex];
 
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
-      continue;
+      return;
     }
+    if (x < xRange.min || x > xRange.max || y < hoverYRange.min || y > hoverYRange.max) {
+      return;
+    }
+    candidateCount += 1;
 
     const canvasX = axisToPixel(
       x,
@@ -231,7 +483,7 @@ export function lookupFastScatterNearestPoint(
       (canvasY - input.pointerCssY) * (canvasY - input.pointerCssY);
 
     if (distanceSquared > maxDistanceSquared) {
-      continue;
+      return;
     }
 
     if (
@@ -259,12 +511,101 @@ export function lookupFastScatterNearestPoint(
         pointIndex,
       };
     }
+  };
+
+  const compactHover =
+    input.columns.xOrder === undefined &&
+    input.hoverIndex?.pointCount === input.columns.x.length
+      ? input.hoverIndex.compactByYKey?.[plot.yKey]
+      : undefined;
+  const hoverGrid =
+    input.hoverIndex?.pointCount === input.columns.x.length
+      ? input.hoverIndex.gridsByYKey[plot.yKey]
+      : undefined;
+  if (compactHover !== undefined) {
+    visitFastScatterCompactHoverCandidates(
+      compactHover,
+      scanStartIndex,
+      scanEndIndex,
+      pointerXIndex,
+      hoverYRange,
+      considerPoint,
+      (pointIndex) => {
+        const x = input.columns.x[pointIndex];
+        if (!Number.isFinite(x)) return Number.POSITIVE_INFINITY;
+        const canvasX = axisToPixel(
+          x,
+          input.viewport.x,
+          plotRect.xCssPx,
+          plotRect.xCssPx + plotRect.widthCssPx,
+        );
+        const distance = canvasX - input.pointerCssX;
+        return distance * distance;
+      },
+      () => bestDistanceSquared,
+    );
+  } else if (hoverGrid === undefined) {
+    for (let sortedIndex = scanStartIndex; sortedIndex < scanEndIndex; sortedIndex += 1) {
+      considerPoint(getPointIndexAtXOrder(input.columns, sortedIndex));
+    }
+    // Preserve the established diagnostic definition for the unfiltered X-only fallback.
+    if (input.isPointEligible === undefined) {
+      candidateCount = scanEndIndex - scanStartIndex;
+    }
+  } else {
+    const pointerAxisY = pixelToAxis(
+      input.pointerCssY,
+      yRange,
+      plotRect.yCssPx + plotRect.heightCssPx,
+      plotRect.yCssPx,
+    );
+    visitFastScatterHoverGridCandidates(
+      hoverGrid,
+      xRange,
+      hoverYRange,
+      pointerAxisX,
+      pointerAxisY,
+      considerPoint,
+      (scanned) => {
+        if (!Number.isFinite(bestDistanceSquared)) return false;
+        let nearestUnscannedDistance = Number.POSITIVE_INFINITY;
+        if (scanned.xStart > scanned.queryXStart) {
+          const boundaryX = gridBinBoundary(hoverGrid.xMin, hoverGrid.xMax, hoverGrid.xBinCount, scanned.xStart);
+          nearestUnscannedDistance = Math.min(
+            nearestUnscannedDistance,
+            Math.abs(axisToPixel(boundaryX, input.viewport.x, plotRect.xCssPx, plotRect.xCssPx + plotRect.widthCssPx) - input.pointerCssX),
+          );
+        }
+        if (scanned.xEnd < scanned.queryXEnd) {
+          const boundaryX = gridBinBoundary(hoverGrid.xMin, hoverGrid.xMax, hoverGrid.xBinCount, scanned.xEnd + 1);
+          nearestUnscannedDistance = Math.min(
+            nearestUnscannedDistance,
+            Math.abs(axisToPixel(boundaryX, input.viewport.x, plotRect.xCssPx, plotRect.xCssPx + plotRect.widthCssPx) - input.pointerCssX),
+          );
+        }
+        if (scanned.yStart > scanned.queryYStart) {
+          const boundaryY = gridBinBoundary(hoverGrid.yMin, hoverGrid.yMax, hoverGrid.yBinCount, scanned.yStart);
+          nearestUnscannedDistance = Math.min(
+            nearestUnscannedDistance,
+            Math.abs(axisToPixel(boundaryY, yRange, plotRect.yCssPx + plotRect.heightCssPx, plotRect.yCssPx) - input.pointerCssY),
+          );
+        }
+        if (scanned.yEnd < scanned.queryYEnd) {
+          const boundaryY = gridBinBoundary(hoverGrid.yMin, hoverGrid.yMax, hoverGrid.yBinCount, scanned.yEnd + 1);
+          nearestUnscannedDistance = Math.min(
+            nearestUnscannedDistance,
+            Math.abs(axisToPixel(boundaryY, yRange, plotRect.yCssPx + plotRect.heightCssPx, plotRect.yCssPx) - input.pointerCssY),
+          );
+        }
+        return bestDistanceSquared < nearestUnscannedDistance * nearestUnscannedDistance;
+      },
+    );
   }
 
   return {
     diagnostics: withDuration(
       {
-        candidateCount: scanEndIndex - scanStartIndex,
+        candidateCount,
         plotId: plot.id,
         scanEndIndex,
         scanStartIndex,
@@ -274,6 +615,106 @@ export function lookupFastScatterNearestPoint(
     ),
     hit: bestHit,
   };
+}
+
+function visitFastScatterCompactHoverCandidates(
+  index: FastScatterCompactHoverIndex,
+  scanStartIndex: number,
+  scanEndIndex: number,
+  pointerXIndex: number,
+  yRange: { max: number; min: number },
+  visit: (pointIndex: number) => void,
+  xDistanceSquared: (pointIndex: number) => number,
+  bestDistanceSquared: () => number,
+): void {
+  if (
+    scanStartIndex >= scanEndIndex ||
+    yRange.max < index.yMin ||
+    yRange.min > index.yMax
+  ) return;
+  const yStart = gridBinIndex(
+    Math.max(yRange.min, index.yMin), index.yMin, index.yMax, index.yBinCount,
+  );
+  const yEnd = gridBinIndex(
+    Math.min(yRange.max, index.yMax), index.yMin, index.yMax, index.yBinCount,
+  );
+  const firstBlock = Math.floor(scanStartIndex / index.blockSize);
+  const lastBlock = Math.floor((scanEndIndex - 1) / index.blockSize);
+  const visitBlock = (block: number) => {
+    if (!compactBlockIntersectsY(index, block, yStart, yEnd)) return;
+    const blockStart = block * index.blockSize;
+    const start = Math.max(scanStartIndex, blockStart);
+    const end = Math.min(scanEndIndex, blockStart + index.blockSize);
+    for (let pointIndex = start; pointIndex < end; pointIndex += 1) {
+      const yBin = index.yBins[pointIndex]!;
+      if (yBin >= yStart && yBin <= yEnd) visit(pointIndex);
+    }
+  };
+  const centerBlock = clampInteger(
+    Math.floor(Math.min(scanEndIndex - 1, Math.max(scanStartIndex, pointerXIndex)) / index.blockSize),
+    firstBlock,
+    lastBlock,
+  );
+  visitBlock(centerBlock);
+
+  let leftBlock = centerBlock - 1;
+  let rightBlock = centerBlock + 1;
+  while (leftBlock >= firstBlock || rightBlock <= lastBlock) {
+    while (
+      leftBlock >= firstBlock &&
+      !compactBlockIntersectsY(index, leftBlock, yStart, yEnd)
+    ) leftBlock -= 1;
+    while (
+      rightBlock <= lastBlock &&
+      !compactBlockIntersectsY(index, rightBlock, yStart, yEnd)
+    ) rightBlock += 1;
+
+    const leftPointIndex = leftBlock < firstBlock
+      ? null
+      : Math.min(scanEndIndex - 1, (leftBlock + 1) * index.blockSize - 1);
+    const rightPointIndex = rightBlock > lastBlock
+      ? null
+      : Math.max(scanStartIndex, rightBlock * index.blockSize);
+    const leftDistance = leftPointIndex === null
+      ? Number.POSITIVE_INFINITY
+      : xDistanceSquared(leftPointIndex);
+    const rightDistance = rightPointIndex === null
+      ? Number.POSITIVE_INFINITY
+      : xDistanceSquared(rightPointIndex);
+    if (bestDistanceSquared() < Math.min(leftDistance, rightDistance)) return;
+    if (leftDistance <= rightDistance) {
+      if (leftBlock < firstBlock) return;
+      visitBlock(leftBlock);
+      leftBlock -= 1;
+    } else {
+      if (rightBlock > lastBlock) return;
+      visitBlock(rightBlock);
+      rightBlock += 1;
+    }
+  }
+}
+
+function compactBlockIntersectsY(
+  index: FastScatterCompactHoverIndex,
+  block: number,
+  yStart: number,
+  yEnd: number,
+): boolean {
+  const firstWord = yStart >>> 5;
+  const lastWord = yEnd >>> 5;
+  const occupancyOffset = block * index.occupancyWordsPerBlock;
+  for (let word = firstWord; word <= lastWord; word += 1) {
+    const lowerMask = word === firstWord
+      ? (0xffff_ffff << (yStart & 31)) >>> 0
+      : 0xffff_ffff;
+    const upperMask = word === lastWord
+      ? (0xffff_ffff >>> (31 - (yEnd & 31))) >>> 0
+      : 0xffff_ffff;
+    if (((index.blockOccupancy[occupancyOffset + word] ?? 0) & lowerMask & upperMask) !== 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function createFastScatterPointRef({
@@ -888,6 +1329,152 @@ function upperBoundByX(
 
 function normalizeRange(min: number, max: number): { max: number; min: number } {
   return min <= max ? { max, min } : { max: min, min: max };
+}
+
+function finiteDomain(values: ArrayLike<number>): { max: number; min: number } | null {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (!Number.isFinite(value)) continue;
+    min = Math.min(min, value);
+    max = Math.max(max, value);
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { max, min } : null;
+}
+
+async function finiteDomainAsync(
+  values: ArrayLike<number>,
+  yieldInterval: number,
+): Promise<{ max: number; min: number } | null> {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (Number.isFinite(value)) {
+      min = Math.min(min, value!);
+      max = Math.max(max, value!);
+    }
+    if (index > 0 && index % yieldInterval === 0) await yieldToHost();
+  }
+  return Number.isFinite(min) && Number.isFinite(max) ? { max, min } : null;
+}
+
+async function isNondecreasingFiniteAsync(
+  values: ArrayLike<number>,
+  yieldInterval: number,
+): Promise<boolean> {
+  let previous = Number.NEGATIVE_INFINITY;
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (index > 0 && index % yieldInterval === 0) await yieldToHost();
+    if (!Number.isFinite(value)) continue;
+    if (value! < previous) return false;
+    previous = value!;
+  }
+  return true;
+}
+
+function yieldToHost(): Promise<void> {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+function gridCellIndex(
+  x: number,
+  y: number,
+  xDomain: { max: number; min: number },
+  yDomain: { max: number; min: number },
+  xBinCount: number,
+  yBinCount: number,
+): number {
+  const xBin = gridBinIndex(x, xDomain.min, xDomain.max, xBinCount);
+  const yBin = gridBinIndex(y, yDomain.min, yDomain.max, yBinCount);
+  return yBin * xBinCount + xBin;
+}
+
+function gridBinIndex(value: number, min: number, max: number, binCount: number): number {
+  if (max <= min) return 0;
+  return clampInteger(Math.floor(((value - min) / (max - min)) * binCount), 0, binCount - 1);
+}
+
+function visitFastScatterHoverGridCandidates(
+  grid: FastScatterHoverGridIndex,
+  xRange: { max: number; min: number },
+  yRange: { max: number; min: number },
+  pointerX: number,
+  pointerY: number,
+  visit: (pointIndex: number) => void,
+  shouldStop: (scanned: {
+    queryXEnd: number;
+    queryXStart: number;
+    queryYEnd: number;
+    queryYStart: number;
+    xEnd: number;
+    xStart: number;
+    yEnd: number;
+    yStart: number;
+  }) => boolean,
+): void {
+  if (
+    xRange.max < grid.xMin || xRange.min > grid.xMax ||
+    yRange.max < grid.yMin || yRange.min > grid.yMax
+  ) {
+    return;
+  }
+  const xStart = gridBinIndex(Math.max(xRange.min, grid.xMin), grid.xMin, grid.xMax, grid.xBinCount);
+  const xEnd = gridBinIndex(Math.min(xRange.max, grid.xMax), grid.xMin, grid.xMax, grid.xBinCount);
+  const yStart = gridBinIndex(Math.max(yRange.min, grid.yMin), grid.yMin, grid.yMax, grid.yBinCount);
+  const yEnd = gridBinIndex(Math.min(yRange.max, grid.yMax), grid.yMin, grid.yMax, grid.yBinCount);
+  const centerX = clampInteger(
+    gridBinIndex(pointerX, grid.xMin, grid.xMax, grid.xBinCount),
+    xStart,
+    xEnd,
+  );
+  const centerY = clampInteger(
+    gridBinIndex(pointerY, grid.yMin, grid.yMax, grid.yBinCount),
+    yStart,
+    yEnd,
+  );
+  const maxRing = Math.max(centerX - xStart, xEnd - centerX, centerY - yStart, yEnd - centerY);
+
+  for (let ring = 0; ring <= maxRing; ring += 1) {
+    const ringXStart = Math.max(xStart, centerX - ring);
+    const ringXEnd = Math.min(xEnd, centerX + ring);
+    const ringYStart = Math.max(yStart, centerY - ring);
+    const ringYEnd = Math.min(yEnd, centerY + ring);
+    for (let yBin = ringYStart; yBin <= ringYEnd; yBin += 1) {
+      const rowOffset = yBin * grid.xBinCount;
+      for (let xBin = ringXStart; xBin <= ringXEnd; xBin += 1) {
+        if (Math.max(Math.abs(xBin - centerX), Math.abs(yBin - centerY)) !== ring) {
+          continue;
+        }
+        const cellIndex = rowOffset + xBin;
+        const start = grid.cellOffsets[cellIndex];
+        const end = grid.cellOffsets[cellIndex + 1];
+        for (let offset = start; offset < end; offset += 1) {
+          visit(grid.pointIndices[offset]);
+        }
+      }
+    }
+    if (shouldStop({
+      queryXEnd: xEnd,
+      queryXStart: xStart,
+      queryYEnd: yEnd,
+      queryYStart: yStart,
+      xEnd: ringXEnd,
+      xStart: ringXStart,
+      yEnd: ringYEnd,
+      yStart: ringYStart,
+    })) return;
+  }
+}
+
+function gridBinBoundary(min: number, max: number, binCount: number, bin: number): number {
+  return max <= min ? min : min + ((max - min) * bin) / binCount;
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value)));
 }
 
 function withDuration<T extends object>(

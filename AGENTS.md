@@ -1,10 +1,10 @@
 # Agent Notes
 
 - Keep changes focused and do not revert unrelated user or agent edits.
-- This repo contains the `m-charts` WebGL2 library, its demo app, docs, tests,
-  and benchmark helpers. Keep additions within that scope; do not add alternate
-  charting libraries, local env files, generated datasets, or unrelated demo
-  routes.
+- This repo contains the `m-charts` WebGL2 and WebGPU library, its demo app,
+  docs, tests, and benchmark helpers. Keep additions within that scope; do not
+  add alternate charting libraries, local env files, generated datasets, or
+  unrelated demo routes.
 - Treat `.env`, `.env.local`, generated datasets, reports, `dist`, and
   `node_modules` as local artifacts.
 

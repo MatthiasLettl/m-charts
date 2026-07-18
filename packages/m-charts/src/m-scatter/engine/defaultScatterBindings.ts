@@ -69,6 +69,8 @@ export function createDefaultScatterBindings(
       let easterEggKeyBuffer = '';
       let spaceHeld = false;
       let shiftHeld = false;
+      let wheelCommitTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+      let pendingWheel: NormalizedWheelEvent | null = null;
       const hoverScheduler = createLatestRafScheduler<NormalizedPointerEvent>((event) => {
         if (!event.modifiers.shiftKey || pointerDrag !== null) {
           return;
@@ -83,9 +85,46 @@ export function createDefaultScatterBindings(
         }
       });
       disposables.add(hoverScheduler);
+      const wheelScheduler = createLatestRafScheduler<NormalizedWheelEvent>((event) => {
+        pendingWheel = null;
+        handleWheel(plot, event, 'preview');
+      });
+      disposables.add(wheelScheduler);
 
       input.on('wheel', (event) => {
-        handleWheel(plot, event);
+        if (resolveWheelZoomAxisMode(event) === null) {
+          handleWheel(plot, event);
+          return;
+        }
+        if (plot.commands.getPlotRectAtPoint(event.host.x, event.host.y) === null) return;
+        consumeNativeInteraction(event.originalEvent);
+        pendingWheel = pendingWheel === null
+          ? event
+          : {
+              ...event,
+              deltaX: pendingWheel.deltaX + event.deltaX,
+              deltaY: pendingWheel.deltaY + event.deltaY,
+              deltaZ: pendingWheel.deltaZ + event.deltaZ,
+            };
+        wheelScheduler.schedule(pendingWheel);
+        if (wheelCommitTimer !== null) globalThis.clearTimeout(wheelCommitTimer);
+        wheelCommitTimer = globalThis.setTimeout(() => {
+          wheelCommitTimer = null;
+          if (pendingWheel !== null) {
+            const latest = pendingWheel;
+            pendingWheel = null;
+            wheelScheduler.cancel();
+            handleWheel(plot, latest, 'preview');
+          }
+          plot.commands.setViewport(
+            plot.commands.getStateSnapshot().viewport,
+            'wheel',
+            'commit',
+          );
+        }, 80);
+      });
+      disposables.defer(() => {
+        if (wheelCommitTimer !== null) globalThis.clearTimeout(wheelCommitTimer);
       });
       disposables.add(
         addEventListenerDisposable(inputTarget, 'dblclick', (event) => {
@@ -389,6 +428,7 @@ const MIDDLE_CLICK_MAX_MOVE_CSS_PX = 3;
 function handleWheel(
   plot: FastScatterPlotInstance,
   event: NormalizedWheelEvent,
+  phase: 'preview' | 'commit' = 'commit',
 ): void {
   const plotRect = plot.commands.getPlotRectAtPoint(event.host.x, event.host.y);
   if (plotRect === null) {
@@ -432,6 +472,7 @@ function handleWheel(
     deltaY,
     pointerCssX: event.host.x,
     pointerCssY: event.host.y,
+    phase,
   });
 }
 

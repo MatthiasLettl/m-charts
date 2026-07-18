@@ -532,8 +532,9 @@ const zoomWheel = makeEvent('wheel', {
   shiftKey: false,
 });
 host.dispatchEvent(zoomWheel);
+await new Promise((resolve) => setTimeout(resolve, 20));
 assert.equal(zoomWheel.defaultPrevented, true);
-assert.deepEqual(viewportEvents.at(-1), { phase: 'commit', reason: 'wheel' });
+assert.deepEqual(viewportEvents.at(-1), { phase: 'preview', reason: 'wheel' });
 assert.equal(interactionMetrics.at(-1), 'wheel-zoom');
 assert.equal((renderers[0]!.updates.at(-1) as { viewport?: FastScatterViewport }).viewport?.x.max, plot.commands.getStateSnapshot().viewport.x.max);
 
@@ -550,7 +551,10 @@ const shiftWheel = makeEvent('wheel', {
   shiftKey: true,
 });
 host.dispatchEvent(shiftWheel);
+await new Promise((resolve) => setTimeout(resolve, 20));
 assert.equal(shiftWheel.defaultPrevented, true);
+assert.deepEqual(viewportEvents.at(-1), { phase: 'preview', reason: 'wheel' });
+await new Promise((resolve) => setTimeout(resolve, 100));
 assert.deepEqual(viewportEvents.at(-1), { phase: 'commit', reason: 'wheel' });
 
 const keyQ = makeEvent('keydown', {

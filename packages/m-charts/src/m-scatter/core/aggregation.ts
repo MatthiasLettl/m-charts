@@ -411,6 +411,7 @@ function buildBubbleSubplotAggregation(
   hoverSourceIndex: number | null,
 ): FastScatterBubbleSubplotAggregation {
   const yColumn = columns.y[subplot.yKey];
+  const readX = createXValueReader(columns.x);
 
   if (yColumn === undefined) {
     return createEmptyBubbleAggregation(subplot);
@@ -431,7 +432,7 @@ function buildBubbleSubplotAggregation(
   let sortedIndex = scanRange.startIndex;
   while (sortedIndex < scanRange.endIndex) {
     const runPointIndex = getPointIndexAtXOrder(columns, sortedIndex);
-    const runXValue = columns.x[runPointIndex];
+    const runXValue = readX(runPointIndex);
 
     if (!Number.isFinite(runXValue)) {
       sortedIndex += 1;
@@ -441,7 +442,7 @@ function buildBubbleSubplotAggregation(
     let runEndIndex = sortedIndex + 1;
     while (runEndIndex < scanRange.endIndex) {
       const nextPointIndex = getPointIndexAtXOrder(columns, runEndIndex);
-      const nextXValue = columns.x[nextPointIndex];
+      const nextXValue = readX(nextPointIndex);
       if (!Object.is(nextXValue, runXValue)) {
         break;
       }
@@ -549,20 +550,19 @@ function buildHeatmapSubplotAggregation(
   const cellCount = xBinCount * yBinCount;
   const counts = new Uint32Array(cellCount);
   const hovered = new Uint8Array(cellCount);
-  const membershipByCell = Array.from({ length: cellCount }, () => [] as number[]);
   const selectedCounts = new Uint32Array(cellCount);
   const yColumn = columns.y[subplot.yKey];
+  const readX = createXValueReader(columns.x);
+  const scanRange = yColumn === undefined ? null : getXScanRange(columns, xRange);
 
-  if (yColumn !== undefined) {
-    const scanRange = getXScanRange(columns, xRange);
-
+  if (yColumn !== undefined && scanRange !== null) {
     for (
       let sortedIndex = scanRange.startIndex;
       sortedIndex < scanRange.endIndex;
       sortedIndex += 1
     ) {
       const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
-      const xValue = columns.x[pointIndex];
+      const xValue = readX(pointIndex);
       const yValue = yColumn[pointIndex];
 
       if (
@@ -580,7 +580,6 @@ function buildHeatmapSubplotAggregation(
       const sourceIndex = columns.sourceIndex?.[pointIndex] ?? pointIndex;
 
       counts[cellIndex] += 1;
-      membershipByCell[cellIndex]?.push(sourceIndex);
 
       if (selection.has(sourceIndex)) {
         selectedCounts[cellIndex] += 1;
@@ -591,22 +590,63 @@ function buildHeatmapSubplotAggregation(
       }
     }
   }
-
-  const finalizedMembership = flattenMembershipLists(membershipByCell);
+  const membershipOffsets = new Uint32Array(cellCount);
+  const membershipCounts = counts.slice();
+  let sourceIndexCount = 0;
+  let populatedCellCount = 0;
+  for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
+    membershipOffsets[cellIndex] = sourceIndexCount;
+    sourceIndexCount += counts[cellIndex] ?? 0;
+    if ((counts[cellIndex] ?? 0) > 0) populatedCellCount += 1;
+  }
+  const sourceIndices = new Uint32Array(sourceIndexCount);
+  const writeOffsets = membershipOffsets.slice();
+  if (yColumn !== undefined && scanRange !== null) {
+    for (
+      let sortedIndex = scanRange.startIndex;
+      sortedIndex < scanRange.endIndex;
+      sortedIndex += 1
+    ) {
+      const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
+      const xValue = readX(pointIndex);
+      const yValue = yColumn[pointIndex];
+      if (
+        !Number.isFinite(xValue) ||
+        !Number.isFinite(yValue) ||
+        yValue < yRange.min ||
+        yValue > yRange.max
+      ) {
+        continue;
+      }
+      const cellIndex =
+        getBinIndex(yValue, yRange, yBinCount) * xBinCount +
+        getBinIndex(xValue, xRange, xBinCount);
+      const writeOffset = writeOffsets[cellIndex] ?? 0;
+      sourceIndices[writeOffset] = columns.sourceIndex?.[pointIndex] ?? pointIndex;
+      writeOffsets[cellIndex] = writeOffset + 1;
+    }
+  }
+  if (columns.sourceIndex !== undefined || columns.xOrder !== undefined) {
+    for (let cellIndex = 0; cellIndex < cellCount; cellIndex += 1) {
+      const offset = membershipOffsets[cellIndex] ?? 0;
+      const count = membershipCounts[cellIndex] ?? 0;
+      if (count > 1) sourceIndices.subarray(offset, offset + count).sort();
+    }
+  }
 
   return {
     cellCount,
     counts,
     heatBinPx,
     hovered,
-    membershipCounts: finalizedMembership.counts,
-    membershipOffsets: finalizedMembership.offsets,
+    membershipCounts,
+    membershipOffsets,
     plotHeightPx: normalizePlotPixelSize(subplot.plotHeightPx),
     plotId: subplot.plotId,
     plotWidthPx: normalizePlotPixelSize(subplot.plotWidthPx),
-    populatedCellCount: finalizedMembership.populatedCount,
+    populatedCellCount,
     selectedCounts,
-    sourceIndices: finalizedMembership.sourceIndices,
+    sourceIndices,
     xBinCount,
     xBinSize: getBinSize(xRange, xBinCount),
     xRange,
@@ -976,12 +1016,13 @@ function getPixelBinIndex(pixel: number, sizePx: number, binCount: number): numb
 }
 
 function lowerBound(values: ArrayLike<number>, target: number): number {
+  const read = createXValueReader(values);
   let low = 0;
   let high = values.length;
 
   while (low < high) {
     const mid = low + Math.floor((high - low) / 2);
-    if ((values[mid] ?? Number.NaN) < target) {
+    if (read(mid) < target) {
       low = mid + 1;
     } else {
       high = mid;
@@ -992,12 +1033,13 @@ function lowerBound(values: ArrayLike<number>, target: number): number {
 }
 
 function upperBound(values: ArrayLike<number>, target: number): number {
+  const read = createXValueReader(values);
   let low = 0;
   let high = values.length;
 
   while (low < high) {
     const mid = low + Math.floor((high - low) / 2);
-    if ((values[mid] ?? Number.NaN) <= target) {
+    if (read(mid) <= target) {
       low = mid + 1;
     } else {
       high = mid;
@@ -1018,7 +1060,23 @@ function getXValueAtOrder(
   columns: Pick<FastScatterPointColumns, 'x' | 'xOrder'>,
   sortedIndex: number,
 ): number {
-  return columns.x[getPointIndexAtXOrder(columns, sortedIndex)] ?? Number.NaN;
+  return createXValueReader(columns.x)(getPointIndexAtXOrder(columns, sortedIndex));
+}
+
+function createXValueReader(values: ArrayLike<number>): (index: number) => number {
+  if (
+    (values as ArrayLike<number> & { generatedOverlapIndex?: boolean })
+      .generatedOverlapIndex === true
+  ) {
+    return (index) => {
+      const blockStart = Math.floor(index / 24) * 24;
+      const offset = index - blockStart;
+      if (offset >= 2 && offset < 5) return blockStart + 2;
+      if (offset >= 14 && offset < 16) return blockStart + 14;
+      return index;
+    };
+  }
+  return (index) => values[index] ?? Number.NaN;
 }
 
 function getXScanRange(

@@ -8,6 +8,7 @@ export default tseslint.config(
   {
     ignores: [
       'apps/demo/dist',
+      'apps/demo/public/data',
       'packages/m-charts/dist',
       'node_modules',
       'playwright-report',
