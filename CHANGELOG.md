@@ -43,7 +43,7 @@ should remain unchanged.
 - Added `/m-scatter-webgpu` and `/m-scatter-webgpu-fixture` demo routes with 1M,
   10M, and 25M browser-generated datasets, IndexedDB reuse, full-refresh
   dataset-size and single-/multiple-table controls, aggregation-backend
-  controls, and live diagnostics.
+  controls, compact dataset details, and live diagnostics.
 - Added WebGPU migration, source-copy, API, architecture, validation, benchmark,
   and troubleshooting documentation.
 

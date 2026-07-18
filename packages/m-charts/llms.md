@@ -187,7 +187,9 @@ The WebGPU demo route accepts the same `tables=multi` URL mode as the WebGL2
 scatter route. Its `points` parameter changes only the primary table; a fixed
 build-generated 1,000-record secondary-table sidecar supplies the shared and
 secondary-only columns without loading the full mixed-table fixture.
-The route exposes dataset-size and single-/multiple-table controls.
+The route exposes dataset-size and single-/multiple-table controls, with
+sampling and table-composition notes in a collapsed **Dataset details**
+disclosure.
 Dataset-size, table-mode, X-axis-column, and X-value/index changes use
 full-document navigation to avoid retaining both old and new large WebGPU
 resource sets. X-axis changes reset stale viewport URL ranges.

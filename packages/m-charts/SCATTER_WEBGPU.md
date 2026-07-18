@@ -273,9 +273,10 @@ reduces the visible range.
   10M, and 25M deterministic datasets. On first use, the selected dataset is
   generated in a Web Worker; 250K-point coordinate and style pages are stored
   in versioned IndexedDB records and reused after reload. The route can delete
-  each selected local dataset. Switching dataset sizes performs a full-document
-  navigation so the previous JavaScript and WebGPU resources are released
-  before the next cached dataset is loaded.
+  each selected local dataset. Technical sampling and table-composition notes
+  are available from the compact **Dataset details** disclosure. Switching
+  dataset sizes performs a full-document navigation so the previous JavaScript
+  and WebGPU resources are released before the next cached dataset is loaded.
 - Changing the WebGPU route's X-axis column or switching between X values and
   X index also performs a full-document navigation. The target axis/mode stays
   URL-backed, while stale viewport ranges are cleared so the new representation

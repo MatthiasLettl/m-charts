@@ -221,6 +221,14 @@ test('m-scatter WebGPU combines its selected primary size with the fixed seconda
     'Secondary signal',
   );
 
+  const datasetDetails = page.getByTestId('scatter-webgpu-dataset-details');
+  await expect(datasetDetails).not.toHaveAttribute('open', '');
+  await datasetDetails.getByText('Dataset details', { exact: true }).click();
+  await expect(datasetDetails).toHaveAttribute('open', '');
+  await expect(datasetDetails).toContainText(
+    'Denser views use a deterministic representative sample',
+  );
+
   const tableModeControl = page.getByTestId('scatter-webgpu-table-mode');
   await expect(tableModeControl.getByRole('button', { name: 'Multiple tables' }))
     .toHaveClass(/is-active/u);

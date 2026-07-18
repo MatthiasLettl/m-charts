@@ -2170,6 +2170,24 @@ button.secondary-link:disabled {
   padding-inline: 0.25rem;
 }
 
+.scatter-webgpu-dataset-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.scatter-webgpu-dataset-details summary {
+  min-height: 2rem;
+  padding-inline: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.scatter-webgpu-dataset-details .control-disclosure-body {
+  gap: 0.65rem;
+  padding: 0.1rem 0.5rem 0.55rem;
+}
+
 .scatter-webgpu-dataset-setup {
   align-content: center;
   justify-items: start;

@@ -2433,15 +2433,25 @@ export function MScatterPlotRoute({
                       </button>
                     ))}
                   </div>
-                  <p className="compact-note">
-                    Primary table size. The multiple-table demo adds a fixed 1,000-record
-                    secondary table with shared and secondary-only columns.
-                  </p>
-                  <p className="compact-note">
-                    Settled point views draw every visible record through one million per
-                    subplot. Denser views use a deterministic representative sample;
-                    rectangle and lasso selection still evaluate every source record.
-                  </p>
+                  <details
+                    className="control-disclosure scatter-webgpu-dataset-details"
+                    data-testid="scatter-webgpu-dataset-details"
+                  >
+                    <summary>Dataset details</summary>
+                    <div className="control-disclosure-body">
+                      <p className="compact-note">
+                        Primary table size. The multiple-table demo adds a fixed
+                        1,000-record secondary table with shared and secondary-only
+                        columns.
+                      </p>
+                      <p className="compact-note">
+                        Settled point views draw every visible record through one million
+                        per subplot. Denser views use a deterministic representative
+                        sample; rectangle and lasso selection still evaluate every source
+                        record.
+                      </p>
+                    </div>
+                  </details>
                   {!useHttpWebgpuDataset && datasetState.status === 'loaded' ? (
                     <button
                       className="secondary-link"
