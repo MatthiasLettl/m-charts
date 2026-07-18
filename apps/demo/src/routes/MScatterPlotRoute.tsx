@@ -2490,7 +2490,7 @@ export function MScatterPlotRoute({
                     </span>
                     <div
                       aria-labelledby="scatter-fast-aggregation-backend-label"
-                      className="segmented-control scatter-fast-plot-mode-radio-group"
+                      className="segmented-control scatter-fast-plot-mode-radio-group scatter-fast-aggregation-backend-radio-group"
                       data-testid="scatter-fast-aggregation-backend-select"
                       role="radiogroup"
                     >

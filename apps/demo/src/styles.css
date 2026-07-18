@@ -2565,6 +2565,18 @@ button.secondary-link:disabled {
   word-break: normal;
 }
 
+.scatter-fast-aggregation-backend-radio-group {
+  grid-template-columns: minmax(0, 0.59fr) minmax(0, 1.25fr) minmax(0, 1.16fr);
+}
+
+.scatter-fast-aggregation-backend-radio-group label {
+  padding-inline: 0.25rem;
+}
+
+.scatter-fast-aggregation-backend-radio-group label span {
+  overflow-wrap: anywhere;
+}
+
 .scatter-fast-plot-mode-radio-group label.is-active {
   font-weight: 700;
 }
