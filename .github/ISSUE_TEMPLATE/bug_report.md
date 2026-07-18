@@ -12,7 +12,8 @@ What happened, and what did you expect?
 
 ## Scope
 
-- Chart or area: scatter / histogram / parallel / plot-engine / demo / docs
+- Chart or area: scatter / scatter WebGPU / histogram / parallel / plot-engine / demo / docs
+- Rendering backend: WebGL2 / WebGPU / both / not applicable
 - Integration path: source-copy / repository demo / local package workspace
 - Browser and version:
 

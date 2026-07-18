@@ -20,5 +20,6 @@ What should a source-copy user or contributor be able to do after reading it?
 
 ## Related Area
 
-- Chart or area: scatter / histogram / parallel / plot-engine / demo / governance
+- Chart or area: scatter / scatter WebGPU / histogram / parallel / plot-engine / demo / governance
+- Rendering backend: WebGL2 / WebGPU / both / not applicable
 - Public usage path: source-copy integration

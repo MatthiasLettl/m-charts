@@ -1,9 +1,10 @@
 # m-charts Integration Guide
 
 This file is the detailed integration reference for agents and humans using the
-`m-charts` package in another application. It documents the reusable custom
-WebGL2 plot library in this repository: shared plot-engine primitives, scatter,
-histogram, and parallel-coordinate engines.
+`m-charts` package in another application. It documents the reusable WebGL2 and
+WebGPU plot library in this repository. WebGL2 powers scatter, histogram, and
+parallel-coordinate engines; WebGPU is an alternative point, bubble, and
+heat-map scatter renderer over the same public scatter contract.
 
 `m-charts` is not published to npm yet, and `npm install m-charts` is not a
 supported consumer path. The current public usage path is source-copy
@@ -17,6 +18,7 @@ the intended package boundary for a future package release:
 ```ts
 import { createEmitter } from 'm-charts/plot-engine';
 import { createScatterPlot } from 'm-charts/m-scatter';
+import { createScatterPlot as createWebgpuScatterPlot } from 'm-charts/m-scatter-webgpu';
 import { createHistogramPlot } from 'm-charts/m-histogram';
 import { createParallelPlot } from 'm-charts/m-parallel';
 ```
@@ -31,8 +33,11 @@ Reusable package source lives under:
 
 ```text
 packages/m-charts/src/plot-engine/core
+packages/m-charts/src/plot-engine-webgpu/core
 packages/m-charts/src/m-scatter/core
 packages/m-charts/src/m-scatter/engine
+packages/m-charts/src/m-scatter-webgpu/core
+packages/m-charts/src/m-scatter-webgpu/engine
 packages/m-charts/src/m-histogram/core
 packages/m-charts/src/m-histogram/engine
 packages/m-charts/src/m-parallel/core
@@ -60,26 +65,158 @@ source-copy integrations, rewrite those imports to the copied local module
 paths. Compatibility aliases are also available for `m-charts/scatter`,
 `m-charts/parallel`, and `m-charts/histogram` in local workspace builds.
 
+## Migrating Existing WebGL2 Scatter To WebGPU
+
+Treat WebGPU as a renderer switch, not a new chart contract. Keep the existing
+scatter columns, spec, viewport, options, bindings, commands, events, overlays,
+callback payloads, controlled updates, and shared CSS hooks.
+
+For a workspace package consumer, retain the factory name and change only the
+entry point:
+
+```diff
+- import { createScatterPlot } from 'm-charts/m-scatter';
++ import { createScatterPlot } from 'm-charts/m-scatter-webgpu';
+```
+
+For the supported external source-copy path:
+
+1. Keep `plot-engine`, `m-scatter/core`, and `m-scatter/engine`.
+2. Add `plot-engine-webgpu`, `m-scatter-webgpu/core`, and
+   `m-scatter-webgpu/engine`; add `m-scatter-webgpu/adapters` only for
+   known-count record streams.
+3. Keep data/core imports from `m-scatter/core` and change the factory import
+   from `m-scatter/engine/index.js` to
+   `m-scatter-webgpu/engine/index.js`.
+4. Add `@webgpu/types` when host TypeScript DOM declarations lack WebGPU.
+5. Await `plot.interactive` for the first displayed frame or `plot.ready` for
+   the first complete settled frame, and handle rejection.
+6. If WebGL2 fallback is product policy, call `diagnoseWebgpuSupport()`, attempt
+   WebGPU, dispose a failed partial WebGPU instance, then create the original
+   WebGL2 scatter in the same host. Feature detection alone does not cover
+   dataset-specific device limits, allocation, or shader failures.
+
+The WebGL2-only creation fields `forceWebglUnavailable`,
+`preserveDrawingBuffer`, and `rendererFactory` are accepted and ignored by the
+WebGPU factory. WebGPU adds the creation-only `aggregationBackend`,
+`indexedStyle`, `packedStyles`, and `requestTimestampQuery` options; recreate
+the plot to change them. The command surface is retained, including
+renderer-owned `playEasterEgg()` playback on both backends. The full human guide
+and copy-ready fallback example are in
+`docs/source-copy-integration.md` and
+`docs/examples/scatter-webgpu-migration.md`.
+
 ## Architecture Mental Model
+
+The isolated `m-scatter-webgpu` package imports the public scatter contract and
+engine, supplies a WebGPU renderer factory, and adds `interactive` and `ready`
+promises plus
+WebGPU diagnostics. It supports point, bubble, and heat-map modes. Commands, events, overlays,
+bindings, selection payloads, hover, measurement, and marker behavior remain
+the scatter contract (markers remain point-only). Bubble mode retains exact
+duplicate counts in a bounded one-million-aggregate LOD per subplot. Heat-map
+mode uploads populated cells only and uses packed typed membership for complete
+cell hover and selection. Sorted-X aggregate modes default to an embedded
+Rust/WASM resident-memory session: source columns copy once, repeated builds
+and result views are zero-copy, and `aggregationBackend`/`aggregationWasm`
+diagnostics expose setup, build, binary, and resident-memory details. The exact
+TypeScript builders are the automatic compatibility fallback. The WebGPU plot
+option `aggregationBackend?: 'auto' | 'rust-wasm' | 'typescript'` permits
+explicit profiling; diagnostics expose the requested value as
+`aggregationBackendPreference` and the implementation that ran as
+`aggregationBackend`.
+`indexedStyle: true` procedurally derives styles from
+point indices when style columns are absent, without per-point style storage;
+GPU resources and lifecycle live under
+`plot-engine-webgpu` and `m-scatter-webgpu`.
+`packedStyles` accepts 4-byte style records directly. Existing 8-byte and legacy
+12-byte pages declare their stride for bounded conversion. The paged demo uses
+this path with byte-sized categorical/boolean Y columns, scaled 16-bit signals,
+and generated X storage. Its 1M/10M/25M pages are generated in a Web Worker and
+persisted in versioned IndexedDB storage by default in development and
+production; size changes reload the document to release the previous large
+allocations, and `?webgpuData=http` enables the diagnostic HTTP page loader.
+Immutable coordinate and packed-style buffers are
+filled while mapped and unmapped once, avoiding expanded CPU style arrays,
+repeated `writeBuffer` staging copies, and queue fences during large-dataset
+initialization.
+The 25M path uses viewport-relative integer X origins, a 1.5x native-resolution
+interaction cache, immediate cached viewport previews, and a settled LOD capped
+at one million rendered points per subplot. The LOD renders all visible points
+through that threshold and otherwise chooses one deterministic,
+source-ordered real point from each contiguous source bucket, preserves that
+point's packed style, and reconstructs the skipped bucket's alpha coverage.
+Sampling is globally bucket-aligned so nearby settled viewports do not reshuffle
+unchanged buckets. When the sorted-X visible range fits the point budget the
+stride becomes one and the settled view is exact. Hover considers only the
+rendered representatives, and selected overlays intersect the exact selection
+with the same sample so both refine with the base points on zoom. Selection
+payloads and filters remain exact. High-density views additionally draw
+source-ordered must-keep indices produced during compact-hover indexing: all
+values for byte-categorical blocks with at most 16 values, numeric Y minima and
+maxima, and the largest styled point in each 4,096-point block. This guarantees
+the strongest defined categorical, numeric-extrema, and size outliers while the
+base sample preserves distribution texture. `settledExact`,
+`settledPointCoverage`, `lodPointCount`, `lodPointBudget`, `lodStride`, and
+`overviewRepresentativeCount` expose the active tradeoff.
+
+`m-charts/m-scatter-webgpu` is an export/type superset of
+`m-charts/m-scatter`: an existing integration can retain
+`createFastScatterPlot` or `createScatterPlot` and change only the import path.
+The same option object is accepted, including ignored WebGL2 creation fields.
+The WebGPU-only `aggregationBackend`, `indexedStyle`, `packedStyles`, and
+`requestTimestampQuery` fields are creation-only and are intentionally excluded
+from the WebGPU instance's `update` type. Shared host/canvas CSS classes remain
+present alongside WebGPU-specific classes. WebGPU initialization, device loss,
+recovery, and recovery failure feed the shared render-state, context, and
+metrics events; the promise fields remain the more precise startup gates.
+
+Compact hover visits the eligible block nearest the pointer first and expands
+outward in sorted-X order. It stops only when the closest possible X distance
+of every unvisited eligible block is greater than the exact best 2D distance,
+so categorical hover remains exact without scanning the full pixel-radius
+window. Point-size changes bypass cached image morphology and render the bounded
+settled pass directly; route URL writes are idle-debounced.
+The optional `m-scatter-webgpu/adapters` layer converts known-count JSON
+streams or application `AsyncIterable` record batches into preallocated typed
+columns. It incrementally parses the top-level `records` array and preserves
+datetime origins across batch boundaries; callers must pass the stream rather
+than an already materialized JSON object.
+
+The WebGPU demo route accepts the same `tables=multi` URL mode as the WebGL2
+scatter route. Its `points` parameter changes only the primary table; a fixed
+build-generated 1,000-record secondary-table sidecar supplies the shared and
+secondary-only columns without loading the full mixed-table fixture.
+The route exposes dataset-size and single-/multiple-table controls, with
+sampling and table-composition notes in a collapsed **Dataset details**
+disclosure.
+Dataset-size, table-mode, X-axis-column, and X-value/index changes use
+full-document navigation to avoid retaining both old and new large WebGPU
+resource sets. X-axis changes reset stale viewport URL ranges.
 
 The custom plot packages use three layers.
 
 1. `packages/m-charts/src/plot-engine/core`
    Shared, chart-agnostic browser primitives: disposables, typed event emitters,
-   normalized DOM pointer/wheel/key input, brush metadata, resize and WebGL
+   normalized DOM pointer/wheel/key input, brush metadata, resize and WebGL2
    lifecycle helpers, geometry, metrics, and RAF scheduling.
+
+   `packages/m-charts/src/plot-engine-webgpu/core` adds WebGPU adapter/device
+   lifecycle, support diagnostics, limit snapshots, and timestamp profiling.
 
 2. `packages/m-charts/src/<viz>/core`
    Framework-free visualization logic: typed input contracts, typed-array buffer
    builders, domains, transforms, layout, formatting, hover/inspection lookup,
-   selection math, aggregation, and WebGL renderer helpers.
+   selection math, aggregation, and backend-specific renderer helpers.
 
 3. `packages/m-charts/src/<viz>/engine`
    The reusable plot API: creates canvas elements inside a host DOM element,
-   owns renderer lifecycle, exposes `plot.commands`, emits typed events through
+   owns backend-neutral renderer lifecycle, exposes `plot.commands`, emits typed events through
    `plot.on(...)`, reconciles controlled host state through `plot.update(...)`,
    stores serializable overlay descriptors, supports optional bindings through
-   `plot.use(...)`, and disposes DOM/WebGL resources.
+   `plot.use(...)`, and disposes DOM/renderer resources. Scatter's WebGL2 and
+   WebGPU factories inject separate backend adapters into this shared engine;
+   neither renderer is imported by the common engine implementation.
 
 Host applications should treat the engine as an imperative rendering island.
 React or another host framework owns data loading, app state, URL/search params,
@@ -119,10 +256,19 @@ packages/m-charts/src/m-parallel/core
 packages/m-charts/src/m-parallel/engine
 ```
 
+WebGPU scatter additionally requires:
+
+```text
+packages/m-charts/src/plot-engine-webgpu/core
+packages/m-charts/src/m-scatter-webgpu/core
+packages/m-charts/src/m-scatter-webgpu/engine
+```
+
 Optional helpers:
 
 ```text
 packages/m-charts/src/m-scatter/react/overlays.tsx
+packages/m-charts/src/m-scatter-webgpu/adapters
 packages/m-charts/src/<viz>/react/colorRules.ts
 packages/m-charts/src/m-scatter/workers
 packages/m-charts/src/<viz>/adapters
@@ -231,6 +377,7 @@ materialized records for export or panel state.
 
 Use a host `div` ref, create the engine in an effect, subscribe to events, attach
 bindings, push state back through `update`, and dispose on unmount.
+The concrete example below uses the WebGL2 scatter entry point.
 
 ```tsx
 import { useEffect, useRef, useState } from 'react';
@@ -326,6 +473,10 @@ render the same descriptors into SVG, DOM, or canvas.
 The example feeds `columns` and `spec` through `update` because those props are
 controlled by the host. If a product treats data/spec changes as a new plot
 identity instead, dispose and recreate the engine on those identity changes.
+For WebGPU, switch the imports and instance type to `m-scatter-webgpu`, observe
+`interactive`/`ready` rejection inside the effect, and dispose before any
+WebGL2 fallback. The example's Easter-egg binding works unchanged with either
+renderer.
 
 ## Default Interaction Summary
 
@@ -360,7 +511,9 @@ Scatter:
 - Wheel with no `Alt`/`Shift`/`Ctrl`: request point-size adjustment, or heatmap
   bin-size adjustment in heatmap mode. The host persists the requested value.
 - `Alt` + wheel zooms X, `Shift` + wheel zooms Y, and `Ctrl` + wheel zooms X/Y.
-  Shift-wheel can use horizontal wheel delta when vertical delta is zero.
+  Shift-wheel can use horizontal wheel delta when vertical delta is zero. Zoom
+  deltas are accumulated once per animation frame; viewport events use
+  `phase: 'preview'` during the burst and emit one `phase: 'commit'` after idle.
 - Middle drag pans X/Y. Middle click with no meaningful movement emits
   `viewportundorequest` with source `pointer`.
 - `Q` emits the same `viewportundorequest` with source `keyboard`.
@@ -699,7 +852,7 @@ Retrieval rules:
 
 ## Scatter Reference
 
-Entry points:
+WebGL2 entry point:
 
 ```ts
 import {
@@ -715,6 +868,21 @@ import {
 } from 'm-charts/m-scatter';
 ```
 
+WebGPU-compatible entry point:
+
+```ts
+import {
+  createDefaultScatterBindings,
+  createScatterPlot,
+  type FastScatterWebgpuPlotOptions,
+  type FastScatterWebgpuPlotInstance,
+} from 'm-charts/m-scatter-webgpu';
+```
+
+The WebGPU entry point is an export/type superset of the WebGL2 scatter entry
+point. Both use the shared contracts below; WebGPU adds asynchronous startup and
+diagnostics rather than a separate interaction API.
+
 Core capabilities:
 
 - Multiple stacked XY subplots sharing one X column.
@@ -726,7 +894,7 @@ Core capabilities:
 - Selection by rectangle or lasso with source indices and query-ready filters.
 - Hover, measurement, point markers, navigator, focused subplot, out-of-range
   markers, point-size adjustment requests, heatmap bin-size requests, metrics,
-  and WebGL context events.
+  render-state events, and WebGL2 context or WebGPU device lifecycle events.
 
 Minimal data shape:
 
@@ -771,7 +939,8 @@ const viewport = {
 Full reusable scatter input contract:
 
 ```ts
-type FastScatterTypedNumericArray = Float32Array | Float64Array;
+type FastScatterTypedNumericArray =
+  Float32Array | Float64Array | Uint8Array | Uint16Array | Uint32Array;
 type FastScatterColorArray = Uint8Array | Uint32Array;
 type FastScatterVisualizationMode = 'points' | 'bubble' | 'heatmap';
 type FastScatterInteractionMode = 'zoom' | 'pan' | 'select' | 'lasso' | 'hover' | 'measure';
@@ -842,6 +1011,31 @@ Important `createScatterPlot` options:
   `rendererFactory`, `forceWebglUnavailable`.
 - Callbacks: `onViewportChange`, `onSelectionChange`, `onHoverChange`,
   `onMeasurementChange`, `onMetrics`.
+
+Those are the shared/WebGL2 options. The WebGPU factory accepts the same object,
+ignores WebGL2-only creation fields, and adds:
+
+```ts
+interface FastScatterWebgpuPlotOptions extends FastScatterPlotOptions {
+  aggregationBackend?: 'auto' | 'rust-wasm' | 'typescript';
+  indexedStyle?: boolean;
+  packedStyles?: FastScatterWebgpuPackedStyles;
+  requestTimestampQuery?: boolean;
+}
+
+interface FastScatterWebgpuPlotInstance extends FastScatterPlotInstance {
+  readonly interactive: Promise<void>;
+  readonly ready: Promise<void>;
+  getWebgpuDiagnostics(): FastScatterWebgpuDiagnostics;
+}
+```
+
+All four WebGPU-only options are creation-only and excluded from the WebGPU
+instance's `update` type. `interactive` resolves after the first displayed
+frame; `ready` resolves after the first complete settled frame. Both reject on
+WebGPU startup failure. `getWebgpuDiagnostics()` reports readiness, active and
+requested aggregation backends, device/timestamp support, resident/cache
+memory, LOD exactness/coverage, and submitted/coalesced work.
 
 Full option and callback shape:
 
@@ -1208,10 +1402,12 @@ plot.use(
 );
 ```
 
-With this setup, `sequence` is the typed keyboard trigger: typing `future` while
+With either the WebGL2 `m-scatter` renderer or the WebGPU
+`m-scatter-webgpu` renderer, `sequence` is the typed keyboard trigger:
+typing `future` while
 the plot interaction surface or configured `inputElement` is focused calls
 `plot.commands.playEasterEgg()`. The built-in renderer-owned playback
-temporarily replaces only the first rendered subplot, draws WebGL points that
+temporarily replaces only the first rendered subplot, draws GPU points that
 form `Future`, uses per-character rainbow colors by default, draws the word in
 normalized subplot coordinates so it remains visible after zooming, panning, or
 selecting records, then restores normal rendering automatically. It does not
@@ -2291,6 +2487,10 @@ interpret it.
   scheduling.
 - Scatter records should be sorted by nondecreasing X where possible; hover,
   selection, summary, and visible calculations use that ordering.
+- For multi-million-point hover, create a reusable two-dimensional typed-array
+  index with `createFastScatterHoverIndex(columns, { yKeys })` and pass it as
+  `hoverIndex`. It remains valid across zoom/pan and preserves synchronous
+  `hoverAtPoint` results; omitting it uses the sorted-X fallback.
 - Histogram raw continuous bin-size changes should be debounced and can defer
   source-index membership materialization until export or settled UI state.
 - Parallel should build `webglSegmentBuffers` once with
@@ -2308,6 +2508,8 @@ Useful focused checks after changing reusable code or this guide:
 ```sh
 pnpm typecheck
 pnpm lint
+pnpm lint:rust
+pnpm check:scatter-wasm
 pnpm exec tsx tests/unit/scatterFastCoreBoundary.test.ts
 pnpm exec tsx tests/unit/scatterFastEngine.test.ts
 pnpm exec tsx tests/unit/scatterFastEngineBindings.test.ts

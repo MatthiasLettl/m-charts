@@ -1388,7 +1388,8 @@ kbd {
   text-shadow: none;
 }
 
-.scatter-fast-webgl-host {
+.scatter-fast-webgl-host,
+.scatter-fast-webgpu-host {
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -1398,11 +1399,13 @@ kbd {
   cursor: default;
 }
 
-.scatter-fast-webgl-host[data-cursor="crosshair"] {
+.scatter-fast-webgl-host[data-cursor="crosshair"],
+.scatter-fast-webgpu-host[data-cursor="crosshair"] {
   cursor: crosshair;
 }
 
-.scatter-fast-webgl-canvas {
+.scatter-fast-webgl-canvas,
+.scatter-fast-webgpu-canvas {
   display: block;
   width: 100%;
   height: 100%;
@@ -2145,6 +2148,66 @@ button.secondary-link:disabled {
   opacity: 0.55;
 }
 
+.scatter-webgpu-dataset-controls,
+.scatter-webgpu-dataset-setup,
+.scatter-webgpu-generation-progress {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.scatter-webgpu-dataset-controls {
+  margin-bottom: 0.75rem;
+}
+
+.segmented-control.scatter-webgpu-table-mode-control {
+  display: grid;
+  grid-template-columns: minmax(0, 0.44fr) minmax(0, 0.56fr);
+  gap: 0.35rem;
+}
+
+.scatter-webgpu-table-mode-control button {
+  min-width: 0;
+  padding-inline: 0.25rem;
+}
+
+.scatter-webgpu-dataset-details {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.scatter-webgpu-dataset-details summary {
+  min-height: 2rem;
+  padding-inline: 0.5rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.scatter-webgpu-dataset-details .control-disclosure-body {
+  gap: 0.65rem;
+  padding: 0.1rem 0.5rem 0.55rem;
+}
+
+.scatter-webgpu-dataset-setup {
+  align-content: center;
+  justify-items: start;
+}
+
+.scatter-webgpu-dataset-setup .segmented-control {
+  flex-wrap: wrap;
+}
+
+.scatter-webgpu-generation-progress {
+  width: min(100%, 28rem);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.scatter-webgpu-generation-progress progress {
+  width: 100%;
+}
+
 .scatter-fast-reset-button,
 .route-reset-button {
   align-self: start;
@@ -2470,6 +2533,48 @@ button.secondary-link:disabled {
   font-weight: 700;
 }
 
+.scatter-fast-aggregation-backend-indicator {
+  display: flex;
+  align-items: center;
+  min-height: 1.8rem;
+  gap: 0.42rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 0.3rem 0.48rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.scatter-fast-aggregation-backend-indicator > span {
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #98a2b3;
+}
+
+.scatter-fast-aggregation-backend-indicator[data-backend='rust-wasm'] {
+  border-color: #6ce9a6;
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.scatter-fast-aggregation-backend-indicator[data-backend='rust-wasm'] > span {
+  background: #12b76a;
+}
+
+.scatter-fast-aggregation-backend-indicator[data-backend='typescript'] {
+  border-color: #84caff;
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.scatter-fast-aggregation-backend-indicator[data-backend='typescript'] > span {
+  background: #2e90fa;
+}
+
 .scatter-fast-plot-mode-radio-group {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2487,6 +2592,18 @@ button.secondary-link:disabled {
 .scatter-fast-plot-mode-radio-group label span {
   overflow-wrap: normal;
   word-break: normal;
+}
+
+.scatter-fast-aggregation-backend-radio-group {
+  grid-template-columns: minmax(0, 0.59fr) minmax(0, 1.25fr) minmax(0, 1.16fr);
+}
+
+.scatter-fast-aggregation-backend-radio-group label {
+  padding-inline: 0.25rem;
+}
+
+.scatter-fast-aggregation-backend-radio-group label span {
+  overflow-wrap: anywhere;
 }
 
 .scatter-fast-plot-mode-radio-group label.is-active {
@@ -3579,6 +3696,7 @@ button.secondary-link:disabled {
 :root[data-theme="dark"] .scatter-fast-chart-shell,
 :root[data-theme="dark"] .scatter-fast-render-shell,
 :root[data-theme="dark"] .scatter-fast-webgl-host,
+:root[data-theme="dark"] .scatter-fast-webgpu-host,
 :root[data-theme="dark"] .scatter-fast-placeholder,
 :root[data-theme="dark"] .parallel-fast-chart-shell,
 :root[data-theme="dark"] .parallel-fast-chart-host {
@@ -3963,6 +4081,18 @@ button.secondary-link:disabled {
 
 :root[data-theme="dark"] .scatter-fast-prototype-shell .scatter-fast-overlay-grid-line {
   stroke: var(--fast-route-grid);
+}
+
+:root[data-theme="dark"] .scatter-fast-aggregation-backend-indicator[data-backend='rust-wasm'] {
+  border-color: rgba(50, 213, 131, 0.5);
+  background: rgba(5, 150, 105, 0.16);
+  color: #6ce9a6;
+}
+
+:root[data-theme="dark"] .scatter-fast-aggregation-backend-indicator[data-backend='typescript'] {
+  border-color: rgba(83, 177, 253, 0.5);
+  background: rgba(21, 112, 239, 0.16);
+  color: #84caff;
 }
 
 :root[data-theme="dark"] .scatter-fast-prototype-shell .scatter-fast-overlay-axis-line,

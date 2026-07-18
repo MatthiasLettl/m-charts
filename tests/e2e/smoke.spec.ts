@@ -20,7 +20,21 @@ test.beforeAll(() => {
     '--schema-out',
     `${dataDir}/scatter-fast-e2e-schema.json`,
   ]);
-  ensureData('mixed-table-e2e.json', [
+  ensureData('scatter-webgpu-10m.json', [
+    '--kind',
+    'scatter-webgpu',
+    '--count',
+    '10000',
+    '--page-size',
+    '2500',
+    '--seed',
+    '1',
+    '--out',
+    `${dataDir}/scatter-webgpu-10m.json`,
+    '--schema-out',
+    `${dataDir}/scatter-fast-schema.json`,
+  ]);
+  ensureData('mixed-table-e2e.secondary.json', [
     '--kind',
     'mixed-tables',
     '--count',
@@ -31,6 +45,8 @@ test.beforeAll(() => {
     '1',
     '--out',
     `${dataDir}/mixed-table-e2e.json`,
+    '--secondary-out',
+    `${dataDir}/mixed-table-e2e.secondary.json`,
   ]);
   ensureData('parallel-e2e.json', [
     '--kind',
@@ -59,14 +75,23 @@ test('overview links only custom plot routes and preserves theme', async ({ page
 
   await expect(
     page.getByRole('heading', {
-      name: 'WebGL2 charts for fast, interactive exploration of large datasets.',
+      name: 'WebGL2 and WebGPU charts for fast, interactive exploration of large datasets.',
     }),
   ).toBeVisible();
   await expect(page.getByText('MIT license')).toBeVisible();
   await expect(page.getByRole('link', { name: 'MatthiasLettl/m-charts' })).toBeVisible();
-  await expect(page.getByText('m-scatter', { exact: true })).toBeVisible();
-  await expect(page.getByText('m-parallel', { exact: true })).toBeVisible();
-  await expect(page.getByText('m-histogram', { exact: true })).toBeVisible();
+  await expect(page.getByText('m-scatter WebGL2', { exact: true })).toBeVisible();
+  await expect(page.getByText('m-parallel WebGL2', { exact: true })).toBeVisible();
+  await expect(page.getByText('m-histogram WebGL2', { exact: true })).toBeVisible();
+  const webgpuCard = page.locator('.prototype-card').filter({ hasText: 'm-scatter WebGPU' });
+  await expect(webgpuCard.getByRole('link', { name: 'One table' })).toHaveAttribute(
+    'href',
+    '/m-scatter-webgpu?points=1000000&theme=dark',
+  );
+  await expect(webgpuCard.getByRole('link', { name: 'Multiple tables' })).toHaveAttribute(
+    'href',
+    '/m-scatter-webgpu?points=1000000&tables=multi&theme=dark',
+  );
 
   await page.getByRole('link', { name: 'One table' }).first().click();
   await expect(page).toHaveURL(/\/m-scatter\?mode=hover&axis=x&theme=dark$/);
@@ -81,11 +106,19 @@ test('overview links only custom plot routes and preserves theme', async ({ page
 });
 
 test('theme switch is URL backed on custom routes', async ({ page }) => {
-  await page.goto('/m-scatter?mode=hover&axis=x');
+  await page.goto(
+    '/m-scatter?mode=hover&axis=x&__e2eScatterFastSchemaDataset=1&__e2eScatterFastSchemaDataUrl=/data/scatter-fast-e2e.json&__e2eScatterFastSchemaUrl=/data/scatter-fast-e2e-schema.json',
+  );
+  await expect(page.getByTestId('scatter-fast-chart-shell')).toHaveAttribute(
+    'data-render-state',
+    'ready',
+  );
   await page.getByTestId('theme-mode-switch').click();
-  await expect(page).toHaveURL(/\/m-scatter\?mode=hover&axis=x&theme=dark$/);
+  await expect.poll(() => new URL(page.url()).searchParams.get('theme')).toBe('dark');
+  expect(new URL(page.url()).searchParams.get('mode')).toBe('hover');
+  expect(new URL(page.url()).searchParams.get('axis')).toBe('x');
   await page.getByTestId('theme-mode-switch').click();
-  await expect(page).toHaveURL(/\/m-scatter\?mode=hover&axis=x$/);
+  await expect.poll(() => new URL(page.url()).searchParams.get('theme')).toBeNull();
 });
 
 test('public chart pages expose overview link and hide package fixtures', async ({ page }) => {
@@ -136,6 +169,346 @@ test('m-scatter routes render one table multi table and package fixture', async 
     'data-renderer',
     'webgl2-points',
   );
+});
+
+test('m-scatter WebGPU route exposes the dedicated backend or a useful availability error', async ({
+  page,
+}) => {
+  await page.goto('/m-scatter-webgpu?points=1000&mode=pan&axis=xy&webgpuData=http');
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect(chart).toBeVisible();
+  await expect(chart).toHaveAttribute('data-renderer', 'webgpu-points');
+  await expect(chart).toHaveAttribute('data-record-count', '1000');
+  await expect(
+    page.locator('.scatter-fast-engine-host.scatter-fast-webgpu-host'),
+  ).toHaveCount(1);
+  await expect(
+    page.locator('canvas.scatter-fast-engine-canvas.scatter-fast-webgpu-canvas'),
+  ).toHaveCount(1);
+  await expect(page.getByTestId('scatter-fast-dataset-source-format')).toHaveText(
+    'paged-webgpu-binary',
+  );
+  await expect(page.getByTestId('scatter-fast-hit-region')).toHaveCount(3);
+  await expect
+    .poll(async () => chart.getAttribute('data-render-state'), { timeout: 30_000 })
+    .toMatch(/^(ready|error)$/u);
+
+  const state = await chart.getAttribute('data-render-state');
+  if (state === 'error') {
+    await expect(page.getByTestId('scatter-fast-render-error')).toContainText(/WebGPU|GPU adapter/u);
+  } else {
+    await expect(page.locator('[data-testid="scatter-fast-webgpu-canvas"]')).toHaveCount(1);
+  }
+});
+
+test('m-scatter WebGPU combines its selected primary size with the fixed secondary table', async ({
+  page,
+}) => {
+  await page.goto(
+    '/m-scatter-webgpu?points=1000&tables=multi&webgpuData=http&__e2eFastTableFixture=/data/mixed-table-e2e.json',
+  );
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  const diagnostics = page.getByTestId('scatter-fast-route-diagnostics');
+  await expect(chart).toHaveAttribute('data-record-count', '1100', { timeout: 30_000 });
+  await expect(diagnostics).toHaveAttribute('data-table-mode', 'multi');
+  await expect(diagnostics).toHaveAttribute('data-table-count', '2');
+  await expect(diagnostics).toHaveAttribute(
+    'data-table-record-counts',
+    'benchmark-primary:1000,benchmark-secondary:100',
+  );
+  await expect(page.getByTestId('scatter-fast-hit-region')).toHaveCount(5);
+  await expect(page.getByTestId('scatter-fast-x-axis')).toContainText(
+    'Secondary signal',
+  );
+
+  const datasetDetails = page.getByTestId('scatter-webgpu-dataset-details');
+  await expect(datasetDetails).not.toHaveAttribute('open', '');
+  await datasetDetails.getByText('Dataset details', { exact: true }).click();
+  await expect(datasetDetails).toHaveAttribute('open', '');
+  await expect(datasetDetails).toContainText(
+    'Denser views use a deterministic representative sample',
+  );
+
+  const tableModeControl = page.getByTestId('scatter-webgpu-table-mode');
+  await expect(tableModeControl.getByRole('button', { name: 'Multiple tables' }))
+    .toHaveClass(/is-active/u);
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker = 'old-document';
+  });
+  await tableModeControl.getByRole('button', { name: 'Single table' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('tables')).toBeNull();
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker ?? null,
+  )).toBeNull();
+  await expect(chart).toHaveAttribute('data-record-count', '1000', { timeout: 30_000 });
+  await expect(diagnostics).toHaveAttribute('data-table-mode', 'single');
+
+  await tableModeControl.getByRole('button', { name: 'Multiple tables' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('tables')).toBe('multi');
+  await expect(chart).toHaveAttribute('data-record-count', '1100', { timeout: 30_000 });
+  await expect(diagnostics).toHaveAttribute('data-table-mode', 'multi');
+
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker = 'old-document';
+  });
+  await page.getByRole('button', { name: 'X index' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('xMode')).toBe('index');
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker ?? null,
+  )).toBeNull();
+  await expect(chart).toHaveAttribute('data-record-count', '1100');
+
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker = 'old-document';
+  });
+  await page.getByTestId('scatter-fast-x-axis').selectOption('secondarySignal');
+  await expect.poll(() => new URL(page.url()).searchParams.get('xAxis'))
+    .toBe('secondarySignal');
+  expect(new URL(page.url()).searchParams.get('xMode')).toBe('value');
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker ?? null,
+  )).toBeNull();
+  await expect(chart).toHaveAttribute('data-record-count', '1100');
+});
+
+test('m-scatter WebGPU generates, reuses, switches, and deletes its browser-local dataset', async ({
+  page,
+}) => {
+  await page.goto('/m-scatter-webgpu?points=1000&theme=dark');
+  await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toBeVisible();
+  await page.getByTestId('scatter-webgpu-generate-dataset').click();
+  await expect(page.getByTestId('scatter-fast-chart-shell')).toHaveAttribute(
+    'data-record-count',
+    '1000',
+    { timeout: 30_000 },
+  );
+  await expect(page.getByTestId('scatter-fast-dataset-source-format')).toHaveText(
+    'indexeddb-webgpu-binary',
+  );
+
+  await page.reload();
+  await expect(page.getByTestId('scatter-fast-chart-shell')).toHaveAttribute(
+    'data-record-count',
+    '1000',
+    { timeout: 30_000 },
+  );
+  await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker = 'old-document';
+  });
+  await page.getByTestId('scatter-webgpu-dataset-size').getByRole('button', {
+    name: '1M',
+  }).click();
+  await expect(page).toHaveURL(/points=1000000/u);
+  expect(new URL(page.url()).searchParams.get('theme')).toBe('dark');
+  await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker ?? null,
+  )).toBeNull();
+
+  await page.goto('/m-scatter-webgpu?points=1000&theme=dark');
+  await expect(page.getByTestId('scatter-fast-chart-shell')).toHaveAttribute(
+    'data-record-count',
+    '1000',
+    { timeout: 30_000 },
+  );
+  await page.getByTestId('scatter-webgpu-delete-dataset').click();
+  await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toBeVisible();
+});
+
+test('m-scatter WebGPU opt-in renders and preserves pan and selection interactions', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const gpuErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /WebGPU|GPUValidation|WGSL/u.test(message.text())) {
+      gpuErrors.push(message.text());
+    }
+  });
+  page.on('pageerror', (error) => gpuErrors.push(error.message));
+  test.skip(
+    process.env.M_CHARTS_ENABLE_WEBGPU_E2E !== '1',
+    'Set M_CHARTS_ENABLE_WEBGPU_E2E=1 on a WebGPU-capable machine.',
+  );
+  await page.goto(
+    '/m-scatter-webgpu?points=10000&mode=pan&axis=xy&__e2eScatterFastSelectionHook=1&__e2eScatterFastRouteStateHook=1',
+  );
+  await page.getByTestId('scatter-webgpu-generate-dataset').click();
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect(chart).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+  await page.evaluate(() => {
+    const hook = (globalThis as typeof globalThis & {
+      __scatterFastRouteStateTestHook?: {
+        setSelectedSourceIndices(sourceIndices: Uint32Array): void;
+      };
+    }).__scatterFastRouteStateTestHook;
+    hook?.setSelectedSourceIndices(Uint32Array.from({ length: 1000 }, (_, index) => index));
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const hook = (globalThis as typeof globalThis & {
+      __scatterFastRouteStateTestHook?: {
+        getWebgpuDiagnostics(): { selectedStorageMode: string } | null;
+      };
+    }).__scatterFastRouteStateTestHook;
+    return hook?.getWebgpuDiagnostics()?.selectedStorageMode ?? null;
+  })).toBe('bitset');
+  const hitRegion = page.getByTestId('scatter-fast-hit-region').first();
+  const box = await hitRegion.boundingBox();
+  if (box === null) throw new Error('WebGPU scatter hit region is unavailable.');
+  await page.mouse.move(box.x + box.width * 0.45, box.y + box.height * 0.5);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.55, { steps: 5 });
+  await page.mouse.up({ button: 'middle' });
+  await expect
+    .poll(() =>
+      page.getByTestId('scatter-fast-route-diagnostics').getAttribute('data-drag-pan-ms'),
+    )
+    .not.toBe('pending');
+
+  await page.goto(
+    '/m-scatter-webgpu?points=10000&mode=select&axis=xy&__e2eScatterFastSelectionHook=1',
+  );
+  await expect(chart).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+  await expect(chart).toHaveAttribute('data-mode', 'select');
+  const selectionBox = await page.getByTestId('scatter-fast-hit-region').first().boundingBox();
+  if (selectionBox === null) throw new Error('WebGPU selection hit region is unavailable.');
+  // The center of this size-relative fixture is in the steady phase, so keep
+  // both the X range and categorical Y band inside that populated region.
+  await page.mouse.move(selectionBox.x + selectionBox.width * 0.45, selectionBox.y + selectionBox.height * 0.3);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(selectionBox.x + selectionBox.width * 0.75, selectionBox.y + selectionBox.height * 0.45, { steps: 5 });
+  await page.mouse.up({ button: 'right' });
+  await expect
+    .poll(() => page.evaluate(() =>
+      (globalThis as typeof globalThis & {
+        __scatterFastSelectionTestHook?: { getSelectedCount(): number };
+      }).__scatterFastSelectionTestHook?.getSelectedCount() ?? 0,
+    ))
+    .toBeGreaterThan(0);
+
+  for (const visualizationMode of ['bubble', 'heatmap'] as const) {
+    await page.goto(
+      `/m-scatter-webgpu?points=10000&mode=${visualizationMode === 'heatmap' ? 'select' : 'pan'}&axis=xy&viz=${visualizationMode}&__e2eScatterFastSelectionHook=1&__e2eScatterFastRouteStateHook=1`,
+    );
+    await expect(chart).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+    await expect(page.getByTestId('scatter-fast-route-diagnostics')).toHaveAttribute(
+      'data-visualization-mode',
+      visualizationMode,
+    );
+    await expect(page.getByTestId('scatter-fast-webgpu-canvas')).toHaveAttribute(
+      'data-renderer',
+      `webgpu-${visualizationMode}`,
+    );
+    await expect.poll(() => page.evaluate(() => {
+      const hook = (globalThis as typeof globalThis & {
+        __scatterFastRouteStateTestHook?: {
+          getWebgpuDiagnostics(): { aggregationBackend: string } | null;
+        };
+      }).__scatterFastRouteStateTestHook;
+      return hook?.getWebgpuDiagnostics()?.aggregationBackend ?? null;
+    })).toBe('rust-wasm');
+    await expect(page.getByTestId('scatter-fast-route-diagnostics')).toHaveAttribute(
+      'data-aggregate-backend-preference',
+      'auto',
+    );
+    const activeBackendIndicator = page.getByTestId(
+      'scatter-fast-aggregation-backend-active-indicator',
+    );
+    await expect(activeBackendIndicator).toHaveAttribute('data-backend', 'rust-wasm');
+    await expect(activeBackendIndicator).toHaveText('Running now: Rust/WASM');
+    const backendSelector = page.getByTestId('scatter-fast-aggregation-backend-select');
+    await backendSelector.getByRole('radio', { name: 'TypeScript' }).click();
+    await expect(
+      backendSelector.getByRole('radio', { name: 'TypeScript' }),
+    ).toBeChecked();
+    await expect(chart).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+    await expect(page).toHaveURL(/aggregationBackend=typescript/u);
+    await expect(page.getByTestId('scatter-fast-route-diagnostics')).toHaveAttribute(
+      'data-aggregate-backend-preference',
+      'typescript',
+    );
+    await expect.poll(() => page.evaluate(() => {
+      const hook = (globalThis as typeof globalThis & {
+        __scatterFastRouteStateTestHook?: {
+          getWebgpuDiagnostics(): {
+            aggregationBackend: string;
+            aggregationBackendPreference: string;
+          } | null;
+        };
+      }).__scatterFastRouteStateTestHook;
+      const diagnostics = hook?.getWebgpuDiagnostics();
+      return diagnostics === null || diagnostics === undefined
+        ? null
+        : `${diagnostics.aggregationBackendPreference}/${diagnostics.aggregationBackend}`;
+    })).toBe('typescript/typescript');
+    await expect(activeBackendIndicator).toHaveAttribute('data-backend', 'typescript');
+    await expect(activeBackendIndicator).toHaveText('Running now: TypeScript');
+    await backendSelector.getByRole('radio', { name: 'Rust/WASM' }).click();
+    await expect(
+      backendSelector.getByRole('radio', { name: 'Rust/WASM' }),
+    ).toBeChecked();
+    await expect(chart).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+    await expect(page).toHaveURL(/aggregationBackend=rust-wasm/u);
+    await expect.poll(() => page.evaluate(() => {
+      const hook = (globalThis as typeof globalThis & {
+        __scatterFastRouteStateTestHook?: {
+          getWebgpuDiagnostics(): {
+            aggregationBackend: string;
+            aggregationBackendPreference: string;
+          } | null;
+        };
+      }).__scatterFastRouteStateTestHook;
+      const diagnostics = hook?.getWebgpuDiagnostics();
+      return diagnostics === null || diagnostics === undefined
+        ? null
+        : `${diagnostics.aggregationBackendPreference}/${diagnostics.aggregationBackend}`;
+    })).toBe('rust-wasm/rust-wasm');
+    await expect(activeBackendIndicator).toHaveAttribute('data-backend', 'rust-wasm');
+    await expect(activeBackendIndicator).toHaveText('Running now: Rust/WASM');
+    const aggregateAttribute = visualizationMode === 'bubble'
+      ? 'data-aggregate-count'
+      : 'data-aggregate-populated-cell-count';
+    await expect.poll(async () => Number(
+      await page.getByTestId('scatter-fast-route-diagnostics').getAttribute(aggregateAttribute),
+    )).toBeGreaterThan(0);
+    if (visualizationMode === 'heatmap') {
+      const heatmapRegion = await page.getByTestId('scatter-fast-hit-region').first().boundingBox();
+      if (heatmapRegion === null) throw new Error('WebGPU heatmap hit region is unavailable.');
+      await page.mouse.move(
+        heatmapRegion.x + heatmapRegion.width * 0.45,
+        heatmapRegion.y + heatmapRegion.height * 0.3,
+      );
+      await page.mouse.down({ button: 'right' });
+      await page.mouse.move(
+        heatmapRegion.x + heatmapRegion.width * 0.75,
+        heatmapRegion.y + heatmapRegion.height * 0.45,
+        { steps: 5 },
+      );
+      await page.mouse.up({ button: 'right' });
+      await expect.poll(() => page.evaluate(() =>
+        (globalThis as typeof globalThis & {
+          __scatterFastSelectionTestHook?: { getSelectedCount(): number };
+        }).__scatterFastSelectionTestHook?.getSelectedCount() ?? 0,
+      )).toBeGreaterThan(0);
+    }
+  }
+
+  await page.goto('/m-scatter-webgpu-fixture');
+  const fixture = page.getByTestId('scatter-fast-chart-shell');
+  await expect(fixture).toHaveAttribute('data-renderer', 'webgpu-points');
+  await expect(fixture).toHaveAttribute('data-render-state', 'ready');
+  await expect(fixture).toHaveAttribute('data-selected-count', '3');
+  expect(gpuErrors, gpuErrors.join('\n')).toEqual([]);
 });
 
 test('m-scatter aggregate modes render sparse alternate x-axis values', async ({ page }) => {

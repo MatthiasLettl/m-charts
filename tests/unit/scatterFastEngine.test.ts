@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 
 import { createFastScatterPlot } from '../../packages/m-charts/src/m-scatter/engine/index.ts';
+import { createFastScatterEngine } from '../../packages/m-charts/src/m-scatter/engine/createScatterEngine.ts';
 import type {
+  FastScatterEngineRendererLifecycleHandlers,
   FastScatterPlotOptions,
   FastScatterRendererFactory,
   FastScatterRendererLike,
@@ -133,6 +135,7 @@ class MockRenderer implements FastScatterRendererLike {
   readonly resizes: Array<{ dpr: number; height: number; width: number }> = [];
   readonly updates: unknown[] = [];
   disposed = false;
+  renderedPointIndices: ReadonlySet<number> | null = null;
   renderCount = 0;
 
   constructor(private readonly emitMetrics: (metrics: FastScatterMetricsEvent) => void) {}
@@ -144,6 +147,10 @@ class MockRenderer implements FastScatterRendererLike {
 
   getAggregation(): FastScatterAggregationSet | null {
     return this.aggregation;
+  }
+
+  isPointRendered(pointIndex: number): boolean {
+    return this.renderedPointIndices?.has(pointIndex) ?? true;
   }
 
   playEasterEgg(options: FastScatterEasterEggPlaybackOptions = {}): boolean {
@@ -455,6 +462,14 @@ aggregatePlot.on('hoverchange', (hover) => {
 });
 
 aggregateRenderers[0]!.aggregation = null;
+aggregateRenderers[0]!.renderedPointIndices = new Set([1]);
+const sampledPointHover = aggregatePlot.commands.hoverAtPoint({
+  pointerCssX: aggregatePointer.xCssPx,
+  pointerCssY: aggregatePointer.yCssPx,
+  source: 'shift-hover',
+});
+assert.equal(sampledPointHover?.point.sourceIndex, 1);
+aggregateRenderers[0]!.renderedPointIndices = null;
 const pointHover = aggregatePlot.commands.hoverAtPoint({
   pointerCssX: aggregatePointer.xCssPx,
   pointerCssY: aggregatePointer.yCssPx,
@@ -488,7 +503,7 @@ const bubbleHover = aggregatePlot.commands.hoverAtPoint({
 assert.equal(bubbleHover?.point.sourceIndex, pointHover?.point.sourceIndex);
 assert.equal(bubbleHover?.aggregate?.kind, 'bubble');
 assert.equal(bubbleHover?.aggregate?.count, 2);
-assert.equal(aggregateHoverEvents.length, 2);
+assert.equal(aggregateHoverEvents.length, 3);
 assert.equal(aggregateHoverEvents.at(-1)?.aggregate?.kind, 'bubble');
 assert.equal(aggregateHoverEvents.at(-1)?.aggregate?.count, 2);
 assert.deepEqual(aggregateRenderers[0]!.updates.at(-1), { hoverSourceIndex: 0 });
@@ -501,7 +516,7 @@ const pointModeHover = aggregatePlot.commands.hoverAtPoint({
 });
 assert.equal(pointModeHover?.point.sourceIndex, pointHover?.point.sourceIndex);
 assert.equal(pointModeHover?.aggregate, undefined);
-assert.equal(aggregateHoverEvents.length, 3);
+assert.equal(aggregateHoverEvents.length, 4);
 assert.equal(aggregateHoverEvents.at(-1)?.aggregate, undefined);
 
 aggregatePlot.dispose();
@@ -754,5 +769,56 @@ const positionedPlot = createFastScatterPlot(
 assert.equal(positionedHost.style.position, 'absolute');
 positionedPlot.dispose();
 assert.equal(positionedHost.style.position, 'absolute');
+
+const asynchronousHost = new FakeElement(document);
+asynchronousHost.setRect(320, 180);
+let asynchronousLifecycle: FastScatterEngineRendererLifecycleHandlers | null = null;
+const asynchronousMetrics: string[] = [];
+const asynchronousEvents: string[] = [];
+const asynchronousPlot = createFastScatterEngine(
+  asynchronousHost as unknown as HTMLElement,
+  createOptions(rendererFactory),
+  {
+    asynchronousReady: true,
+    canvasClassName: 'scatter-fast-engine-canvas scatter-fast-webgpu-canvas',
+    canvasLabel: 'Asynchronous renderer canvas',
+    canvasRenderer: 'test-async',
+    createRenderer(rendererOptions, _plotOptions, lifecycle) {
+      asynchronousLifecycle = lifecycle;
+      return new MockRenderer(rendererOptions.onMetrics ?? (() => {}));
+    },
+    hostClassName: 'scatter-fast-engine-host scatter-fast-webgpu-host',
+  },
+);
+asynchronousPlot.on('contextlost', () => asynchronousEvents.push('lost'));
+asynchronousPlot.on('contextrestored', () => asynchronousEvents.push('restored'));
+asynchronousPlot.on('metrics', (event) => asynchronousMetrics.push(event.phase));
+assert.equal(asynchronousPlot.commands.getRenderSnapshot().renderState, 'rendering');
+assert.equal(
+  asynchronousPlot.canvas.className,
+  'scatter-fast-engine-canvas scatter-fast-webgpu-canvas',
+);
+assert.equal(
+  asynchronousHost.className,
+  'scatter-fast-engine-host scatter-fast-webgpu-host',
+);
+
+assert.notEqual(asynchronousLifecycle, null);
+const activeAsynchronousLifecycle = asynchronousLifecycle as unknown as FastScatterEngineRendererLifecycleHandlers;
+activeAsynchronousLifecycle.onReady();
+assert.equal(asynchronousPlot.commands.getRenderSnapshot().renderState, 'ready');
+activeAsynchronousLifecycle.onContextLost();
+assert.equal(asynchronousPlot.commands.getRenderSnapshot().renderState, 'rendering');
+activeAsynchronousLifecycle.onContextRestored();
+assert.equal(asynchronousPlot.commands.getRenderSnapshot().renderState, 'ready');
+assert.deepEqual(asynchronousEvents, ['lost', 'restored']);
+assert.deepEqual(asynchronousMetrics, ['context-lost', 'context-restored']);
+activeAsynchronousLifecycle.onError(new Error('asynchronous renderer failed'));
+assert.equal(asynchronousPlot.commands.getRenderSnapshot().renderState, 'error');
+assert.equal(
+  asynchronousPlot.commands.getRenderSnapshot().renderStateMessage,
+  'asynchronous renderer failed',
+);
+asynchronousPlot.dispose();
 
 console.log('scatter-fast engine lifecycle tests passed');

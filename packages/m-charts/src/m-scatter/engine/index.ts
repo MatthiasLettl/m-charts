@@ -92,4 +92,5 @@ export type {
   FastScatterRendererFactory as ScatterRendererFactory,
   FastScatterRendererLike,
   FastScatterRendererLike as ScatterRendererLike,
+  FastScatterRendererViewportUpdateContext,
 } from './types.js';

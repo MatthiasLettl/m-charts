@@ -84,6 +84,11 @@ export function selectFastScatterSourceIndicesInBounds(
   const xRange = normalizeRange(bounds.x);
   const yRange = normalizeRange(bounds.y);
   const scanRange = getXScanRange(columns, xRange);
+  const identitySourceOrder = columns.sourceIndex === undefined && columns.xOrder === undefined;
+  const identitySelection = identitySourceOrder
+    ? new Uint32Array(scanRange.endIndex - scanRange.startIndex)
+    : null;
+  let identitySelectionCount = 0;
   const selectedSourceIndices: number[] = [];
 
   for (
@@ -95,8 +100,16 @@ export function selectFastScatterSourceIndicesInBounds(
     const yValue = y[pointIndex];
 
     if (Number.isFinite(yValue) && yValue >= yRange.min && yValue <= yRange.max) {
-      selectedSourceIndices.push(columns.sourceIndex?.[pointIndex] ?? pointIndex);
+      if (identitySelection !== null) {
+        identitySelection[identitySelectionCount++] = pointIndex;
+      } else {
+        selectedSourceIndices.push(columns.sourceIndex?.[pointIndex] ?? pointIndex);
+      }
     }
+  }
+
+  if (identitySelection !== null) {
+    return identitySelection.slice(0, identitySelectionCount);
   }
 
   selectedSourceIndices.sort((a, b) => a - b);
@@ -136,6 +149,11 @@ export function selectFastScatterSourceIndicesInPolygon(
   }
 
   const scanRange = getXScanRange(columns, bounds.x);
+  const identitySourceOrder = columns.sourceIndex === undefined && columns.xOrder === undefined;
+  const identitySelection = identitySourceOrder
+    ? new Uint32Array(scanRange.endIndex - scanRange.startIndex)
+    : null;
+  let identitySelectionCount = 0;
   const selectedSourceIndices: number[] = [];
 
   for (
@@ -155,7 +173,11 @@ export function selectFastScatterSourceIndicesInPolygon(
       point.y <= bounds.y.max &&
       isFastScatterPointInPolygon(point, polygon.points)
     ) {
-      selectedSourceIndices.push(columns.sourceIndex?.[pointIndex] ?? pointIndex);
+      if (identitySelection !== null) {
+        identitySelection[identitySelectionCount++] = pointIndex;
+      } else {
+        selectedSourceIndices.push(columns.sourceIndex?.[pointIndex] ?? pointIndex);
+      }
     }
   }
 
@@ -166,7 +188,9 @@ export function selectFastScatterSourceIndicesInPolygon(
       bounds,
       candidateCount: scanRange.endIndex - scanRange.startIndex,
     },
-    sourceIndices: normalizeSelectionSourceIndices(selectedSourceIndices),
+    sourceIndices: identitySelection === null
+      ? normalizeSelectionSourceIndices(selectedSourceIndices)
+      : identitySelection.slice(0, identitySelectionCount),
   };
 }
 

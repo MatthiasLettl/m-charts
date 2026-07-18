@@ -9,10 +9,18 @@ import {
   createDefaultScatterBindings,
   createScatterPlot,
   type ScatterPlotInstance,
+  type ScatterPlotOptions,
   type ScatterRenderState,
 } from 'm-charts/m-scatter';
+import {
+  createScatterWebgpuPlot,
+} from 'm-charts/m-scatter-webgpu';
 
-export function MScatterPackageFixture() {
+export function MScatterPackageFixture({
+  rendererBackend = 'webgl2',
+}: {
+  rendererBackend?: 'webgl2' | 'webgpu';
+} = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const plotRef = useRef<ScatterPlotInstance | null>(null);
   const { columns, spec, viewport: initialViewport } = useMemo(
@@ -31,10 +39,14 @@ export function MScatterPackageFixture() {
     if (host === null) {
       return;
     }
+    let isActive = true;
 
-    const plot = createScatterPlot(host, {
+    const plotOptions: ScatterPlotOptions = {
       axisMode: 'xy',
-      canvasClassName: 'scatter-fast-webgl-canvas',
+      canvasClassName:
+        rendererBackend === 'webgpu'
+          ? 'scatter-fast-engine-canvas scatter-fast-webgpu-canvas'
+          : 'scatter-fast-engine-canvas scatter-fast-webgl-canvas',
       columns,
       mode: 'pan',
       onSelectionChange: (event) => {
@@ -47,21 +59,30 @@ export function MScatterPackageFixture() {
       selectedSourceIndices: initialSelectedSourceIndices,
       spec,
       viewport: initialViewport,
-    });
+    };
+    const plot = rendererBackend === 'webgpu'
+      ? createScatterWebgpuPlot(host, plotOptions)
+      : createScatterPlot(host, plotOptions);
     plot.use(createDefaultScatterBindings({ easterEgg: { sequence: 'future' } }));
-    plot.canvas.dataset.testid = 'scatter-fast-webgl-canvas';
+    plot.canvas.dataset.testid = rendererBackend === 'webgpu'
+      ? 'scatter-fast-webgpu-canvas'
+      : 'scatter-fast-webgl-canvas';
     const unsubscribeRenderState = plot.on('renderstatechange', ({ state }) => {
-      setRenderState(state);
+      if (isActive) setRenderState(state);
     });
-    setRenderState(plot.commands.getStateSnapshot().render.renderState);
+    const currentRenderState = plot.commands.getStateSnapshot().render.renderState;
+    queueMicrotask(() => {
+      if (isActive) setRenderState(currentRenderState);
+    });
     plotRef.current = plot;
 
     return () => {
+      isActive = false;
       unsubscribeRenderState();
       plotRef.current = null;
       plot.dispose();
     };
-  }, [columns, initialSelectedSourceIndices, initialViewport, spec]);
+  }, [columns, initialSelectedSourceIndices, initialViewport, rendererBackend, spec]);
 
   useEffect(() => {
     plotRef.current?.update({
@@ -81,7 +102,7 @@ export function MScatterPackageFixture() {
             className="scatter-fast-webgl-host"
             data-record-count={columns.x.length}
             data-render-state={renderState}
-            data-renderer="webgl2-points"
+            data-renderer={`${rendererBackend}-points`}
             data-selected-count={selectedSourceIndices.length}
             data-testid="scatter-fast-chart-shell"
             style={{ height: '24rem' }}

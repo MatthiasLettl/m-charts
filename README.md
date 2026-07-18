@@ -1,15 +1,15 @@
-# m-charts
+§# m-charts
 
-`m-charts` is a WebGL2 charting library built for high-performance data
+`m-charts` is a WebGL2 and WebGPU charting library built for high-performance data
 exploration in the browser. It provides framework-neutral chart engines for
 scatter plots, histograms, and parallel-coordinate plots, plus a Vite demo app
 that shows how to wire them into a product shell.
 
 The project is useful when the chart needs to stay fast under dense typed-array
 data, expose semantic commands and typed events, and let the host application own
-the surrounding UI. The renderer creates and manages WebGL2 canvases; your app
-owns data loading, layout, side panels, URL state, overlays, exports, persistence,
-and product policy.
+the surrounding UI. The selected renderer creates and manages its WebGL2 or
+WebGPU canvas resources; your app owns data loading, layout, side panels, URL
+state, overlays, exports, persistence, and product policy.
 
 ## Public Usage Status
 
@@ -24,6 +24,20 @@ when integrating into another application.
 ## Features
 
 - WebGL2 scatter, histogram, and parallel-coordinate engines.
+- An isolated WebGPU point, bubble, and heat-map scatter renderer over the same
+  public scatter contract, designed for million- to twenty-five-million-point
+  workloads. Settled point views render every visible point through one million
+  points per subplot and otherwise use a deterministic, source-ordered sample
+  capped at one million representatives. High-density overviews retain
+  categorical values, numeric extrema, and maximum-size style representatives.
+  Rectangle/lasso selection payloads remain exact over the complete CPU data;
+  hover and selected GPU overlays follow the rendered sample and refine on zoom.
+  Bubble mode uses an exact-count bounded aggregate LOD and heat-map mode uses a
+  compact populated-cell pass with typed interaction membership. Sorted-X
+  aggregate modes prefer resident Rust/WebAssembly with an exact TypeScript
+  fallback, selectable at WebGPU plot creation. Known-count record streams can
+  be encoded into preallocated typed columns in bounded batches before the plot
+  is created.
 - Typed-array data contracts for high-volume rendering and selection flows.
 - Framework-neutral `core` and `engine` modules with optional React helpers.
 - Imperative lifecycle: create a plot in a DOM host, call `update(...)`, invoke
@@ -32,12 +46,21 @@ when integrating into another application.
 - Host-rendered overlay descriptors for brushes, hover guides, measurement
   guides, navigator state, and inspection UI.
 
-## Browser Support
+## Rendering Backends And Browser Support
 
-The engines require WebGL2 and modern browser APIs such as typed arrays,
-`ResizeObserver`, and pointer events. Target current evergreen Chromium,
-Firefox, and Safari versions with WebGL2 enabled. IE and WebGL1-only
-environments are unsupported.
+- `m-scatter`, `m-histogram`, and `m-parallel` use WebGL2. They require a
+  WebGL2-capable browser and do not support WebGL1-only environments.
+- `m-scatter-webgpu` uses WebGPU for point, bubble, and heat-map scatter. It
+  requires a secure context and a browser/device that can return a WebGPU
+  adapter. WebGPU availability and device limits can differ from WebGL2 even in
+  the same browser.
+- All engines also depend on modern browser APIs such as typed arrays,
+  `ResizeObserver`, and pointer events.
+
+Existing WebGL2 scatter integrations can keep WebGL2 as a compatibility
+fallback while adopting WebGPU. See
+[Migrating An Existing WebGL2 Scatter](docs/source-copy-integration.md#migrating-an-existing-webgl2-scatter)
+for source-copy and workspace-package examples.
 
 ## Architecture
 
@@ -48,18 +71,21 @@ Bindings, demo routes, and host applications decide how user input, URL state,
 panels, keyboard shortcuts, exports, overlays, and persistence connect to those
 commands, updates, and events.
 
-![Custom WebGL2 plot architecture](docs/custom-plot-architecture.svg)
+![Backend-neutral custom plot architecture with WebGL2 and WebGPU renderers](docs/custom-plot-architecture.svg)
 
 The mental model:
 
 - `packages/m-charts/src/plot-engine/core` provides chart-agnostic browser
   primitives: typed emitters, disposables, normalized DOM input, brush metadata,
-  resize/WebGL context lifecycle, geometry, metrics, and RAF scheduling.
+  resize lifecycle, WebGL2 context helpers, geometry, metrics, and RAF scheduling.
+- `packages/m-charts/src/plot-engine-webgpu/core` provides WebGPU adapter/device
+  setup, capability diagnostics, device-limit snapshots, and timestamp profiling.
 - `packages/m-charts/src/<viz>/core` is pure visualization logic: typed data
   contracts, buffer builders, domains, transforms, hit testing, selection math,
-  aggregation, formatting, and WebGL renderer helpers.
+  aggregation, formatting, and backend-specific renderer helpers.
 - `packages/m-charts/src/<viz>/engine` is the reusable plot API. It takes a
-  host element, creates its canvas or canvases, owns renderer lifecycle, exposes
+  host element, creates its canvas or canvases, owns a backend-neutral renderer
+  lifecycle, exposes
   `plot.commands`, emits typed events through `plot.on(...)`, accepts
   `plot.update(...)`, and supports attachable bindings with `plot.use(...)`.
 - `packages/m-charts/src/<viz>/engine/default...Bindings.ts` translates
@@ -70,10 +96,19 @@ The mental model:
   URL/search state, render sidebars and overlays, materialize selected IDs,
   handle export policy, and subscribe to engine events.
 
-The diagram separates renderer code visually for readability. In the codebase,
-renderer implementations live inside each visualization `core` package, while
-the corresponding `engine` package owns canvas, resize, WebGL, and render-loop
-lifecycle.
+Scatter's shared engine accepts a backend adapter for renderer construction and
+context/device lifecycle. The existing `m-scatter` factory supplies WebGL2;
+`m-scatter-webgpu` supplies WebGPU without importing either renderer into the
+shared engine. Renderer implementations remain in their respective `core`
+packages.
+
+The WebGPU entry point re-exports the WebGL2 scatter contract and keeps the same
+factory aliases, shared option shape, bindings, overlays, commands, events,
+callback payloads, and shared CSS hooks. Existing integrations can switch the
+import from `m-charts/m-scatter` to `m-charts/m-scatter-webgpu`; WebGPU startup
+and device recovery then report through the shared lifecycle events. Its
+creation-only renderer options, asynchronous startup gates, and representative
+high-density point rendering are the documented backend-specific additions.
 
 Keep reusable `core` and `engine` modules independent of React, React Router,
 demo routes, generated fixtures, app state, theme modules, local environment
@@ -108,6 +143,7 @@ product policy into renderer code. Chart-specific interaction details live in
 the package notes:
 
 - [packages/m-charts/SCATTER.md](packages/m-charts/SCATTER.md)
+- [packages/m-charts/SCATTER_WEBGPU.md](packages/m-charts/SCATTER_WEBGPU.md)
 - [packages/m-charts/HISTOGRAM.md](packages/m-charts/HISTOGRAM.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
 
@@ -124,6 +160,33 @@ uses those optional helpers. Then rewrite package imports to local imports:
 ```ts
 import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
 ```
+
+For WebGPU point, bubble, or heat-map scatter, keep the existing `m-scatter`
+contract modules and add `plot-engine-webgpu`, `m-scatter-webgpu/core`, and
+`m-scatter-webgpu/engine`. Include `m-scatter-webgpu/adapters` only when using
+known-count JSON/server record streams. Existing source-copy integrations keep
+their core imports and change the factory import:
+
+```diff
+- import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
++ import { createScatterPlot } from './vendor/m-charts/m-scatter-webgpu/engine/index.js';
+```
+
+The same columns, options, bindings, commands, events, overlays, and shared CSS
+hooks remain valid. WebGPU initialization is asynchronous, so await
+`plot.interactive` for the first displayed frame or `plot.ready` for the first
+complete settled frame. Large sorted datasets can use the lower-memory
+`createFastScatterCompactHoverIndex` helper from `m-scatter`; WebGPU hover uses
+that index to find the nearest rendered representative.
+WebGPU bubble/heat-map aggregation can be profiled with
+`aggregationBackend: 'auto' | 'rust-wasm' | 'typescript'`; the WebGPU demo
+persists the same choice in its `aggregationBackend` query parameter.
+
+The WebGPU demo generates its 1M, 10M, or 25M deterministic paged dataset in a
+Web Worker on first use and stores it in IndexedDB for later visits. This is the
+default in development and production; `?webgpuData=http` keeps the generated
+HTTP artifact loader available for diagnostics. Dataset-size changes reload the
+document so the previous large CPU and GPU allocations are released first.
 
 Each plot needs a sized host element:
 
@@ -147,7 +210,7 @@ These examples assume you copied the source into `src/vendor/m-charts` and rewro
 imports to local module paths. They show the engine boundary only; real apps
 usually build typed arrays from backend results or application data models.
 
-### Scatter
+### Scatter (WebGL2)
 
 ```ts
 import {
@@ -189,6 +252,12 @@ plot.on('selectionchange', (event) => {
   console.log(event.selectedCount);
 });
 ```
+
+To use the WebGPU renderer with the same scatter contract, add the WebGPU source
+folders, change the engine import to
+`./vendor/m-charts/m-scatter-webgpu/engine/index.js`, and await startup. The
+copy-ready migration and fallback example is
+[docs/examples/scatter-webgpu-migration.md](docs/examples/scatter-webgpu-migration.md).
 
 ### Histogram
 
@@ -278,6 +347,11 @@ The demo routes are:
 
 - `/`: overview
 - `/m-scatter`, `/m-scatter?tables=multi`, `/m-scatter-fixture`
+- `/m-scatter-webgpu`, `/m-scatter-webgpu?tables=multi`,
+  `/m-scatter-webgpu-fixture` (`?points=1000000|10000000|25000000` selects
+  the primary-table size; WebGPU dataset size, table mode, and X-axis/mode
+  switches use a full page refresh to release the previous large CPU/GPU
+  resources)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-histogram`, `/m-histogram?tables=multi`,
   `/m-histogram?histMode=bar`, `/m-histogram-fixture`
@@ -290,7 +364,9 @@ is not part of the reusable package source.
 
 ```text
 packages/m-charts/src/plot-engine
+packages/m-charts/src/plot-engine-webgpu
 packages/m-charts/src/m-scatter
+packages/m-charts/src/m-scatter-webgpu
 packages/m-charts/src/m-parallel
 packages/m-charts/src/m-histogram
 apps/demo/src
@@ -307,6 +383,7 @@ Package notes:
 
 - [packages/m-charts/README.md](packages/m-charts/README.md)
 - [packages/m-charts/SCATTER.md](packages/m-charts/SCATTER.md)
+- [packages/m-charts/SCATTER_WEBGPU.md](packages/m-charts/SCATTER_WEBGPU.md)
 - [packages/m-charts/HISTOGRAM.md](packages/m-charts/HISTOGRAM.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
 - [packages/m-charts/llms.md](packages/m-charts/llms.md)
@@ -318,6 +395,7 @@ Benchmark helpers are separate from normal validation:
 
 ```sh
 pnpm benchmark:scatter:custom
+pnpm benchmark:scatter:webgpu
 pnpm benchmark:histogram:custom
 pnpm benchmark:parallel:custom
 ```
@@ -333,6 +411,8 @@ shared behavior:
 ```sh
 pnpm typecheck
 pnpm lint
+pnpm lint:rust
+pnpm check:scatter-wasm
 pnpm test:unit
 pnpm test:e2e
 pnpm build

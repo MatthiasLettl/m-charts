@@ -16,7 +16,8 @@ Describe the smallest useful change.
 
 ## Scope
 
-- Chart or area: scatter / histogram / parallel / plot-engine / demo / docs
+- Chart or area: scatter / scatter WebGPU / histogram / parallel / plot-engine / demo / docs
+- Rendering backend: WebGL2 / WebGPU / both / not applicable
 - Public API impact: none / new compatible API / compatibility adapter needed
 - Host-app responsibility affected: data / overlays / commands / events / UI
 

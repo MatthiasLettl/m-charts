@@ -13,6 +13,14 @@ export default function App() {
       <Route path="/" element={<OverviewPage />} />
       <Route path="/m-scatter" element={<MScatterPlotRoute />} />
       <Route path="/m-scatter-fixture" element={<MScatterPackageFixture />} />
+      <Route
+        path="/m-scatter-webgpu"
+        element={<MScatterPlotRoute rendererBackend="webgpu" />}
+      />
+      <Route
+        path="/m-scatter-webgpu-fixture"
+        element={<MScatterPackageFixture rendererBackend="webgpu" />}
+      />
       <Route path="/m-parallel" element={<MParallelPlotRoute />} />
       <Route path="/m-parallel-fixture" element={<MParallelPackageFixture />} />
       <Route path="/m-histogram" element={<MHistogramPlotRoute />} />

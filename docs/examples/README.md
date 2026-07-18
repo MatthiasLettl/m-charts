@@ -8,8 +8,11 @@ Assumed host layout:
 
 ```text
 src/vendor/m-charts/plot-engine
+src/vendor/m-charts/plot-engine-webgpu
 src/vendor/m-charts/m-scatter/core
 src/vendor/m-charts/m-scatter/engine
+src/vendor/m-charts/m-scatter-webgpu/core
+src/vendor/m-charts/m-scatter-webgpu/engine
 src/vendor/m-charts/m-histogram/core
 src/vendor/m-charts/m-histogram/engine
 src/vendor/m-charts/m-parallel/core
@@ -23,7 +26,8 @@ the host uses those optional helpers.
 
 Examples:
 
-- [Scatter](scatter-source-copy.md)
+- [Scatter WebGL2](scatter-source-copy.md)
+- [Migrate scatter from WebGL2 to WebGPU](scatter-webgpu-migration.md)
 - [Histogram](histogram-source-copy.md)
 - [Parallel coordinates](parallel-source-copy.md)
 
@@ -50,6 +54,8 @@ pnpm lint
 pnpm build
 ```
 
-Then verify in a browser with WebGL2 enabled that the host element has nonzero
-size, the chart renders, interactions work, and cleanup calls dispose
-subscriptions, bindings, plots, and any externally created worker controllers.
+Then verify in browsers that support each selected backend. The host element
+must have nonzero size, the chart must render, interactions must work, and
+cleanup must dispose subscriptions, bindings, plots, and any externally created
+worker controllers. For WebGPU, also verify a secure context, asynchronous
+startup, representative device limits, and the host's WebGL2 fallback policy.

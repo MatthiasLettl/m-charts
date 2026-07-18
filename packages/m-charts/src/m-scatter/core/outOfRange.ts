@@ -13,6 +13,7 @@ export interface FastScatterOutOfRangeInput {
   plotRects: readonly FastScatterPlotRect[];
   maxMarkersPerSide?: number;
   minBinSizeCssPx?: number;
+  sampleStride?: number;
 }
 
 export interface FastScatterOutOfRangeMarker {
@@ -52,6 +53,7 @@ export function computeFastScatterOutOfRangeMarkers(
     Math.floor(input.maxMarkersPerSide ?? DEFAULT_MAX_MARKERS_PER_SIDE),
   );
   const minBinSizeCssPx = Math.max(1, input.minBinSizeCssPx ?? DEFAULT_MIN_BIN_SIZE_CSS_PX);
+  const sampleStride = Math.max(1, Math.floor(input.sampleStride ?? 1));
 
   if (maxMarkersPerSide === 0 || input.columns.x.length === 0) {
     return {
@@ -84,7 +86,7 @@ export function computeFastScatterOutOfRangeMarkers(
     const rightBins = new Array<OverflowBin | undefined>(yBinCount);
     const pointCount = Math.min(input.columns.x.length, yValues.length);
 
-    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
+    for (let pointIndex = 0; pointIndex < pointCount; pointIndex += sampleStride) {
       const x = input.columns.x[pointIndex];
       const y = yValues[pointIndex];
 
@@ -97,7 +99,7 @@ export function computeFastScatterOutOfRangeMarkers(
       const yVisible = y >= yRange.min && y <= yRange.max;
 
       if (xVisible && y > yRange.max) {
-        candidateCount += 1;
+        candidateCount += sampleStride;
         const xCssPx = axisToPixel(x, xRange, rect.xCssPx, rect.xCssPx + rect.widthCssPx);
         const binIndex = cssPxToBinIndex(xCssPx, rect.xCssPx, rect.widthCssPx, xBinCount);
         addOverflowBin({
@@ -106,9 +108,10 @@ export function computeFastScatterOutOfRangeMarkers(
           distanceToBoundary: y - yRange.max,
           positionCssPx: binCenterCssPx(topBins, binIndex, rect.xCssPx, rect.widthCssPx),
           sourceIndex,
+          weight: sampleStride,
         });
       } else if (xVisible && y < yRange.min) {
-        candidateCount += 1;
+        candidateCount += sampleStride;
         const xCssPx = axisToPixel(x, xRange, rect.xCssPx, rect.xCssPx + rect.widthCssPx);
         const binIndex = cssPxToBinIndex(xCssPx, rect.xCssPx, rect.widthCssPx, xBinCount);
         addOverflowBin({
@@ -117,11 +120,12 @@ export function computeFastScatterOutOfRangeMarkers(
           distanceToBoundary: yRange.min - y,
           positionCssPx: binCenterCssPx(bottomBins, binIndex, rect.xCssPx, rect.widthCssPx),
           sourceIndex,
+          weight: sampleStride,
         });
       }
 
       if (yVisible && x < xRange.min) {
-        candidateCount += 1;
+        candidateCount += sampleStride;
         const yCssPx = axisToPixel(y, yRange, rect.yCssPx + rect.heightCssPx, rect.yCssPx);
         const binIndex = cssPxToBinIndex(yCssPx, rect.yCssPx, rect.heightCssPx, yBinCount);
         addOverflowBin({
@@ -130,9 +134,10 @@ export function computeFastScatterOutOfRangeMarkers(
           distanceToBoundary: xRange.min - x,
           positionCssPx: binCenterCssPx(leftBins, binIndex, rect.yCssPx, rect.heightCssPx),
           sourceIndex,
+          weight: sampleStride,
         });
       } else if (yVisible && x > xRange.max) {
-        candidateCount += 1;
+        candidateCount += sampleStride;
         const yCssPx = axisToPixel(y, yRange, rect.yCssPx + rect.heightCssPx, rect.yCssPx);
         const binIndex = cssPxToBinIndex(yCssPx, rect.yCssPx, rect.heightCssPx, yBinCount);
         addOverflowBin({
@@ -141,6 +146,7 @@ export function computeFastScatterOutOfRangeMarkers(
           distanceToBoundary: x - xRange.max,
           positionCssPx: binCenterCssPx(rightBins, binIndex, rect.yCssPx, rect.heightCssPx),
           sourceIndex,
+          weight: sampleStride,
         });
       }
     }
@@ -220,18 +226,20 @@ function addOverflowBin({
   distanceToBoundary,
   positionCssPx,
   sourceIndex,
+  weight = 1,
 }: {
   bins: Array<OverflowBin | undefined>;
   binIndex: number;
   distanceToBoundary: number;
   positionCssPx: number;
   sourceIndex: number;
+  weight?: number;
 }): void {
   const bin = bins[binIndex];
 
   if (bin === undefined) {
     bins[binIndex] = {
-      count: 1,
+      count: weight,
       distanceToBoundary,
       positionCssPx,
       sourceIndex,
@@ -239,7 +247,7 @@ function addOverflowBin({
     return;
   }
 
-  bin.count += 1;
+  bin.count += weight;
   if (distanceToBoundary < bin.distanceToBoundary) {
     bin.distanceToBoundary = distanceToBoundary;
     bin.sourceIndex = sourceIndex;

@@ -1,9 +1,10 @@
-# Scatter Source-Copy Example
+# Scatter WebGL2 Source-Copy Example
 
 This snippet assumes `plot-engine`, `m-scatter/core`, and `m-scatter/engine`
 were copied to `src/vendor/m-charts`. Copy `m-scatter/adapters`, `workers`, or
 `react` only when the host uses those optional helpers. Rewrite the import
-prefix to match your host file.
+prefix to match your host file. Existing users moving this example to WebGPU
+should follow the [WebGL2-to-WebGPU migration example](scatter-webgpu-migration.md).
 
 ```ts
 import {

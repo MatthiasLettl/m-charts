@@ -70,6 +70,8 @@ export interface FastScatterEncodedAxisBase {
 }
 
 export interface FastScatterNumericAxis extends FastScatterEncodedAxisBase {
+  encodedOffset?: number;
+  encodedScale?: number;
   indexDisplay?: {
     sourceAxis?: FastScatterEncodedAxis;
     sourceValues: FastScatterTypedNumericArray;
@@ -89,6 +91,7 @@ export interface FastScatterCategoricalAxis extends FastScatterEncodedAxisBase {
 export interface FastScatterDatetimeNsAxis extends FastScatterEncodedAxisBase {
   datetimeOriginNs: string;
   datetimeOriginNsBigInt: bigint;
+  encodedScaleMs?: number;
   epochNsValues: readonly string[];
   kind: 'datetime-ns';
 }

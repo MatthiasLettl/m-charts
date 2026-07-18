@@ -390,11 +390,16 @@ export function formatFastScatterAxisDeltaForDisplay({
   }
 
   if (axis === undefined || axis.kind === 'numeric') {
-    return formatSignedAxisNumber(toEncodedValue - fromEncodedValue, axis?.unit);
+    return formatSignedAxisNumber(
+      (toEncodedValue - fromEncodedValue) * (axis?.encodedScale ?? 1),
+      axis?.unit,
+    );
   }
 
   if (axis.kind === 'datetime-ns') {
-    return formatSignedDurationMs(toEncodedValue - fromEncodedValue);
+    return formatSignedDurationMs(
+      (toEncodedValue - fromEncodedValue) * (axis.encodedScaleMs ?? 1),
+    );
   }
 
   const from = formatFastScatterColumnValueForDisplay({

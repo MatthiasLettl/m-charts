@@ -53,7 +53,7 @@
   <text class="text" x="532" y="368">plot.on(event, handler)</text>
   <text class="text" x="532" y="396">plot.use(binding)</text>
   <text class="text" x="532" y="424">brush events + defaultAction</text>
-  <text class="text" x="532" y="452">canvas, WebGL, overlays, snapshots</text>
+  <text class="text" x="532" y="452">canvas, renderer, overlays, snapshots</text>
 
   <rect class="panel vizcore" x="950" y="104" width="280" height="190"/>
   <text class="heading" x="982" y="143">Visualization core</text>
@@ -65,14 +65,14 @@
 
   <rect class="panel render" x="950" y="404" width="280" height="150"/>
   <text class="heading" x="982" y="444">Renderer code</text>
-  <text class="text" x="982" y="476">WebGL2 buffers and programs</text>
+  <text class="text" x="982" y="476">WebGL2 or WebGPU resources</text>
   <text class="text" x="982" y="503">draw and renderer metrics</text>
   <text class="text" x="982" y="530">owned by engine lifecycle</text>
 
   <rect class="panel shared" x="190" y="616" width="950" height="92"/>
   <text class="small-heading" x="250" y="650">Shared plot-engine/core primitives</text>
   <text class="small" x="250" y="674">typed emitters, disposables, normalized input, brush contracts, RAF scheduling</text>
-  <text class="small" x="250" y="696">resize/WebGL lifecycle, metrics, and primitive geometry</text>
+  <text class="small" x="250" y="696">resize/backend lifecycle, metrics, and primitive geometry</text>
 
   <path class="arrow" d="M380 164 H500"/>
   <text class="label" x="402" y="141">options + controlled update</text>

@@ -18,6 +18,21 @@ export function OverviewPage() {
     themeMode,
     { preserveKeys: ['tables'] },
   );
+  const mScatterWebgpuTarget = createThemeAwareTo(
+    '/m-scatter-webgpu',
+    appendSearchParam(location.search, 'points', '1000000'),
+    themeMode,
+    { preserveKeys: ['points'] },
+  );
+  const mScatterWebgpuMultiTarget = createThemeAwareTo(
+    '/m-scatter-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      tables: 'multi',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'tables'] },
+  );
   const mParallelTarget = createThemeAwareTo(
     '/m-parallel',
     location.search,
@@ -54,18 +69,18 @@ export function OverviewPage() {
           <div>
             <p className="overview-kicker">m-charts demo app</p>
             <h1 id="overview-title">
-              WebGL2 charts for fast, interactive exploration of large datasets.
+              WebGL2 and WebGPU charts for fast, interactive exploration of large datasets.
             </h1>
           </div>
           <ThemeModeSwitch />
         </div>
         <div className="overview-intro">
           <p>
-            m-charts is a WebGL2 charting library built for high-performance
-            data exploration in the browser. This demo showcases million-point
-            scatter plots, histograms, and parallel-coordinate views with
-            responsive zoom, pan, brushing, selection, measurement, and
-            inspection workflows.
+            m-charts is a WebGL2 and WebGPU charting library built for
+            high-performance data exploration in the browser. This demo
+            showcases scatter plots with up to 25 million points, plus
+            histograms and parallel-coordinate views, with responsive zoom,
+            pan, brushing, selection, measurement, and inspection workflows.
           </p>
           <p>
             The library is open source under the MIT license. Repository:{' '}
@@ -85,7 +100,7 @@ export function OverviewPage() {
           >
             <ScatterPreview variant="fast" />
             <span className="prototype-card-body">
-              <span className="prototype-card-title">m-scatter</span>
+              <span className="prototype-card-title">m-scatter WebGL2</span>
               <span className="prototype-card-copy">
                 Explore million-point scatter plots with zoom, pan, lasso,
                 measurement, point, bubble, and heat-map views.
@@ -96,12 +111,28 @@ export function OverviewPage() {
               </span>
             </span>
           </article>
+          <article className="prototype-card">
+            <ScatterPreview variant="fast" />
+            <span className="prototype-card-body">
+              <span className="prototype-card-title">m-scatter WebGPU</span>
+              <span className="prototype-card-copy">
+                Explore up to 25 million points with WebGL2-compatible
+                interactions. Dense views render up to one million
+                representatives per subplot, while selection stays exact and
+                zoom restores full detail.
+              </span>
+              <span className="prototype-card-actions">
+                <Link to={mScatterWebgpuTarget}>One table</Link>
+                <Link to={mScatterWebgpuMultiTarget}>Multiple tables</Link>
+              </span>
+            </span>
+          </article>
           <article
             className="prototype-card"
           >
             <ParallelPreview variant="fast" />
             <span className="prototype-card-body">
-              <span className="prototype-card-title">m-parallel</span>
+              <span className="prototype-card-title">m-parallel WebGL2</span>
               <span className="prototype-card-copy">
                 Compare many records across axes with brushing, hover
                 inspection, selection export, and adjustable line density.
@@ -117,7 +148,7 @@ export function OverviewPage() {
           >
             <HistogramPreview />
             <span className="prototype-card-body">
-              <span className="prototype-card-title">m-histogram</span>
+              <span className="prototype-card-title">m-histogram WebGL2</span>
               <span className="prototype-card-copy">
                 Inspect distributions from raw records, multiple tables, or
                 pre-aggregated bars with selection and bin-size controls.
@@ -136,8 +167,17 @@ export function OverviewPage() {
 }
 
 function appendSearchParam(search: string, key: string, value: string): string {
+  return appendSearchParams(search, { [key]: value });
+}
+
+function appendSearchParams(
+  search: string,
+  values: Readonly<Record<string, string>>,
+): string {
   const params = new URLSearchParams(search);
-  params.set(key, value);
+  for (const [key, value] of Object.entries(values)) {
+    params.set(key, value);
+  }
   const serialized = params.toString();
   return serialized === '' ? '' : `?${serialized}`;
 }

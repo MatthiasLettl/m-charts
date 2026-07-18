@@ -5,6 +5,12 @@ It supports stacked subplots sharing one X column, point/bubble/heatmap modes,
 rectangle and lasso selection, hover inspection, measurements, point markers,
 navigator range control, and typed event handoff to the host application.
 
+For the WebGPU renderer that reuses this data, engine, command, event, binding,
+and overlay contract, see [SCATTER_WEBGPU.md](SCATTER_WEBGPU.md). Existing
+WebGL2 integrations can add the WebGPU source folders and switch only the
+factory import; the source-copy and fallback procedure is documented under
+[Migrating An Existing WebGL2 Scatter](../../docs/source-copy-integration.md#migrating-an-existing-webgl2-scatter).
+
 This document is the human-facing API guide. Keep
 [llms.md](llms.md#scatter-reference) as the detailed reference for full command
 signatures, event payload types, provenance, and migration notes.
@@ -32,7 +38,7 @@ import {
 Avoid importing from the chart top-level barrel in framework-neutral docs or
 source-copy hosts because it can include optional React helper exports.
 
-## Minimal Example
+## Minimal WebGL2 Example
 
 ```ts
 const host = document.querySelector<HTMLDivElement>('#scatter');
@@ -196,8 +202,10 @@ from overlay DOM.
 
 ## Overlays And Host UI
 
-The engine owns WebGL drawing and emits plain overlay descriptors. The host owns
-rendering those descriptors in DOM, SVG, React, canvas, or another UI layer.
+The `m-scatter` engine owns WebGL2 drawing and emits plain overlay descriptors.
+The host owns rendering those descriptors in DOM, SVG, React, canvas, or
+another UI layer. The WebGPU factory retains the same descriptor contract and
+shared host/canvas CSS hooks.
 
 Scatter overlay kinds include `rectangle-zoom`, `rectangle-selection`, `lasso`,
 `committed-selection`, `color-rule-brush`, `hover-guide`, `measurement-guide`,

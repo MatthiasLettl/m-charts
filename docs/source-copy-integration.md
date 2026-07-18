@@ -22,6 +22,7 @@ as the default required source. Add `adapters`, scatter `workers`, or chart
 | Chart | Required source | Optional source |
 | --- | --- | --- |
 | Scatter | `packages/m-charts/src/m-scatter/core`, `packages/m-charts/src/m-scatter/engine` | Add `workers` for worker-backed aggregation/selection, `adapters` for dataset helpers, and `react` only for React helpers. |
+| Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for known-count record streams and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
 | Histogram | `packages/m-charts/src/m-histogram/core`, `packages/m-charts/src/m-histogram/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
 | Parallel | `packages/m-charts/src/m-parallel/core`, `packages/m-charts/src/m-parallel/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
 
@@ -39,21 +40,45 @@ is not part of the package source.
 
 Each chart imports shared browser primitives from `plot-engine/core`: disposables,
 typed emitters, DOM input normalization, brush metadata, resize lifecycle,
-WebGL context lifecycle, geometry helpers, metrics, and RAF scheduling. Keep the
-relative relationship between `plot-engine` and chart folders intact, or update
-imports consistently.
+WebGL2 context lifecycle, geometry helpers, metrics, and RAF scheduling. WebGPU
+scatter additionally imports adapter/device lifecycle and profiling primitives
+from `plot-engine-webgpu/core`. Keep the relative relationship between the
+plot-engine and chart folders intact, or update imports consistently.
 
 A recommended destination layout is:
 
 ```text
 src/vendor/m-charts/plot-engine
+src/vendor/m-charts/plot-engine-webgpu
 src/vendor/m-charts/m-scatter
+src/vendor/m-charts/m-scatter-webgpu
 src/vendor/m-charts/m-histogram
 src/vendor/m-charts/m-parallel
 ```
 
 With this layout, most internal relative imports remain valid after TypeScript
 and bundler resolution are configured for ESM.
+
+The WebGPU factory returns synchronously but exposes `plot.interactive` and
+`plot.ready`. Await `interactive` before treating the first displayed frame as
+available, or `ready` before treating adapter/device creation, persistent buffer
+upload, and the first complete settled representation as complete. At high
+density that representation is a style-preserving LOD; diagnostics report
+whether it is exact. Both promises reject on initialization failure. The host
+must run in a secure context supported by WebGPU.
+
+If the host TypeScript configuration does not yet declare WebGPU globals, add
+`@webgpu/types` and include it in the applicable `tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "types": ["@webgpu/types"]
+  }
+}
+```
+
+Merge this entry with existing `types`; do not replace unrelated host typings.
 
 ## Rewrite Imports
 
@@ -89,6 +114,119 @@ import { createParallelPlot } from '@vendor/m-charts/m-parallel/engine/index.js'
 The source uses ESM `.js` specifiers in TypeScript files so emitted JavaScript is
 valid. Preserve those specifiers unless your build tool has a different explicit
 rewrite step.
+
+## Migrating An Existing WebGL2 Scatter
+
+The WebGPU scatter reuses the existing scatter `core` and backend-neutral
+`engine` contract. Existing columns, specs, viewport state, options, default or
+custom bindings, commands, events, overlays, callback payloads, and shared
+`scatter-fast-engine-*` CSS hooks remain valid. Point, bubble, and heat-map
+visualization modes are supported by both scatter entry points.
+
+For a local workspace package import, keep the factory name and change the entry
+point:
+
+```diff
+- import { createScatterPlot } from 'm-charts/m-scatter';
++ import { createScatterPlot } from 'm-charts/m-scatter-webgpu';
+```
+
+For the supported source-copy path, keep utility/data-contract imports from the
+existing scatter `core` and change only the engine factory import after copying
+the additional WebGPU folders:
+
+```ts
+import {
+  calculateScatterDomain,
+  createDefaultScatterViewport,
+} from './vendor/m-charts/m-scatter/core/index.js';
+import {
+  createDefaultScatterBindings,
+  createScatterPlot,
+} from './vendor/m-charts/m-scatter-webgpu/engine/index.js';
+```
+
+`ScatterPlotOptions` is exported from `m-scatter/engine`, not `core`; when the
+host needs that type, import it alongside the WebGL2 factory or use
+`FastScatterWebgpuPlotOptions` from the WebGPU engine. Avoid the copied
+`m-scatter-webgpu/index.ts` top-level barrel in framework-neutral hosts because
+it re-exports the complete scatter barrel, including optional React helpers.
+
+Creation remains synchronous, but WebGPU startup does not. An unconditional
+switch should surface `plot.interactive` or `plot.ready` rejection in the host:
+
+```ts
+const plot = createScatterPlot(host, options);
+plot.use(createDefaultScatterBindings());
+
+try {
+  await plot.interactive;
+  await plot.ready;
+} catch (error) {
+  plot.dispose();
+  throw error;
+}
+```
+
+Applications that still support WebGL2-only clients can keep the original
+renderer as a fallback. Capability diagnosis catches missing adapters; the
+startup `try`/`catch` also covers dataset-specific device limits, allocation,
+and shader failures that basic feature detection cannot predict:
+
+```ts
+import { diagnoseWebgpuSupport } from './vendor/m-charts/plot-engine-webgpu/core/index.js';
+import {
+  createScatterPlot as createWebglScatterPlot,
+  type ScatterPlotOptions,
+} from './vendor/m-charts/m-scatter/engine/index.js';
+import {
+  createScatterPlot as createWebgpuScatterPlot,
+} from './vendor/m-charts/m-scatter-webgpu/engine/index.js';
+
+async function createSupportedScatter(
+  host: HTMLElement,
+  options: ScatterPlotOptions,
+) {
+  const support = await diagnoseWebgpuSupport();
+  if (support.adapterAvailable) {
+    let webgpuPlot: ReturnType<typeof createWebgpuScatterPlot> | undefined;
+    try {
+      webgpuPlot = createWebgpuScatterPlot(host, options);
+      await webgpuPlot.interactive;
+      await webgpuPlot.ready;
+      return webgpuPlot;
+    } catch (error) {
+      webgpuPlot?.dispose();
+      console.warn('WebGPU scatter startup failed; using WebGL2.', error);
+    }
+  }
+
+  return createWebglScatterPlot(host, options);
+}
+```
+
+Attach bindings and subscriptions to the returned instance so they survive the
+backend choice. This conservative fallback waits for the first complete settled
+WebGPU frame; a host may expose UI after `interactive` resolves, but it must
+still decide how to handle a later `ready` rejection. Whether an initialization
+error should fall back or block is host product policy; always dispose the
+failed WebGPU instance before creating WebGL2 in the same host.
+
+The WebGL2-only creation fields `forceWebglUnavailable`,
+`preserveDrawingBuffer`, and `rendererFactory` are accepted and ignored by the
+WebGPU factory. WebGPU adds the creation-only `aggregationBackend`,
+`indexedStyle`, `packedStyles`, and `requestTimestampQuery` fields; recreate the
+plot to change them. `aggregationBackend` is not a WebGL2 option and applies
+only to WebGPU bubble/heat-map aggregation: `auto` and `rust-wasm` prefer
+Rust/WebAssembly with exact TypeScript fallback, while `typescript` bypasses
+WebAssembly. Continue using `plot.update(...)` for shared mutable state.
+The WebGPU instance also adds `getWebgpuDiagnostics()`. The command surface is
+compatible, including renderer-owned `playEasterEgg()` playback and the default
+typed `future` sequence.
+
+See [the copy-ready migration example](examples/scatter-webgpu-migration.md) and
+[the WebGPU scatter guide](../packages/m-charts/SCATTER_WEBGPU.md) for lifecycle,
+rendering, aggregation, diagnostics, streaming, demo, and benchmark details.
 
 ## Scatter Worker Files
 
@@ -152,7 +290,10 @@ Keep CSS for app chrome, panels, route layout, themes, and generated-data UI in
 the host app. The copied library should stay focused on rendering and interaction
 state.
 
-## Minimal Lifecycle
+## Minimal WebGL2 Lifecycle
+
+This baseline uses the WebGL2 scatter engine. The migration section above shows
+the corresponding WebGPU import, startup, and fallback lifecycle.
 
 ```ts
 import {
@@ -196,6 +337,9 @@ You can pass chart contracts directly or copy optional adapters:
 - Scatter: pass scatter column contracts with `ScatterPlotSpec` and
   `ScatterViewport`, or copy `m-scatter/adapters` for supported dataset/table
   helpers.
+- Scatter WebGPU: pass the same scatter columns directly, or copy
+  `m-scatter-webgpu/adapters` for finite known-count JSON/application streams
+  that should be encoded into preallocated typed columns in bounded batches.
 - Histogram: pass `HistogramColumns`, `HistogramPlotSpec`, optional
   `HistogramAggregationSet`, and `HistogramViewport`, or copy
   `m-histogram/adapters`.
@@ -215,13 +359,19 @@ pnpm lint
 pnpm build
 ```
 
-Then verify in a browser with WebGL2 enabled:
+Then verify the backends that the host intends to support:
 
 - The host element has nonzero width and height.
-- The chart renders without WebGL context errors.
+- WebGL2 charts render without WebGL context errors.
+- WebGPU scatter runs in a secure context, `diagnoseWebgpuSupport()` reports an
+  adapter, and `plot.interactive`/`plot.ready` resolve for representative data.
+- If WebGL2 fallback is supported, an unavailable or failed WebGPU startup
+  disposes its partial instance and creates WebGL2 in the same host.
 - Pointer, wheel, and keyboard bindings work where enabled.
 - `plot.on(...)` subscriptions receive expected viewport, selection, hover, or
   brush events.
+- Point, bubble, and heat-map scatter retain expected commands, events,
+  selections, overlays, styling, and controlled updates after a backend switch.
 - Source-copy import paths resolve without depending on this monorepo.
 - Scatter worker factories load the copied worker files, if workers are enabled.
 

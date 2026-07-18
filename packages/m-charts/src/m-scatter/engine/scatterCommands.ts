@@ -137,5 +137,6 @@ export interface FastScatterPlotCommands {
     deltaY: number;
     pointerCssX: number;
     pointerCssY: number;
+    phase?: FastScatterViewportChangePhase;
   }): FastScatterWheelZoomResult | null;
 }

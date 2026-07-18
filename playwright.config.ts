@@ -1,5 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const enableWebgpu = process.env.M_CHARTS_ENABLE_WEBGPU_E2E === '1';
+const webgpuArgs = enableWebgpu
+  ? [
+      '--disable-vulkan-surface',
+      '--enable-features=Vulkan,WebGPU,UseSkiaRenderer',
+      '--enable-unsafe-webgpu',
+      '--use-angle=vulkan',
+      '--use-vulkan=native',
+    ]
+  : [];
+
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -17,7 +28,10 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        launchOptions: { args: webgpuArgs },
+      },
     },
   ],
 });
