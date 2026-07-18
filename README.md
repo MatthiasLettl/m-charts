@@ -1,4 +1,4 @@
-§# m-charts
+# m-charts
 
 `m-charts` is a WebGL2 and WebGPU charting library built for high-performance data
 exploration in the browser. It provides framework-neutral chart engines for
