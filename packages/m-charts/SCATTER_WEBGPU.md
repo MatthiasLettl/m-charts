@@ -280,8 +280,10 @@ reduces the visible range.
   X index also performs a full-document navigation. The target axis/mode stays
   URL-backed, while stale viewport ranges are cleared so the new representation
   starts from its correct default domain without overlapping old GPU resources.
-- `?tables=multi` appends the same fixed 1,000-record secondary table generated
-  for the WebGL2 mixed-table demo. Shared columns are merged with the selected
+- The route's **Single table** / **Multiple tables** control uses a
+  full-document navigation and stores multiple-table mode as `?tables=multi`.
+  That mode appends the same fixed 1,000-record secondary table generated for
+  the WebGL2 mixed-table demo. Shared columns are merged with the selected
   primary size, while `secondarySignal` and `secondaryDrift` remain sparse
   secondary-only plots. `generate:data:local` emits this exact secondary table
   as a small sidecar, so the WebGPU route does not fetch or parse the 1M-record

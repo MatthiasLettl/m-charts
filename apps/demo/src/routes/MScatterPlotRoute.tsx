@@ -12,7 +12,9 @@ import { flushSync } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 
 import {
+  FAST_ROUTE_TABLES_PARAM,
   MIXED_TABLE_FIXTURE_URL,
+  formatFastRouteTableMode,
   parseFastRouteTableMode,
   type FastRouteTableMode,
 } from '../data/fastRouteDataMode.ts';
@@ -713,6 +715,18 @@ export function MScatterPlotRoute({
     next.searchParams.set(WEBGPU_POINT_COUNT_PARAM, String(pointCount));
     window.location.assign(next.href);
   }, [webgpuPointCount]);
+
+  const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
+    if (mode === tableMode) return;
+    const next = new URL(window.location.href);
+    const value = formatFastRouteTableMode(mode);
+    if (value === null) {
+      next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
+    } else {
+      next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
+    }
+    window.location.assign(next.href);
+  }, [tableMode]);
 
   const xAxisKey = useMemo(
     () =>
@@ -2398,6 +2412,24 @@ export function MScatterPlotRoute({
                         type="button"
                       >
                         {formatCompactPointCount(pointCount)}
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    aria-label="WebGPU table mode"
+                    className="segmented-control scatter-webgpu-table-mode-control"
+                    data-testid="scatter-webgpu-table-mode"
+                  >
+                    {(['single', 'multi'] as const).map((mode) => (
+                      <button
+                        aria-pressed={tableMode === mode}
+                        className={tableMode === mode ? 'is-active' : undefined}
+                        disabled={datasetState.status === 'generating'}
+                        key={mode}
+                        onClick={() => selectWebgpuTableMode(mode)}
+                        type="button"
+                      >
+                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
                       </button>
                     ))}
                   </div>

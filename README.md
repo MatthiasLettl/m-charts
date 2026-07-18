@@ -349,8 +349,9 @@ The demo routes are:
 - `/m-scatter`, `/m-scatter?tables=multi`, `/m-scatter-fixture`
 - `/m-scatter-webgpu`, `/m-scatter-webgpu?tables=multi`,
   `/m-scatter-webgpu-fixture` (`?points=1000000|10000000|25000000` selects
-  the primary-table size; WebGPU dataset and X-axis/mode switches use a full
-  page refresh to release the previous large CPU/GPU resources)
+  the primary-table size; WebGPU dataset size, table mode, and X-axis/mode
+  switches use a full page refresh to release the previous large CPU/GPU
+  resources)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-histogram`, `/m-histogram?tables=multi`,
   `/m-histogram?histMode=bar`, `/m-histogram-fixture`

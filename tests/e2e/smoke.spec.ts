@@ -209,7 +209,7 @@ test('m-scatter WebGPU combines its selected primary size with the fixed seconda
   );
   const chart = page.getByTestId('scatter-fast-chart-shell');
   const diagnostics = page.getByTestId('scatter-fast-route-diagnostics');
-  await expect(chart).toHaveAttribute('data-record-count', '1100');
+  await expect(chart).toHaveAttribute('data-record-count', '1100', { timeout: 30_000 });
   await expect(diagnostics).toHaveAttribute('data-table-mode', 'multi');
   await expect(diagnostics).toHaveAttribute('data-table-count', '2');
   await expect(diagnostics).toHaveAttribute(
@@ -220,6 +220,27 @@ test('m-scatter WebGPU combines its selected primary size with the fixed seconda
   await expect(page.getByTestId('scatter-fast-x-axis')).toContainText(
     'Secondary signal',
   );
+
+  const tableModeControl = page.getByTestId('scatter-webgpu-table-mode');
+  await expect(tableModeControl.getByRole('button', { name: 'Multiple tables' }))
+    .toHaveClass(/is-active/u);
+  await page.evaluate(() => {
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker = 'old-document';
+  });
+  await tableModeControl.getByRole('button', { name: 'Single table' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('tables')).toBeNull();
+  await expect.poll(() => page.evaluate(() =>
+    (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
+      .__webgpuDocumentMarker ?? null,
+  )).toBeNull();
+  await expect(chart).toHaveAttribute('data-record-count', '1000', { timeout: 30_000 });
+  await expect(diagnostics).toHaveAttribute('data-table-mode', 'single');
+
+  await tableModeControl.getByRole('button', { name: 'Multiple tables' }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('tables')).toBe('multi');
+  await expect(chart).toHaveAttribute('data-record-count', '1100', { timeout: 30_000 });
+  await expect(diagnostics).toHaveAttribute('data-table-mode', 'multi');
 
   await page.evaluate(() => {
     (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })

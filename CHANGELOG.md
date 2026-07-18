@@ -41,8 +41,9 @@ should remain unchanged.
   adapter/device; applications can retain the WebGL2 factory as a
   host-controlled fallback when WebGPU or dataset initialization is unavailable.
 - Added `/m-scatter-webgpu` and `/m-scatter-webgpu-fixture` demo routes with 1M,
-  10M, and 25M browser-generated datasets, IndexedDB reuse, single- and
-  multiple-table modes, aggregation-backend controls, and live diagnostics.
+  10M, and 25M browser-generated datasets, IndexedDB reuse, full-refresh
+  dataset-size and single-/multiple-table controls, aggregation-backend
+  controls, and live diagnostics.
 - Added WebGPU migration, source-copy, API, architecture, validation, benchmark,
   and troubleshooting documentation.
 

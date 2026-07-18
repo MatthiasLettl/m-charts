@@ -2159,6 +2159,17 @@ button.secondary-link:disabled {
   margin-bottom: 0.75rem;
 }
 
+.segmented-control.scatter-webgpu-table-mode-control {
+  display: grid;
+  grid-template-columns: minmax(0, 0.44fr) minmax(0, 0.56fr);
+  gap: 0.35rem;
+}
+
+.scatter-webgpu-table-mode-control button {
+  min-width: 0;
+  padding-inline: 0.25rem;
+}
+
 .scatter-webgpu-dataset-setup {
   align-content: center;
   justify-items: start;
