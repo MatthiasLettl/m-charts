@@ -1312,7 +1312,24 @@ const middleEvents: string[] = [];
 middlePlot.plot.on('viewportundorequest', (request) => {
   middleEvents.push(request.source);
 });
+const middleZoomViewport = middlePlot.plot.commands.getStateSnapshot().viewport;
+const middleZoomSubplot = middleZoomViewport.subplotById.temperature;
+assert.ok(middleZoomSubplot);
+middlePlot.plot.commands.setViewport(
+  {
+    subplotById: {
+      ...middleZoomViewport.subplotById,
+      temperature: {
+        ...middleZoomSubplot,
+        x: { max: 5, min: 0 },
+      },
+    },
+  },
+  'rectangle-zoom',
+);
 const middlePoint = pointInTemperatureBin(middlePlot.plot);
+const middleAggregationBefore =
+  middlePlot.plot.commands.getStateSnapshot().aggregation;
 const middleBefore = middlePlot.plot.commands.getStateSnapshot().viewport.subplotById.temperature;
 assert.ok(middleBefore);
 middlePlot.input.dispatchEvent(
@@ -1347,6 +1364,10 @@ assert.equal(middlePlot.plot.commands.getStateSnapshot().cursor, 'default');
 assert.ok(middleAfter);
 assert.notDeepEqual(middleAfter.x, middleBefore.x);
 assert.notDeepEqual(middleAfter.y, middleBefore.y);
+assert.notEqual(
+  middlePlot.plot.commands.getStateSnapshot().aggregation,
+  middleAggregationBefore,
+);
 assert.deepEqual(middleEvents, []);
 
 middlePlot.input.dispatchEvent(

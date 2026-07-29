@@ -511,10 +511,11 @@ try {
   );
   assert.equal(histogramBarsPayload.parameters.length, 3);
 
-  const stackedParameterCount = histogramBarsPayload.parameters.filter((parameter) =>
-    parameter.bins.some((bin) => bin.colorCounts !== undefined)
-  ).length;
-  assert.ok(stackedParameterCount >= 1);
+  assert.ok(
+    histogramBarsPayload.parameters.every((parameter) =>
+      parameter.bins.every((bin) => bin.colorCounts !== undefined)
+    ),
+  );
 
   for (const parameter of histogramBarsPayload.parameters) {
     assert.equal(parameter.bins.length, 8);

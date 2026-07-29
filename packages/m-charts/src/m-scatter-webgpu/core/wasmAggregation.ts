@@ -14,7 +14,7 @@ import { FAST_SCATTER_WEBGPU_MAX_BUBBLE_AGGREGATES_PER_SUBPLOT } from './aggrega
 import {
   FAST_SCATTER_AGGREGATION_WASM_BASE64,
   FAST_SCATTER_AGGREGATION_WASM_SHA256,
-} from './aggregationWasmBinary.js';
+} from '../../plot-engine-webgpu/core/aggregationWasmBinary.js';
 
 const COLUMN_F32 = 1;
 const COLUMN_F64 = 2;

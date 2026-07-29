@@ -15,6 +15,8 @@ src/vendor/m-charts/m-scatter-webgpu/core
 src/vendor/m-charts/m-scatter-webgpu/engine
 src/vendor/m-charts/m-histogram/core
 src/vendor/m-charts/m-histogram/engine
+src/vendor/m-charts/m-histogram-webgpu/core
+src/vendor/m-charts/m-histogram-webgpu/engine
 src/vendor/m-charts/m-parallel/core
 src/vendor/m-charts/m-parallel/engine
 ```
@@ -29,6 +31,7 @@ Examples:
 - [Scatter WebGL2](scatter-source-copy.md)
 - [Migrate scatter from WebGL2 to WebGPU](scatter-webgpu-migration.md)
 - [Histogram](histogram-source-copy.md)
+- [Migrate histogram from WebGL2 to WebGPU](histogram-webgpu-migration.md)
 - [Parallel coordinates](parallel-source-copy.md)
 
 ## Validation

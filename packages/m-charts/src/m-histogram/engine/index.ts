@@ -1,4 +1,5 @@
 export { createHistogramPlot } from './createHistogramPlot.js';
+export { createHistogramEngine } from './createHistogramEngine.js';
 export { createDefaultHistogramBindings } from './defaultHistogramBindings.js';
 export type { DefaultHistogramBindingsOptions } from './defaultHistogramBindings.js';
 export type { HistogramPlotCommands } from './histogramCommands.js';
@@ -36,6 +37,10 @@ export type {
 } from './histogramState.js';
 export type {
   HistogramBinding,
+  HistogramAggregationProvider,
+  HistogramEngineBackend,
+  HistogramEngineContextLifecycleHandlers,
+  HistogramEngineRendererLifecycleHandlers,
   HistogramPlotInstance,
   HistogramPlotOptions,
   HistogramRendererFactory,

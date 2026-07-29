@@ -69,6 +69,51 @@ struct BubbleResult {
 }
 
 #[derive(Default)]
+struct HistogramResult {
+    color_counts: Vec<u32>,
+    color_offsets: Vec<u32>,
+    color_values: Vec<u32>,
+    counts: Vec<u32>,
+    domain_max: f64,
+    domain_min: f64,
+    hovered: Vec<u8>,
+    invalid_count: u32,
+    out_of_domain_count: u32,
+    selected_counts: Vec<u32>,
+    source_indices: Vec<u32>,
+    total_count: u32,
+    visited_count: u32,
+}
+
+struct HistogramColorCount {
+    color: u32,
+    count: u32,
+    first_row_index: u32,
+    first_value: f64,
+}
+
+#[derive(Default)]
+struct HistogramColumnIndex {
+    domain_max: f64,
+    domain_min: f64,
+    invalid_count: u32,
+    out_of_domain_count: u32,
+    row_indices_by_value: Vec<u32>,
+}
+
+#[derive(Default)]
+struct HistogramSession {
+    color: Option<Vec<u32>>,
+    column_indices: Vec<Option<HistogramColumnIndex>>,
+    columns: Vec<Column>,
+    point_count: usize,
+    results: Vec<HistogramResult>,
+    selected: Vec<u8>,
+    selection_input: Vec<u32>,
+    source_index: Option<Vec<u32>>,
+}
+
+#[derive(Default)]
 struct Session {
     point_count: usize,
     x: Column,
@@ -84,6 +129,455 @@ struct Session {
 
 thread_local! {
     static SESSION: RefCell<Session> = RefCell::new(Session::default());
+    static HISTOGRAM_SESSION: RefCell<HistogramSession> =
+        RefCell::new(HistogramSession::default());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_session_reset(point_count: u32, column_count: u32) {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        *session = HistogramSession {
+            column_indices: (0..column_count).map(|_| None).collect(),
+            columns: (0..column_count).map(|_| Column::default()).collect(),
+            point_count: point_count as usize,
+            ..HistogramSession::default()
+        };
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_column_prepare_index(
+    slot: u32,
+    domain_min: f64,
+    domain_max: f64,
+) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        if !domain_min.is_finite() || !domain_max.is_finite() || domain_max < domain_min {
+            return u32::MAX;
+        }
+        let Some(column) = session.columns.get(slot as usize) else {
+            return u32::MAX;
+        };
+        let mut index = HistogramColumnIndex {
+            domain_max: f64::NEG_INFINITY,
+            domain_min: f64::INFINITY,
+            ..HistogramColumnIndex::default()
+        };
+        index.row_indices_by_value.reserve(session.point_count);
+        for row_index in 0..session.point_count {
+            let value = column.read(row_index);
+            if !value.is_finite() {
+                index.invalid_count = index.invalid_count.saturating_add(1);
+                continue;
+            }
+            if value < domain_min || value > domain_max {
+                index.out_of_domain_count = index.out_of_domain_count.saturating_add(1);
+                continue;
+            }
+            index.domain_min = index.domain_min.min(value);
+            index.domain_max = index.domain_max.max(value);
+            index.row_indices_by_value.push(row_index as u32);
+        }
+        index.row_indices_by_value.sort_unstable_by(|left, right| {
+            column
+                .read(*left as usize)
+                .partial_cmp(&column.read(*right as usize))
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| left.cmp(right))
+        });
+        let length = index.row_indices_by_value.len().min(u32::MAX as usize) as u32;
+        let Some(target) = session.column_indices.get_mut(slot as usize) else {
+            return u32::MAX;
+        };
+        *target = Some(index);
+        length
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_column_reserve(slot: u32, kind: u32, byte_length: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        let Some(column) = session.columns.get_mut(slot as usize) else {
+            return 0;
+        };
+        column.kind = kind;
+        column.bytes.resize(byte_length as usize, 0);
+        column.bytes.as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_set_source_index(enabled: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        if enabled == 0 {
+            session.source_index = None;
+            return 0;
+        }
+        session.source_index = Some(vec![0; session.point_count]);
+        session.source_index.as_mut().unwrap().as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_set_color(enabled: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        if enabled == 0 {
+            session.color = None;
+            return 0;
+        }
+        session.color = Some(vec![u32::MAX; session.point_count]);
+        session.color.as_mut().unwrap().as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_selection_reserve(length: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        session.results.clear();
+        session.selection_input.resize(length as usize, 0);
+        session.selection_input.as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_results_reset() {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        session.results.clear();
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_set_selection(pointer: u32, length: u32) {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        if pointer == 0 || length == 0 {
+            session.selected.clear();
+            return;
+        }
+        session.selected.resize(session.point_count, 0);
+        session.selected.fill(0);
+        let values = unsafe { std::slice::from_raw_parts(pointer as *const u32, length as usize) };
+        for &source_index in values {
+            if let Some(value) = session.selected.get_mut(source_index as usize) {
+                *value = 1;
+            }
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_build(
+    slot: u32,
+    domain_min: f64,
+    domain_max: f64,
+    bin_size: f64,
+    global_index_start: u32,
+    total_bin_count: u32,
+    visible_bin_count: u32,
+    visible_min: f64,
+    visible_max: f64,
+    hover_source_index: i64,
+    categorical: u32,
+    include_membership: u32,
+) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        let Some(column) = session.columns.get(slot as usize) else {
+            return u32::MAX;
+        };
+        let visible_count = visible_bin_count.max(1) as usize;
+        let mut result = HistogramResult {
+            color_offsets: vec![0; visible_count + 1],
+            counts: vec![0; visible_count],
+            domain_max: f64::NEG_INFINITY,
+            domain_min: f64::INFINITY,
+            hovered: vec![0; visible_count],
+            selected_counts: vec![0; visible_count],
+            ..HistogramResult::default()
+        };
+        let mut color_counts_by_bin: Vec<SmallVec<[HistogramColorCount; 8]>> =
+            (0..visible_count).map(|_| SmallVec::new()).collect();
+        let mut source_indices_by_bin: Vec<Vec<u32>> =
+            if include_membership == 0 || categorical == 0 {
+                Vec::new()
+            } else {
+                (0..visible_count).map(|_| Vec::new()).collect()
+            };
+        if !domain_min.is_finite()
+            || !domain_max.is_finite()
+            || !bin_size.is_finite()
+            || bin_size <= 0.0
+            || total_bin_count == 0
+            || !visible_min.is_finite()
+            || !visible_max.is_finite()
+            || visible_max < visible_min
+        {
+            return u32::MAX;
+        }
+        let column_index = session
+            .column_indices
+            .get(slot as usize)
+            .and_then(Option::as_ref)
+            .filter(|_| categorical == 0);
+        if let Some(index) = column_index {
+            result.invalid_count = index.invalid_count;
+            result.out_of_domain_count = index.out_of_domain_count;
+            result.domain_min = index.domain_min;
+            result.domain_max = index.domain_max;
+        }
+        let candidate_start = column_index.map_or(0, |index| {
+            index
+                .row_indices_by_value
+                .partition_point(|row_index| column.read(*row_index as usize) < visible_min)
+        });
+        let candidate_end = column_index.map_or(session.point_count, |index| {
+            index
+                .row_indices_by_value
+                .partition_point(|row_index| column.read(*row_index as usize) <= visible_max)
+        });
+        let visible_global_end = global_index_start
+            .saturating_add(visible_bin_count)
+            .min(total_bin_count);
+        let visible_bin_max = if visible_global_end >= total_bin_count {
+            domain_max
+        } else {
+            (domain_min + visible_global_end as f64 * bin_size).min(domain_max)
+        };
+        for candidate_index in candidate_start..candidate_end {
+            let row_index = column_index.map_or(candidate_index, |index| {
+                index.row_indices_by_value[candidate_index] as usize
+            });
+            result.visited_count = result.visited_count.saturating_add(1);
+            let value = column.read(row_index);
+            if !value.is_finite() {
+                if column_index.is_none() {
+                    result.invalid_count = result.invalid_count.saturating_add(1);
+                }
+                continue;
+            }
+            if value < domain_min || value > domain_max {
+                if column_index.is_none() {
+                    if categorical == 0 {
+                        result.out_of_domain_count = result.out_of_domain_count.saturating_add(1);
+                    } else {
+                        result.invalid_count = result.invalid_count.saturating_add(1);
+                    }
+                }
+                continue;
+            }
+            if column_index.is_none() {
+                result.domain_min = result.domain_min.min(value);
+                result.domain_max = result.domain_max.max(value);
+            }
+            let global_index = if value == visible_bin_max {
+                visible_global_end.saturating_sub(1)
+            } else {
+                ((value - domain_min) / bin_size).floor().max(0.0) as u32
+            };
+            if global_index < global_index_start {
+                continue;
+            }
+            let local_index = global_index - global_index_start;
+            if local_index >= visible_bin_count {
+                continue;
+            }
+            let local = local_index as usize;
+            result.counts[local] = result.counts[local].saturating_add(1);
+            result.total_count = result.total_count.saturating_add(1);
+            let color = session
+                .color
+                .as_ref()
+                .and_then(|values| values.get(row_index))
+                .copied()
+                .unwrap_or(u32::MAX);
+            let color_counts = &mut color_counts_by_bin[local];
+            if let Some(entry) = color_counts.iter_mut().find(|entry| entry.color == color) {
+                entry.count = entry.count.saturating_add(1);
+                if value < entry.first_value {
+                    entry.first_value = value;
+                    entry.first_row_index = row_index as u32;
+                }
+            } else {
+                color_counts.push(HistogramColorCount {
+                    color,
+                    count: 1,
+                    first_row_index: row_index as u32,
+                    first_value: value,
+                });
+            }
+            let source_index = session
+                .source_index
+                .as_ref()
+                .and_then(|values| values.get(row_index))
+                .copied()
+                .unwrap_or(row_index as u32);
+            if session.selected.get(source_index as usize).copied() == Some(1) {
+                result.selected_counts[local] = result.selected_counts[local].saturating_add(1);
+            }
+            if hover_source_index >= 0 && source_index == hover_source_index as u32 {
+                result.hovered[local] = 1;
+            }
+            if include_membership != 0 {
+                if categorical == 0 {
+                    result.source_indices.push(source_index);
+                } else {
+                    source_indices_by_bin[local].push(source_index);
+                }
+            }
+        }
+        for (bin_index, mut color_counts) in color_counts_by_bin.into_iter().enumerate() {
+            if categorical == 0 {
+                color_counts.sort_by(|left, right| {
+                    left.first_value
+                        .partial_cmp(&right.first_value)
+                        .unwrap_or(Ordering::Equal)
+                        .then_with(|| left.first_row_index.cmp(&right.first_row_index))
+                });
+            }
+            result.color_offsets[bin_index] = result.color_values.len() as u32;
+            for entry in color_counts {
+                result.color_values.push(entry.color);
+                result.color_counts.push(entry.count);
+            }
+        }
+        result.color_offsets[visible_count] = result.color_values.len() as u32;
+        if include_membership != 0 && categorical != 0 {
+            result.source_indices.reserve(result.total_count as usize);
+            for source_indices in source_indices_by_bin {
+                result.source_indices.extend(source_indices);
+            }
+        }
+        let index = session.results.len();
+        session.results.push(result);
+        index.min(u32::MAX as usize) as u32
+    })
+}
+
+macro_rules! histogram_result_u32_accessors {
+    ($ptr_name:ident, $len_name:ident, $field:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $ptr_name(index: u32) -> u32 {
+            HISTOGRAM_SESSION.with_borrow(|session| {
+                session
+                    .results
+                    .get(index as usize)
+                    .map_or(0, |result| result.$field.as_ptr() as u32)
+            })
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn $len_name(index: u32) -> u32 {
+            HISTOGRAM_SESSION.with_borrow(|session| {
+                session.results.get(index as usize).map_or(0, |result| {
+                    result.$field.len().min(u32::MAX as usize) as u32
+                })
+            })
+        }
+    };
+}
+
+histogram_result_u32_accessors!(histogram_counts_ptr, histogram_counts_len, counts);
+histogram_result_u32_accessors!(
+    histogram_color_counts_ptr,
+    histogram_color_counts_len,
+    color_counts
+);
+histogram_result_u32_accessors!(
+    histogram_color_offsets_ptr,
+    histogram_color_offsets_len,
+    color_offsets
+);
+histogram_result_u32_accessors!(
+    histogram_color_values_ptr,
+    histogram_color_values_len,
+    color_values
+);
+histogram_result_u32_accessors!(
+    histogram_selected_counts_ptr,
+    histogram_selected_counts_len,
+    selected_counts
+);
+histogram_result_u32_accessors!(
+    histogram_source_indices_ptr,
+    histogram_source_indices_len,
+    source_indices
+);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_hovered_ptr(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.hovered.as_ptr() as u32)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_hovered_len(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.hovered.len() as u32)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_invalid_count(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.invalid_count)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_out_of_domain_count(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.out_of_domain_count)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_total_count(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.total_count)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_visited_count(index: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(0, |result| result.visited_count)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_domain_min(index: u32) -> f64 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(f64::NAN, |result| result.domain_min)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_domain_max(index: u32) -> f64 {
+    HISTOGRAM_SESSION.with_borrow(|session| {
+        session
+            .results
+            .get(index as usize)
+            .map_or(f64::NAN, |result| result.domain_max)
+    })
 }
 
 #[unsafe(no_mangle)]

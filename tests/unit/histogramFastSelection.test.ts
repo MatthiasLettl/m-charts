@@ -224,7 +224,7 @@ const missingMembershipSelection = selectHistogramBinsInBounds({
 });
 assert.equal(missingMembershipSelection.selectedBinCount, 1);
 assert.equal(missingMembershipSelection.sourceIndicesAvailable, false);
-assert.equal(missingMembershipSelection.selectedSourceCount, 0);
+assert.equal(missingMembershipSelection.selectedSourceCount, 4);
 assert.deepEqual(Array.from(missingMembershipSelection.sourceIndices), []);
 assert.deepEqual(
   missingMembershipSelection.binDescriptors.map((descriptor) => [

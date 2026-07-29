@@ -56,6 +56,10 @@
       "types": "./dist/m-histogram/index.d.ts",
       "import": "./dist/m-histogram/index.js"
     },
+    "./m-histogram-webgpu": {
+      "types": "./dist/m-histogram-webgpu/index.d.ts",
+      "import": "./dist/m-histogram-webgpu/index.js"
+    },
     "./scatter": {
       "types": "./dist/m-scatter/index.d.ts",
       "import": "./dist/m-scatter/index.js"

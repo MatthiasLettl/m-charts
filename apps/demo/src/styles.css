@@ -2598,6 +2598,10 @@ button.secondary-link:disabled {
   grid-template-columns: minmax(0, 0.59fr) minmax(0, 1.25fr) minmax(0, 1.16fr);
 }
 
+.histogram-webgpu-input-mode-control {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .scatter-fast-aggregation-backend-radio-group label {
   padding-inline: 0.25rem;
 }

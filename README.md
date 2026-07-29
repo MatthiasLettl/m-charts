@@ -38,6 +38,15 @@ when integrating into another application.
   fallback, selectable at WebGPU plot creation. Known-count record streams can
   be encoded into preallocated typed columns in bounded batches before the plot
   is created.
+- An isolated WebGPU histogram renderer over the same public histogram
+  contract. It renders every normalized bin/stack segment (histograms do not
+  sample bars), accepts raw or pre-aggregated bar inputs, and uses exact
+  Rust/WebAssembly aggregation by default for typed continuous,
+  unsigned-integer categorical/boolean, and packed-rgba32 color columns with
+  explicit domains.
+  `aggregationBackend: 'auto' | 'rust-wasm' | 'typescript'` enables direct
+  comparison; unsupported raw shapes use the exact TypeScript compatibility
+  path.
 - Typed-array data contracts for high-volume rendering and selection flows.
 - Framework-neutral `core` and `engine` modules with optional React helpers.
 - Imperative lifecycle: create a plot in a DOM host, call `update(...)`, invoke
@@ -50,8 +59,8 @@ when integrating into another application.
 
 - `m-scatter`, `m-histogram`, and `m-parallel` use WebGL2. They require a
   WebGL2-capable browser and do not support WebGL1-only environments.
-- `m-scatter-webgpu` uses WebGPU for point, bubble, and heat-map scatter. It
-  requires a secure context and a browser/device that can return a WebGPU
+- `m-scatter-webgpu` and `m-histogram-webgpu` use WebGPU. They
+  require a secure context and a browser/device that can return a WebGPU
   adapter. WebGPU availability and device limits can differ from WebGL2 even in
   the same browser.
 - All engines also depend on modern browser APIs such as typed arrays,
@@ -109,6 +118,10 @@ import from `m-charts/m-scatter` to `m-charts/m-scatter-webgpu`; WebGPU startup
 and device recovery then report through the shared lifecycle events. Its
 creation-only renderer options, asynchronous startup gates, and representative
 high-density point rendering are the documented backend-specific additions.
+The histogram engine follows the same separation: `m-histogram` remains the
+unchanged WebGL2-compatible entry point, while `m-histogram-webgpu` is its
+export/type superset and swaps in the asynchronous WebGPU renderer plus the
+creation-only aggregation backend selector.
 
 Keep reusable `core` and `engine` modules independent of React, React Router,
 demo routes, generated fixtures, app state, theme modules, local environment
@@ -145,6 +158,7 @@ the package notes:
 - [packages/m-charts/SCATTER.md](packages/m-charts/SCATTER.md)
 - [packages/m-charts/SCATTER_WEBGPU.md](packages/m-charts/SCATTER_WEBGPU.md)
 - [packages/m-charts/HISTOGRAM.md](packages/m-charts/HISTOGRAM.md)
+- [packages/m-charts/HISTOGRAM_WEBGPU.md](packages/m-charts/HISTOGRAM_WEBGPU.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
 
 For the detailed integration reference, see
@@ -181,6 +195,24 @@ that index to find the nearest rendered representative.
 WebGPU bubble/heat-map aggregation can be profiled with
 `aggregationBackend: 'auto' | 'rust-wasm' | 'typescript'`; the WebGPU demo
 persists the same choice in its `aggregationBackend` query parameter.
+
+For WebGPU histogram, keep `m-histogram/core` and `m-histogram/engine`, then add
+`plot-engine-webgpu`, `m-histogram-webgpu/core`, and
+`m-histogram-webgpu/engine`. Change only the factory import:
+
+```diff
+- import { createHistogramPlot } from './vendor/m-charts/m-histogram/engine/index.js';
++ import { createHistogramPlot } from './vendor/m-charts/m-histogram-webgpu/engine/index.js';
+```
+
+Raw columns, pre-aggregated bars, bindings, commands, events, overlays, and
+shared CSS hooks remain compatible. Await `plot.ready`, handle startup
+rejection, and keep the WebGL2 factory as a host-controlled fallback when
+needed. The WebGPU-only `aggregationBackend` option selects exact Rust/WASM or
+TypeScript aggregation; unsupported input shapes fall back to TypeScript.
+The Rust/WASM path indexes continuous columns once, limits repeated aggregation
+to visible candidates, reuses unchanged subplots, and materializes exact
+source membership without switching backends.
 
 The WebGPU demo generates its 1M, 10M, or 25M deterministic paged dataset in a
 Web Worker on first use and stores it in IndexedDB for later visits. This is the
@@ -301,6 +333,12 @@ const plot = createHistogramPlot(host, {
 plot.use(createDefaultHistogramBindings());
 ```
 
+To use WebGPU with the same histogram contract, add the WebGPU source folders,
+change the engine import to
+`./vendor/m-charts/m-histogram-webgpu/engine/index.js`, and await startup. The
+copy-ready migration and fallback example is
+[docs/examples/histogram-webgpu-migration.md](docs/examples/histogram-webgpu-migration.md).
+
 ### Parallel Coordinates
 
 ```ts
@@ -355,6 +393,10 @@ The demo routes are:
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-histogram`, `/m-histogram?tables=multi`,
   `/m-histogram?histMode=bar`, `/m-histogram-fixture`
+- `/m-histogram-webgpu`, `/m-histogram-webgpu?tables=multi`,
+  `/m-histogram-webgpu?histMode=bar`, `/m-histogram-webgpu-fixture`
+  (`?points=1000000|10000000|25000000`; dataset-size, table-mode, input-mode,
+  and aggregation-backend controls use full-document navigation)
 - `?theme=light|dark` works on demo routes
 
 Generated demo data lives under `apps/demo/public/data/`, is ignored by git, and
@@ -369,6 +411,7 @@ packages/m-charts/src/m-scatter
 packages/m-charts/src/m-scatter-webgpu
 packages/m-charts/src/m-parallel
 packages/m-charts/src/m-histogram
+packages/m-charts/src/m-histogram-webgpu
 apps/demo/src
 tests/unit
 tests/e2e
@@ -385,6 +428,7 @@ Package notes:
 - [packages/m-charts/SCATTER.md](packages/m-charts/SCATTER.md)
 - [packages/m-charts/SCATTER_WEBGPU.md](packages/m-charts/SCATTER_WEBGPU.md)
 - [packages/m-charts/HISTOGRAM.md](packages/m-charts/HISTOGRAM.md)
+- [packages/m-charts/HISTOGRAM_WEBGPU.md](packages/m-charts/HISTOGRAM_WEBGPU.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
 - [packages/m-charts/llms.md](packages/m-charts/llms.md)
 - [docs/adding-visualization-type.md](docs/adding-visualization-type.md)
@@ -412,7 +456,7 @@ shared behavior:
 pnpm typecheck
 pnpm lint
 pnpm lint:rust
-pnpm check:scatter-wasm
+pnpm check:aggregation-wasm
 pnpm test:unit
 pnpm test:e2e
 pnpm build

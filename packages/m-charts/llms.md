@@ -4,7 +4,8 @@ This file is the detailed integration reference for agents and humans using the
 `m-charts` package in another application. It documents the reusable WebGL2 and
 WebGPU plot library in this repository. WebGL2 powers scatter, histogram, and
 parallel-coordinate engines; WebGPU is an alternative point, bubble, and
-heat-map scatter renderer over the same public scatter contract.
+heat-map scatter renderer and an alternative histogram renderer over the same
+respective public contracts.
 
 `m-charts` is not published to npm yet, and `npm install m-charts` is not a
 supported consumer path. The current public usage path is source-copy
@@ -20,6 +21,7 @@ import { createEmitter } from 'm-charts/plot-engine';
 import { createScatterPlot } from 'm-charts/m-scatter';
 import { createScatterPlot as createWebgpuScatterPlot } from 'm-charts/m-scatter-webgpu';
 import { createHistogramPlot } from 'm-charts/m-histogram';
+import { createHistogramPlot as createWebgpuHistogramPlot } from 'm-charts/m-histogram-webgpu';
 import { createParallelPlot } from 'm-charts/m-parallel';
 ```
 
@@ -40,6 +42,8 @@ packages/m-charts/src/m-scatter-webgpu/core
 packages/m-charts/src/m-scatter-webgpu/engine
 packages/m-charts/src/m-histogram/core
 packages/m-charts/src/m-histogram/engine
+packages/m-charts/src/m-histogram-webgpu/core
+packages/m-charts/src/m-histogram-webgpu/engine
 packages/m-charts/src/m-parallel/core
 packages/m-charts/src/m-parallel/engine
 ```
@@ -105,6 +109,46 @@ renderer-owned `playEasterEgg()` playback on both backends. The full human guide
 and copy-ready fallback example are in
 `docs/source-copy-integration.md` and
 `docs/examples/scatter-webgpu-migration.md`.
+
+## Migrating Existing WebGL2 Histogram To WebGPU
+
+Treat WebGPU histogram as a renderer and raw-aggregation backend switch. Keep
+the histogram columns or bar aggregation, spec, viewport/bin-size state,
+options, bindings, commands, events, overlays, callbacks, controlled updates,
+and shared CSS hooks.
+
+For a workspace package consumer:
+
+```diff
+- import { createHistogramPlot } from 'm-charts/m-histogram';
++ import { createHistogramPlot } from 'm-charts/m-histogram-webgpu';
+```
+
+For source-copy integrations:
+
+1. Keep `plot-engine`, `m-histogram/core`, and `m-histogram/engine`.
+2. Add `plot-engine-webgpu`, `m-histogram-webgpu/core`, and
+   `m-histogram-webgpu/engine`.
+3. Keep utility/data imports from `m-histogram/core` and change the factory
+   import to `m-histogram-webgpu/engine/index.js`.
+4. Add `@webgpu/types` when host TypeScript DOM declarations lack WebGPU.
+5. Await `plot.ready`, handle rejection, and dispose failed instances.
+6. If WebGL2 fallback is product policy, diagnose WebGPU, attempt startup, then
+   create the original WebGL2 histogram only after failed WebGPU cleanup.
+
+The WebGL2-only `forceWebglUnavailable`, `preserveDrawingBuffer`, and
+`rendererFactory` fields are accepted and ignored. WebGPU adds the
+creation-only `aggregationBackend` and `requestTimestampQuery` options.
+`aggregationBackend` accepts `auto`, `rust-wasm`, or `typescript`; the first
+two prefer exact Rust/WASM aggregation for supported typed columns and use the
+exact TypeScript builder for unsupported shapes. Exact membership
+materialization stays in Rust/WASM for supported inputs. Pre-aggregated bar
+mode does not run raw aggregation.
+
+The full human guide and copy-ready fallback example are in
+`packages/m-charts/HISTOGRAM_WEBGPU.md`,
+`docs/source-copy-integration.md`, and
+`docs/examples/histogram-webgpu-migration.md`.
 
 ## Architecture Mental Model
 
@@ -1550,7 +1594,33 @@ import {
   createDefaultHistogramViewport,
   normalizeHistogramBarSeries,
 } from 'm-charts/m-histogram';
+import {
+  createHistogramPlot as createWebgpuHistogramPlot,
+  type HistogramWebgpuPlotInstance,
+} from 'm-charts/m-histogram-webgpu';
 ```
+
+`m-histogram-webgpu` is an export/type superset of `m-histogram`. Existing
+integrations retain the same options, bindings, commands, events, callbacks,
+overlays, and update behavior after changing the import. The WebGPU instance
+adds `interactive`, `ready`, and `getWebgpuDiagnostics()`. Its creation-only
+options are:
+
+```ts
+aggregationBackend?: 'auto' | 'rust-wasm' | 'typescript';
+requestTimestampQuery?: boolean;
+```
+
+`auto` is the default. Rust/WASM handles exact raw aggregation for typed
+continuous columns, sequentially encoded unsigned-integer categorical/boolean
+columns, and packed `Uint32Array` rgba32 colors with explicit domains. It builds
+persistent sorted row-order indexes for continuous parameters, binary-searches
+visible candidates during viewport/bin-size changes, reuses unchanged subplot
+results, and materializes exact source membership without changing backend.
+String columns, inferred domains, non-sequential categories, and rgba8 colors
+use the exact TypeScript compatibility builder. Pre-aggregated `bar` mode
+bypasses raw aggregation. WebGPU renders every normalized bin and stack segment;
+unlike dense scatter points, histogram bars are never sampled or reduced.
 
 Core capabilities:
 
@@ -2493,6 +2563,8 @@ interpret it.
   `hoverAtPoint` results; omitting it uses the sorted-X fallback.
 - Histogram raw continuous bin-size changes should be debounced and can defer
   source-index membership materialization until export or settled UI state.
+  The WebGPU Rust/WASM provider indexes continuous values once, visits only the
+  visible candidate window on repeated builds, and reuses unchanged subplots.
 - Parallel should build `webglSegmentBuffers` once with
   `includeWebglSegmentBuffers: true` and reuse buffers during interaction.
 - Worker code is optional for scatter. Use `FastScatterAggregationController`
@@ -2509,7 +2581,7 @@ Useful focused checks after changing reusable code or this guide:
 pnpm typecheck
 pnpm lint
 pnpm lint:rust
-pnpm check:scatter-wasm
+pnpm check:aggregation-wasm
 pnpm exec tsx tests/unit/scatterFastCoreBoundary.test.ts
 pnpm exec tsx tests/unit/scatterFastEngine.test.ts
 pnpm exec tsx tests/unit/scatterFastEngineBindings.test.ts

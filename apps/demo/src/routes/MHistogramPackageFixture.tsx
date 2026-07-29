@@ -10,6 +10,7 @@ import {
   type HistogramBinSizeState,
   type HistogramColumns,
   type HistogramPlotSpec,
+  type HistogramPlotOptions,
   type HistogramRendererTheme,
   type HistogramSelectionEvent,
   type HistogramViewport,
@@ -21,8 +22,13 @@ import {
   type HistogramPlotInstance,
   type HistogramRenderState,
 } from 'm-charts/m-histogram';
+import { createHistogramWebgpuPlot } from 'm-charts/m-histogram-webgpu';
 
-export function MHistogramPackageFixture() {
+export function MHistogramPackageFixture({
+  rendererBackend = 'webgl2',
+}: {
+  rendererBackend?: 'webgl2' | 'webgpu';
+} = {}) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const plotRef = useRef<HistogramPlotInstance | null>(null);
   const { themeMode } = useThemeMode();
@@ -51,9 +57,11 @@ export function MHistogramPackageFixture() {
       return;
     }
 
-    const plot = createHistogramPlot(host, {
+    const plotOptions: HistogramPlotOptions = {
       binSizes,
-      canvasClassName: 'histogram-fast-webgl-canvas',
+      canvasClassName: rendererBackend === 'webgpu'
+        ? undefined
+        : 'histogram-fast-webgl-canvas',
       columns,
       onSelectionChange(event: HistogramSelectionEvent) {
         setSelectedSourceIndices(event.sourceIndices);
@@ -66,9 +74,14 @@ export function MHistogramPackageFixture() {
       selectedSourceIndices: initialSelectedSourceIndices,
       spec,
       theme: histogramTheme,
-    });
+    };
+    const plot = rendererBackend === 'webgpu'
+      ? createHistogramWebgpuPlot(host, plotOptions)
+      : createHistogramPlot(host, plotOptions);
     plotRef.current = plot;
-    plot.canvas.dataset.testid = 'histogram-fast-fixture-canvas';
+    plot.canvas.dataset.testid = rendererBackend === 'webgpu'
+      ? 'histogram-fast-webgpu-fixture-canvas'
+      : 'histogram-fast-fixture-canvas';
     plot.overlayElement.dataset.testid = 'histogram-fast-fixture-engine-overlay';
     plot.use(createDefaultHistogramBindings({ suppressContextMenu: true }));
 
@@ -98,7 +111,15 @@ export function MHistogramPackageFixture() {
       plotRef.current = null;
       plot.dispose();
     };
-  }, [binSizes, columns, histogramTheme, initialSelectedSourceIndices, preserveDrawingBuffer, spec]);
+  }, [
+    binSizes,
+    columns,
+    histogramTheme,
+    initialSelectedSourceIndices,
+    preserveDrawingBuffer,
+    rendererBackend,
+    spec,
+  ]);
 
   useEffect(() => {
     plotRef.current?.update({
@@ -121,7 +142,7 @@ export function MHistogramPackageFixture() {
             data-overlay-count={overlays.length}
             data-record-count={columns.ids.length}
             data-render-state={renderState}
-            data-renderer="webgl2-histogram"
+            data-renderer={`${rendererBackend}-histogram`}
             data-selected-count={selectedSourceIndices.length}
             data-testid="histogram-fast-fixture-host"
             style={{ height: '24rem' }}

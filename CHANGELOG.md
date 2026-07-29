@@ -4,6 +4,49 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## WebGPU Histogram
+
+- Added `m-charts/m-histogram-webgpu` as a compatibility-superset entry point
+  with the same histogram options, bindings, commands, events, callbacks,
+  overlays, styling, raw-data mode, and pre-aggregated bar mode.
+- Extracted a renderer- and aggregation-neutral histogram engine. The existing
+  `m-histogram` WebGL2 constructor remains compatible and retains its TypeScript
+  aggregation behavior.
+- Added asynchronous WebGPU instanced-bar rendering with readiness gates,
+  device-loss/error lifecycle reporting, diagnostics, and exact rendering of
+  every resulting bin/stack segment.
+- Added selectable `auto`, `rust-wasm`, and `typescript` aggregation.
+  Rust/WASM is preferred for compatible typed continuous, unsigned-integer
+  categorical/boolean, and packed-rgba32 color data; unsupported shapes and
+  custom out-of-row-range selection shapes use the exact TypeScript path.
+  Scatter and histogram now consume one reproducibly generated shared
+  aggregation binary.
+- Added persistent sorted row-order indexes for continuous Rust/WASM histogram
+  parameters. Viewport and bin-size rebuilds binary-search the visible window,
+  reuse unchanged subplot results, report deterministic visited-row/reuse
+  diagnostics, and materialize exact membership without a TypeScript fallback.
+- Removed the redundant second aggregation pass after bin-size changes when
+  viewport normalization only changes the count-axis range.
+- Added `pnpm benchmark:histogram:webgpu`, including deterministic visited-row
+  and unchanged-subplot reuse gates plus reported setup/full/zoomed timings.
+- Deferred-membership selections now report the exact sum of selected bin
+  counts immediately while leaving the source-index array pending.
+- Fixed histogram viewport reset so one action restores the complete
+  full-dataset ranges for every subplot, including viewport-bound WebGPU
+  aggregation, instead of expanding the current visible bin window in steps.
+- Updated the shared pre-aggregated histogram demo payload so every parameter,
+  including Signal value, demonstrates four-color stacked bars consistently in
+  both the WebGL2 and WebGPU routes.
+- Added `/m-histogram-webgpu` with the same browser-generated, paged 1M, 10M,
+  and 25M dataset, three parameters, palette, and secondary-table fixture used
+  by the WebGPU scatter demo, plus pre-aggregated bars, full-refresh heavy
+  controls, and aggregation-backend comparison.
+- Added package/export compatibility, detailed Rust/WASM equivalence, fallback,
+  route, exact-frame, and reset-viewport tests.
+- Added WebGPU histogram API, architecture, source-copy migration/fallback,
+  lifecycle, diagnostics, validation, README, `llms.md`, and troubleshooting
+  documentation consistent with the WebGPU scatter release.
+
 ## WebGPU Scatter
 
 - Added `m-charts/plot-engine-webgpu` and `m-charts/m-scatter-webgpu` as an

@@ -7,8 +7,10 @@ import {
 } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  FAST_ROUTE_TABLES_PARAM,
   HISTOGRAM_BARS_DATASET_URL,
   MIXED_TABLE_FIXTURE_URL,
+  formatFastRouteTableMode,
   parseFastRouteTableMode,
   type FastRouteTableMode,
 } from '../data/fastRouteDataMode.ts';
@@ -22,6 +24,7 @@ import {
   resolveScatterFastSchemaDataUrl,
   resolveScatterFastSchemaUrl,
 } from '../data/fastPlotTableSources.ts';
+import { loadHistogramWebgpuDataset } from '../data/histogramWebgpuDatasetAdapter.ts';
 import {
   isInteractionAxis,
   type InteractionAxis,
@@ -79,8 +82,17 @@ import type {
   HistogramRenderState,
   HistogramStateSnapshot,
 } from 'm-charts/m-histogram';
+import {
+  createHistogramWebgpuPlot,
+  type HistogramWebgpuAggregationBackend,
+  type HistogramWebgpuPlotDiagnostics,
+  type HistogramWebgpuPlotInstance,
+} from 'm-charts/m-histogram-webgpu';
 
 const HISTOGRAM_MODE_PARAM = 'histMode';
+const HISTOGRAM_WEBGPU_POINT_COUNT_PARAM = 'points';
+const HISTOGRAM_WEBGPU_AGGREGATION_BACKEND_PARAM = 'aggregationBackend';
+const HISTOGRAM_WEBGPU_POINT_COUNTS = [1_000_000, 10_000_000, 25_000_000] as const;
 const HISTOGRAM_BIN_SIZE_PARAM = 'binSize';
 const HISTOGRAM_BIN_SIZE_PREFIX = 'histBinSize';
 const HISTOGRAM_FOCUSED_SUBPLOT_PARAM = 'subplot';
@@ -272,7 +284,11 @@ declare global {
   }
 }
 
-export function MHistogramPlotRoute() {
+export function MHistogramPlotRoute({
+  rendererBackend = 'webgl2',
+}: {
+  rendererBackend?: 'webgl2' | 'webgpu';
+}) {
   const [routerSearchParams, setRouterSearchParams] = useSearchParams();
   const [searchParams, setRouteSearchParams] = useState(
     () => new URLSearchParams(routerSearchParams),
@@ -280,6 +296,14 @@ export function MHistogramPlotRoute() {
   const { themeMode } = useThemeMode();
   const histMode = useMemo(() => parseHistogramRouteMode(searchParams), [searchParams]);
   const tableMode = useMemo(() => parseFastRouteTableMode(searchParams), [searchParams]);
+  const webgpuPointCount = useMemo(
+    () => parseHistogramWebgpuPointCount(searchParams),
+    [searchParams],
+  );
+  const webgpuAggregationBackend = useMemo(
+    () => parseHistogramWebgpuAggregationBackend(searchParams),
+    [searchParams],
+  );
   const selectionMode = useMemo(
     () => parseHistogramSelectionMode(searchParams),
     [searchParams],
@@ -355,6 +379,8 @@ export function MHistogramPlotRoute() {
   });
   const [rendererState, setRendererState] = useState<RendererState>({ status: 'idle' });
   const [metrics, setMetrics] = useState<HistogramMetricsEvent | null>(null);
+  const [webgpuDiagnostics, setWebgpuDiagnostics] =
+    useState<HistogramWebgpuPlotDiagnostics | null>(null);
   const [selection, setSelection] = useState<HistogramSelectionEvent | null>(null);
   const [hover, setHover] = useState<HistogramHoverEvent | null>(null);
   const [measurement, setMeasurement] = useState<HistogramMeasurementEvent | null>(
@@ -381,6 +407,7 @@ export function MHistogramPlotRoute() {
   const plotRef = useRef<HistogramPlotInstance | null>(null);
   const metricsHistoryRef = useRef<HistogramMetricsEvent[]>([]);
   const lastCommittedViewportRef = useRef<HistogramViewport | null>(null);
+  const resetViewportSeedRef = useRef<HistogramViewport | null>(null);
   const viewportHistoryRef = useRef<HistogramViewport[]>([]);
   const pendingMembershipMaterializeRef = useRef<number>(0);
   const pendingViewportWriteRef = useRef<number>(0);
@@ -580,6 +607,7 @@ export function MHistogramPlotRoute() {
 
   useEffect(() => {
     let isActive = true;
+    const abortController = new AbortController();
     const startedAt = performance.now();
 
     async function loadDataset() {
@@ -594,6 +622,18 @@ export function MHistogramPlotRoute() {
         const loaded =
           histMode === 'bar'
             ? await loadHistogramBarDataset(startedAt)
+            : rendererBackend === 'webgpu'
+              ? {
+                  ...(await loadHistogramWebgpuDataset({
+                    fixtureUrl: mixedTableFixtureUrl,
+                    pointCount: webgpuPointCount,
+                    signal: abortController.signal,
+                    startedAt,
+                    tableMode,
+                  })),
+                  recordExportAvailable: true,
+                  status: 'loaded' as const,
+                }
             : tableMode === 'multi'
               ? await loadHistogramMixedTableDataset(startedAt, mixedTableFixtureUrl)
               : await loadHistogramSingleTableDataset(startedAt, scatterFastLoadParams);
@@ -620,14 +660,17 @@ export function MHistogramPlotRoute() {
 
     return () => {
       isActive = false;
+      abortController.abort();
     };
   }, [
     clearPendingBinSizeState,
     histMode,
     mixedTableFixtureUrl,
     recordLastBinSizeCycle,
+    rendererBackend,
     scatterFastLoadParams,
     tableMode,
+    webgpuPointCount,
   ]);
 
   const binSizes = useMemo(() => {
@@ -677,6 +720,12 @@ export function MHistogramPlotRoute() {
     if (datasetState.status !== 'loaded') {
       return null;
     }
+    // The WebGPU raw route derives its URL-owned viewport from the first
+    // Rust/WASM aggregation below, avoiding a duplicate TypeScript build for
+    // the large generated dataset.
+    if (rendererBackend === 'webgpu' && histMode === 'histogram') {
+      return null;
+    }
     const aggregation = buildRouteAggregationForViewport(
       datasetState,
       histMode,
@@ -699,6 +748,7 @@ export function MHistogramPlotRoute() {
     datasetState,
     histMode,
     initialSelectedSourceIndices,
+    rendererBackend,
     viewportSearchKey,
   ]);
 
@@ -708,6 +758,10 @@ export function MHistogramPlotRoute() {
       subplotId?: HistogramSubplotId,
       requestedAt?: number,
     ): void => {
+      if (rendererBackend === 'webgpu') {
+        if (subplotId !== undefined) clearPendingBinSizeState(subplotId);
+        return;
+      }
       if (pendingMembershipMaterializeRef.current !== 0) {
         window.clearTimeout(pendingMembershipMaterializeRef.current);
       }
@@ -759,7 +813,12 @@ export function MHistogramPlotRoute() {
         }
       }, BIN_SIZE_FINALIZE_DEBOUNCE_MS);
     },
-    [clearPendingBinSizeState, recordLastBinSizeCycle, updatePendingBinSizeState],
+    [
+      clearPendingBinSizeState,
+      recordLastBinSizeCycle,
+      rendererBackend,
+      updatePendingBinSizeState,
+    ],
   );
 
   const queueBinSizeUpdate = useCallback(
@@ -885,11 +944,12 @@ export function MHistogramPlotRoute() {
       return;
     }
 
-    const plot = createHistogramPlot(host, {
+    const commonOptions = {
       aggregation: datasetState.aggregation,
       axisMode: interactionAxis,
       binSizes,
-      canvasClassName: 'histogram-fast-webgl-canvas',
+      canvasClassName:
+        rendererBackend === 'webgpu' ? undefined : 'histogram-fast-webgl-canvas',
       columns: datasetState.columns,
       mode: selectionMode,
       overlayClassName: 'histogram-fast-engine-overlay',
@@ -898,7 +958,13 @@ export function MHistogramPlotRoute() {
       spec: datasetState.spec,
       theme: histogramTheme,
       viewport: initialViewport ?? undefined,
-    });
+    };
+    const plot = rendererBackend === 'webgpu'
+      ? createHistogramWebgpuPlot(host, {
+          ...commonOptions,
+          aggregationBackend: webgpuAggregationBackend,
+        })
+      : createHistogramPlot(host, commonOptions);
     plotRef.current = plot;
     const binding = plot.use(
       createDefaultHistogramBindings({
@@ -906,11 +972,17 @@ export function MHistogramPlotRoute() {
       }),
     );
     const subscriptions = [
-      plot.on('renderstatechange', (event) =>
-        setRendererState({ message: event.message, status: event.state }),
-      ),
+      plot.on('renderstatechange', (event) => {
+        setRendererState({ message: event.message, status: event.state });
+        if (isHistogramWebgpuPlot(plot)) {
+          setWebgpuDiagnostics(plot.getWebgpuDiagnostics());
+        }
+      }),
       plot.on('metrics', (event) => {
         handleMetrics(event);
+        if (isHistogramWebgpuPlot(plot)) {
+          setWebgpuDiagnostics(plot.getWebgpuDiagnostics());
+        }
       }),
       plot.on('hoverchange', (event) => {
         setHover(event);
@@ -996,6 +1068,9 @@ export function MHistogramPlotRoute() {
       }),
     ];
     const mountedSnapshot = plot.commands.getStateSnapshot();
+    resetViewportSeedRef.current = cloneHistogramViewport(
+      createDefaultHistogramViewport(mountedSnapshot.aggregation),
+    );
     lastCommittedViewportRef.current = mountedSnapshot.viewport;
     viewportHistoryRef.current = [];
     suppressViewportHistoryRef.current = false;
@@ -1009,6 +1084,9 @@ export function MHistogramPlotRoute() {
       viewportCommitSeq: 0,
     });
     setSnapshot(mountedSnapshot);
+    if (isHistogramWebgpuPlot(plot)) {
+      setWebgpuDiagnostics(plot.getWebgpuDiagnostics());
+    }
     setRendererState({
       message: mountedSnapshot.render.renderStateMessage,
       status: mountedSnapshot.render.renderState,
@@ -1071,8 +1149,10 @@ export function MHistogramPlotRoute() {
         unsubscribe();
       }
       plot.dispose();
+      setWebgpuDiagnostics(null);
       if (plotRef.current === plot) {
         plotRef.current = null;
+        resetViewportSeedRef.current = null;
       }
     };
   // The plot instance is recreated only for dataset/host lifecycle changes.
@@ -1085,6 +1165,7 @@ export function MHistogramPlotRoute() {
     handleMetrics,
     initialSelectedSourceIndices,
     preserveDrawingBuffer,
+    rendererBackend,
     scheduleMembershipMaterialization,
     setSearchParams,
     clearPendingBinSizeState,
@@ -1093,6 +1174,7 @@ export function MHistogramPlotRoute() {
     queueBinSizeUpdate,
     recordCommittedViewportForUndo,
     recordRouteWrittenViewport,
+    webgpuAggregationBackend,
   ]);
 
   useEffect(() => {
@@ -1144,7 +1226,22 @@ export function MHistogramPlotRoute() {
 
   useEffect(() => {
     const plot = plotRef.current;
-    if (plot === null || datasetState.status !== 'loaded' || initialViewport === null) {
+    if (plot === null || datasetState.status !== 'loaded') {
+      return;
+    }
+    const routeViewport =
+      initialViewport ??
+      (
+        rendererBackend === 'webgpu' && histMode === 'histogram'
+          ? parseHistogramViewportSearchParams(
+              new URLSearchParams(viewportSearchKey),
+              createDefaultHistogramViewport(
+                plot.commands.getStateSnapshot().aggregation,
+              ),
+            )
+          : null
+      );
+    if (routeViewport === null) {
       return;
     }
     const currentViewport = plot.commands.getStateSnapshot().viewport;
@@ -1156,14 +1253,14 @@ export function MHistogramPlotRoute() {
       ((pendingViewportSyncRef.current !== null &&
         areHistogramViewportsApproximatelyEqual(
           pendingViewportSyncRef.current,
-          initialViewport,
+          routeViewport,
         )) ||
-        areHistogramViewportsApproximatelyEqual(currentViewport, initialViewport))
+        areHistogramViewportsApproximatelyEqual(currentViewport, routeViewport))
     ) {
       pendingViewportSyncRef.current = null;
       return;
     }
-    if (areHistogramViewportsApproximatelyEqual(currentViewport, initialViewport)) {
+    if (areHistogramViewportsApproximatelyEqual(currentViewport, routeViewport)) {
       pendingViewportSyncRef.current = null;
       return;
     }
@@ -1173,7 +1270,7 @@ export function MHistogramPlotRoute() {
     viewportHistoryRef.current = [];
     suppressViewportHistoryRef.current = false;
     lastViewportApplySourceRef.current = 'external-url';
-    plot.update({ viewport: initialViewport });
+    plot.update({ viewport: routeViewport });
     const updatedSnapshot = plot.commands.getStateSnapshot();
     lastCommittedViewportRef.current = updatedSnapshot.viewport;
     setSnapshot(updatedSnapshot);
@@ -1182,7 +1279,9 @@ export function MHistogramPlotRoute() {
     cancelPendingViewportReconcile,
     cancelPendingViewportWrite,
     datasetState.status,
+    histMode,
     initialViewport,
+    rendererBackend,
     viewportSearchKey,
   ]);
 
@@ -1206,6 +1305,7 @@ export function MHistogramPlotRoute() {
         snapshot,
         tableMode,
         viewportSyncDiagnostics,
+        webgpuDiagnostics,
       }),
     [
       activeContinuousBinResolution,
@@ -1225,6 +1325,7 @@ export function MHistogramPlotRoute() {
       snapshot,
       tableMode,
       viewportSyncDiagnostics,
+      webgpuDiagnostics,
     ],
   );
   const selectionCallbackPreview = useMemo(
@@ -1378,20 +1479,64 @@ export function MHistogramPlotRoute() {
     [setSearchParams],
   );
 
+  const selectWebgpuPointCount = useCallback((pointCount: number) => {
+    if (pointCount === webgpuPointCount) return;
+    const next = new URL(window.location.href);
+    next.searchParams.set(HISTOGRAM_WEBGPU_POINT_COUNT_PARAM, String(pointCount));
+    window.location.assign(next.href);
+  }, [webgpuPointCount]);
+
+  const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
+    if (mode === tableMode) return;
+    const next = new URL(window.location.href);
+    const value = formatFastRouteTableMode(mode);
+    if (value === null) next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
+    else next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
+    window.location.assign(next.href);
+  }, [tableMode]);
+
+  const selectHistogramMode = useCallback((mode: HistogramRouteMode) => {
+    if (mode === histMode) return;
+    const next = new URL(window.location.href);
+    if (mode === 'histogram') next.searchParams.delete(HISTOGRAM_MODE_PARAM);
+    else next.searchParams.set(HISTOGRAM_MODE_PARAM, mode);
+    window.location.assign(next.href);
+  }, [histMode]);
+
+  const selectWebgpuAggregationBackend = useCallback(
+    (backend: HistogramWebgpuAggregationBackend) => {
+      if (backend === webgpuAggregationBackend) return;
+      const next = new URL(window.location.href);
+      if (backend === 'auto') {
+        next.searchParams.delete(HISTOGRAM_WEBGPU_AGGREGATION_BACKEND_PARAM);
+      } else {
+        next.searchParams.set(HISTOGRAM_WEBGPU_AGGREGATION_BACKEND_PARAM, backend);
+      }
+      window.location.assign(next.href);
+    },
+    [webgpuAggregationBackend],
+  );
+
   const resetViewport = useCallback(() => {
     const plot = plotRef.current;
-    const aggregation = plot?.commands.getStateSnapshot().aggregation ?? null;
-    if (plot === null || aggregation === null) {
+    const resetSeed = resetViewportSeedRef.current;
+    if (plot === null || resetSeed === null) {
       return;
     }
 
-    const defaultViewport = createDefaultHistogramViewport(aggregation);
     cancelPendingViewportWrite();
     cancelPendingViewportReconcile();
     viewportHistoryRef.current = [];
     pendingViewportSyncRef.current = null;
     suppressViewportHistoryRef.current = false;
     lastViewportApplySourceRef.current = 'reset';
+    plot.update({
+      focusedSubplotId: null,
+      viewport: resetSeed,
+    });
+    const fullAggregation = plot.commands.getStateSnapshot().aggregation;
+    const defaultViewport = createDefaultHistogramViewport(fullAggregation);
+    resetViewportSeedRef.current = cloneHistogramViewport(defaultViewport);
     plot.update({
       focusedSubplotId: null,
       viewport: defaultViewport,
@@ -1496,6 +1641,17 @@ export function MHistogramPlotRoute() {
               <div
                 className="histogram-fast-webgl-host"
                 data-cursor={snapshot?.cursor ?? 'default'}
+                data-record-count={
+                  datasetState.status === 'loaded'
+                    ? datasetState.metadata.recordCount
+                    : undefined
+                }
+                data-render-state={rendererState.status}
+                data-renderer={
+                  rendererBackend === 'webgpu'
+                    ? 'webgpu-histogram'
+                    : 'webgl2-histogram'
+                }
                 data-testid="histogram-fast-route-host"
                 onPointerDownCapture={(event) => {
                   if (event.button !== 1) {
@@ -1558,10 +1714,153 @@ export function MHistogramPlotRoute() {
               links={[
                 { icon: 'overview', label: 'Overview', to: createThemeAwareTo('/', searchParams, themeMode) },
               ]}
-              title="m-histogram"
+              title={rendererBackend === 'webgpu' ? 'm-histogram WebGPU' : 'm-histogram'}
             />
             <section className="control-section">
               <h2>Dataset</h2>
+              {rendererBackend === 'webgpu' ? (
+                <div className="scatter-webgpu-dataset-controls">
+                  <div
+                    aria-label="WebGPU histogram dataset size"
+                    className="segmented-control"
+                    data-testid="histogram-webgpu-point-count"
+                  >
+                    {HISTOGRAM_WEBGPU_POINT_COUNTS.map((count) => (
+                      <button
+                        className={webgpuPointCount === count ? 'is-active' : undefined}
+                        disabled={histMode === 'bar'}
+                        key={count}
+                        onClick={() => selectWebgpuPointCount(count)}
+                        type="button"
+                      >
+                        {count / 1_000_000}M
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    aria-label="WebGPU histogram table mode"
+                    className="segmented-control scatter-webgpu-table-mode-control"
+                    data-testid="histogram-webgpu-table-mode"
+                  >
+                    {(['single', 'multi'] as const).map((mode) => (
+                      <button
+                        aria-pressed={tableMode === mode}
+                        className={tableMode === mode ? 'is-active' : undefined}
+                        disabled={histMode === 'bar'}
+                        key={mode}
+                        onClick={() => selectWebgpuTableMode(mode)}
+                        type="button"
+                      >
+                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
+                      </button>
+                    ))}
+                  </div>
+                  <details
+                    className="control-disclosure scatter-webgpu-dataset-details"
+                    data-testid="histogram-webgpu-dataset-details"
+                  >
+                    <summary>Dataset details</summary>
+                    <div className="control-disclosure-body">
+                      <p className="compact-note">
+                        Uses the same locally generated, paged dataset as m-scatter
+                        WebGPU: process phase, acceptance, signal value, and the same
+                        per-record palette.
+                      </p>
+                      <p className="compact-note">
+                        Every selected record contributes to aggregation at every size.
+                        Multiple tables adds the same fixed 1,000-record secondary table.
+                      </p>
+                    </div>
+                  </details>
+                  <div className="scatter-fast-display-mode-control">
+                    <span id="histogram-webgpu-input-mode-label">Input mode</span>
+                    <div
+                      aria-labelledby="histogram-webgpu-input-mode-label"
+                      className="segmented-control scatter-fast-plot-mode-radio-group histogram-webgpu-input-mode-control"
+                      data-testid="histogram-webgpu-input-mode"
+                      role="radiogroup"
+                    >
+                      {([
+                        { label: 'Raw records', value: 'histogram' },
+                        { label: 'Pre-aggregated bars', value: 'bar' },
+                      ] as const).map((option) => (
+                        <label
+                          className={histMode === option.value ? 'is-active' : undefined}
+                          key={option.value}
+                        >
+                          <input
+                            checked={histMode === option.value}
+                            name="histogram-webgpu-input-mode"
+                            onChange={() => selectHistogramMode(option.value)}
+                            type="radio"
+                            value={option.value}
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="scatter-fast-display-mode-control">
+                    <span id="histogram-webgpu-aggregation-backend-label">
+                      Aggregation backend
+                    </span>
+                    <div
+                      aria-labelledby="histogram-webgpu-aggregation-backend-label"
+                      className="segmented-control scatter-fast-plot-mode-radio-group scatter-fast-aggregation-backend-radio-group"
+                      data-testid="histogram-webgpu-aggregation-backend"
+                      role="radiogroup"
+                    >
+                      {([
+                        { label: 'Auto', value: 'auto' },
+                        { label: 'Rust/WASM', value: 'rust-wasm' },
+                        { label: 'TypeScript', value: 'typescript' },
+                      ] as const).map((option) => (
+                        <label
+                          className={
+                            webgpuAggregationBackend === option.value
+                              ? 'is-active'
+                              : undefined
+                          }
+                          data-disabled={histMode === 'bar' ? 'true' : undefined}
+                          key={option.value}
+                        >
+                          <input
+                            checked={webgpuAggregationBackend === option.value}
+                            disabled={histMode === 'bar'}
+                            name="histogram-webgpu-aggregation-backend"
+                            onChange={() => selectWebgpuAggregationBackend(option.value)}
+                            type="radio"
+                            value={option.value}
+                          />
+                          <span>{option.label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div
+                    aria-live="polite"
+                    className="scatter-fast-aggregation-backend-indicator"
+                    data-backend={webgpuDiagnostics?.aggregation.backend ?? 'pending'}
+                    data-testid="histogram-webgpu-aggregation-backend-active"
+                    role="status"
+                  >
+                    {histMode === 'bar'
+                      ? 'pre-aggregated (bypassed)'
+                      : webgpuDiagnostics?.aggregation.backend === 'rust-wasm'
+                        ? 'Running now: Rust/WASM'
+                        : webgpuDiagnostics?.aggregation.backend === 'typescript'
+                          ? 'Running now: TypeScript'
+                          : 'Starting aggregation…'}
+                    {webgpuDiagnostics?.aggregation.fallbackReason === undefined
+                      ? null
+                      : ` — ${webgpuDiagnostics.aggregation.fallbackReason}`}
+                  </div>
+                  <small>
+                    Auto and Rust/WASM prefer WebAssembly with an exact TypeScript
+                    fallback.
+                  </small>
+                </div>
+              ) : null}
               <dl className="metrics-grid">
                 <div>
                   <dt>Records</dt>
@@ -2119,6 +2418,29 @@ async function loadHistogramSingleTableDataset(
   };
 }
 
+function parseHistogramWebgpuPointCount(params: URLSearchParams): number {
+  const value = Number(params.get(HISTOGRAM_WEBGPU_POINT_COUNT_PARAM));
+  return HISTOGRAM_WEBGPU_POINT_COUNTS.includes(
+    value as (typeof HISTOGRAM_WEBGPU_POINT_COUNTS)[number],
+  )
+    ? value
+    : HISTOGRAM_WEBGPU_POINT_COUNTS[0];
+}
+
+function parseHistogramWebgpuAggregationBackend(
+  params: URLSearchParams,
+): HistogramWebgpuAggregationBackend {
+  const value = params.get(HISTOGRAM_WEBGPU_AGGREGATION_BACKEND_PARAM);
+  return value === 'rust-wasm' || value === 'typescript' ? value : 'auto';
+}
+
+function isHistogramWebgpuPlot(
+  plot: HistogramPlotInstance,
+): plot is HistogramWebgpuPlotInstance {
+  return typeof (plot as Partial<HistogramWebgpuPlotInstance>).getWebgpuDiagnostics ===
+    'function';
+}
+
 async function loadHistogramMixedTableDataset(
   startedAt: number,
   fixtureUrl: string,
@@ -2539,6 +2861,7 @@ function createDiagnostics(input: {
     lastViewportWriteSeq: number | null;
     viewportCommitSeq: number;
   };
+  webgpuDiagnostics: HistogramWebgpuPlotDiagnostics | null;
 }): {
   items: readonly (readonly [string, string])[];
   routeState: HistogramRouteHookState | null;
@@ -2673,6 +2996,24 @@ function createDiagnostics(input: {
       ['Populated', populatedBinCount.toLocaleString()],
       ['Stacks', stackSegmentCount.toLocaleString()],
       ['Aggregate ms', formatOptionalMs(input.metrics?.aggregateBuildMs)],
+      [
+        'Indexed rows',
+        input.webgpuDiagnostics === null
+          ? 'n/a'
+          : input.webgpuDiagnostics.aggregation.indexedRowCount.toLocaleString(),
+      ],
+      [
+        'Visited rows',
+        input.webgpuDiagnostics === null
+          ? 'n/a'
+          : input.webgpuDiagnostics.aggregation.lastVisitedRowCount.toLocaleString(),
+      ],
+      [
+        'Reused subplots',
+        input.webgpuDiagnostics === null
+          ? 'n/a'
+          : input.webgpuDiagnostics.aggregation.lastReusedSubplotCount.toLocaleString(),
+      ],
       ['Render ms', input.metrics?.phase === 'render' ? formatOptionalMs(input.metrics.durationMs) : 'n/a'],
       ['Selected', selectedCount.toLocaleString()],
       ['Hover', input.hover === null ? 'none' : input.hover.bin.bin.subplotId],

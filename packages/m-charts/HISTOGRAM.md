@@ -10,6 +10,11 @@ This document is the human-facing API guide. Keep
 command signatures, event payload types, provenance, and bin-size planning
 notes.
 
+For the compatible WebGPU renderer, asynchronous lifecycle, Rust/WASM
+aggregation, and migration guidance, see
+[HISTOGRAM_WEBGPU.md](HISTOGRAM_WEBGPU.md). Existing integrations keep this
+histogram contract and switch the constructor entry point.
+
 ## Source-Copy Imports
 
 For public source-copy integration, copy `plot-engine` plus

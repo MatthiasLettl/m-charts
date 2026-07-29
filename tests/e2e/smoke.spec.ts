@@ -83,6 +83,13 @@ test('overview links only custom plot routes and preserves theme', async ({ page
   await expect(page.getByText('m-scatter WebGL2', { exact: true })).toBeVisible();
   await expect(page.getByText('m-parallel WebGL2', { exact: true })).toBeVisible();
   await expect(page.getByText('m-histogram WebGL2', { exact: true })).toBeVisible();
+  await expect(page.locator('.prototype-card-title')).toHaveText([
+    'm-scatter WebGL2',
+    'm-scatter WebGPU',
+    'm-histogram WebGL2',
+    'm-histogram WebGPU',
+    'm-parallel WebGL2',
+  ]);
   const webgpuCard = page.locator('.prototype-card').filter({ hasText: 'm-scatter WebGPU' });
   await expect(webgpuCard.getByRole('link', { name: 'One table' })).toHaveAttribute(
     'href',
@@ -91,6 +98,19 @@ test('overview links only custom plot routes and preserves theme', async ({ page
   await expect(webgpuCard.getByRole('link', { name: 'Multiple tables' })).toHaveAttribute(
     'href',
     '/m-scatter-webgpu?points=1000000&tables=multi&theme=dark',
+  );
+  const histogramWebgpuCard = page
+    .locator('.prototype-card')
+    .filter({ hasText: 'm-histogram WebGPU' });
+  await expect(histogramWebgpuCard.getByRole('link', { name: 'One table' })).toHaveAttribute(
+    'href',
+    '/m-histogram-webgpu?points=1000000&theme=dark',
+  );
+  await expect(
+    histogramWebgpuCard.getByRole('link', { name: 'Multiple tables' }),
+  ).toHaveAttribute(
+    'href',
+    '/m-histogram-webgpu?points=1000000&tables=multi&theme=dark',
   );
 
   await page.getByRole('link', { name: 'One table' }).first().click();
@@ -101,8 +121,139 @@ test('overview links only custom plot routes and preserves theme', async ({ page
   await expect(page).toHaveURL('/m-scatter?tables=multi&theme=dark');
 
   await page.goto('/?theme=dark');
-  await page.getByRole('link', { name: 'Pre-aggregated bars' }).click();
+  await page
+    .locator('.prototype-card')
+    .filter({ hasText: 'm-histogram WebGL2' })
+    .getByRole('link', { name: 'Pre-aggregated bars' })
+    .click();
   await expect(page).toHaveURL('/m-histogram?histMode=bar&theme=dark');
+});
+
+test('m-histogram WebGPU route preserves the histogram surface and reports availability', async ({
+  page,
+}) => {
+  await page.goto('/m-histogram-webgpu?histMode=bar&theme=dark');
+  await expect(page.getByTestId('histogram-fast-route-host')).toBeVisible();
+  await expect(
+    page.locator('.histogram-fast-engine-host.histogram-fast-webgpu-host'),
+  ).toHaveCount(1);
+  await expect(
+    page.locator('canvas.histogram-fast-engine-canvas.histogram-fast-webgpu-canvas'),
+  ).toHaveCount(1);
+  await expect(
+    page.getByTestId('histogram-webgpu-input-mode').getByRole('radio', {
+      name: 'Pre-aggregated bars',
+    }),
+  ).toBeChecked();
+  const backendRadios = page
+    .getByTestId('histogram-webgpu-aggregation-backend')
+    .getByRole('radio');
+  await expect(backendRadios).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) {
+    await expect(backendRadios.nth(index)).toBeDisabled();
+  }
+  await expect.poll(async () => {
+    const state = await readHistogramState(page) as {
+      binCount?: number;
+      stackSegmentCount?: number;
+    } | null;
+    return (state?.stackSegmentCount ?? 0) > (state?.binCount ?? 0);
+  }).toBe(true);
+  await expect
+    .poll(() => page.getByTestId('histogram-fast-route-host').getAttribute('data-render-state'))
+    .toMatch(/^(ready|error)$/u);
+});
+
+test('m-histogram WebGPU opt-in renders the exact million-row WASM aggregation', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  test.skip(
+    process.env.M_CHARTS_ENABLE_WEBGPU_E2E !== '1',
+    'Set M_CHARTS_ENABLE_WEBGPU_E2E=1 on a WebGPU-capable machine.',
+  );
+  const gpuErrors: string[] = [];
+  page.on('console', (message) => {
+    if (
+      (message.type() === 'error' || message.type() === 'warning') &&
+      /WebGPU|GPUValidation|WGSL|Buffer.*usage/u.test(message.text())
+    ) {
+      gpuErrors.push(message.text());
+    }
+  });
+  page.on('pageerror', (error) => gpuErrors.push(error.message));
+  await page.goto(
+    '/m-histogram-webgpu?points=1000000&aggregationBackend=rust-wasm',
+    { waitUntil: 'domcontentloaded' },
+  );
+  const host = page.getByTestId('histogram-fast-route-host');
+  await expect(host).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+  await expect(host).toHaveAttribute('data-record-count', '1000000');
+  await expect.poll(() => readHistogramState(page)).toMatchObject({
+    binCount: 70,
+    histMode: 'histogram',
+    parameterCount: 3,
+    recordCount: 1_000_000,
+    sourceIndicesAvailable: false,
+  });
+  await expect.poll(async () => {
+    const state = await readHistogramState(page) as { stackSegmentCount?: number } | null;
+    return state?.stackSegmentCount ?? 0;
+  }).toBeGreaterThan(70);
+  await expect.poll(() =>
+    page.evaluate(() => {
+      const hook = (globalThis as typeof globalThis & {
+        __histogramFastBenchmarkTestHook?: {
+          getMetricHistory(): readonly {
+            drawCalls?: number;
+            phase: string;
+            visibleBinCount?: number;
+          }[];
+        };
+      }).__histogramFastBenchmarkTestHook;
+      return hook?.getMetricHistory().some(
+        (metric) =>
+          metric.phase === 'render' &&
+          metric.drawCalls === 1 &&
+          (metric.visibleBinCount ?? 0) > 0,
+      ) ?? false;
+    }),
+  ).toBe(true);
+  const initialViewport = await page.evaluate(
+    () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+  );
+  expect(initialViewport).not.toBeNull();
+  const signalFrame = page.locator('.histogram-fast-overlay-plot-frame').last();
+  const signalRect = await signalFrame.boundingBox();
+  if (signalRect === null) throw new Error('WebGPU histogram plot frame is unavailable.');
+  await page.mouse.move(
+    signalRect.x + signalRect.width * 0.25,
+    signalRect.y + signalRect.height * 0.35,
+  );
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(
+    signalRect.x + signalRect.width * 0.75,
+    signalRect.y + signalRect.height * 0.55,
+    { steps: 8 },
+  );
+  await page.mouse.up({ button: 'left' });
+  await expect.poll(async () => JSON.stringify(
+    await page.evaluate(
+      () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+    ),
+  )).not.toBe(JSON.stringify(initialViewport));
+  await page.getByTestId('histogram-fast-reset-viewport').click();
+  await expect.poll(async () => JSON.stringify(
+    await page.evaluate(
+      () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+    ),
+  )).toBe(JSON.stringify(initialViewport));
+  const selection = await page.evaluate(
+    () => window.__histogramFastBenchmarkTestHook?.selectRectangleForBenchmark(),
+  );
+  expect(selection?.available).toBe(true);
+  expect(selection?.selectedSourceCount ?? 0).toBeGreaterThan(0);
+  expect(gpuErrors, gpuErrors.join('\n')).toEqual([]);
 });
 
 test('theme switch is URL backed on custom routes', async ({ page }) => {
@@ -582,6 +733,13 @@ test('m-histogram routes render raw multi table bar mode and package fixture', a
   await expect.poll(() => readHistogramState(page)).toMatchObject({
     histMode: 'bar',
   });
+  await expect.poll(async () => {
+    const state = await readHistogramState(page) as {
+      binCount?: number;
+      stackSegmentCount?: number;
+    } | null;
+    return (state?.stackSegmentCount ?? 0) > (state?.binCount ?? 0);
+  }).toBe(true);
 
   await page.goto('/m-histogram-fixture?theme=dark&__e2ePreserveDrawingBuffer=1');
   await expect(page.getByTestId('histogram-fast-fixture')).toBeVisible();
@@ -589,6 +747,49 @@ test('m-histogram routes render raw multi table bar mode and package fixture', a
     'data-renderer',
     'webgl2-histogram',
   );
+});
+
+test('m-histogram reset viewport restores the full range in one action', async ({ page }) => {
+  await page.goto(createHistogramUrl({}));
+  await expect.poll(() =>
+    page.evaluate(
+      () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+    ),
+  ).not.toBeNull();
+  const initialViewport = await page.evaluate(
+    () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+  );
+  expect(initialViewport).not.toBeNull();
+
+  const continuousFrame = page.locator('.histogram-fast-overlay-plot-frame').last();
+  const frame = await continuousFrame.boundingBox();
+  if (frame === null) throw new Error('Histogram plot frame is unavailable.');
+  await page.mouse.move(
+    frame.x + frame.width * 0.25,
+    frame.y + frame.height * 0.35,
+  );
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(
+    frame.x + frame.width * 0.75,
+    frame.y + frame.height * 0.55,
+    { steps: 8 },
+  );
+  await page.mouse.up({ button: 'left' });
+
+  await expect.poll(async () => {
+    const viewport = await page.evaluate(
+      () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+    );
+    return JSON.stringify(viewport);
+  }).not.toBe(JSON.stringify(initialViewport));
+
+  await page.getByTestId('histogram-fast-reset-viewport').click();
+  await expect.poll(async () => {
+    const viewport = await page.evaluate(
+      () => window.__histogramFastRouteStateTestHook?.()?.viewport ?? null,
+    );
+    return JSON.stringify(viewport);
+  }).toBe(JSON.stringify(initialViewport));
 });
 
 test('basic custom interactions expose selection hover and measurement hooks', async ({ page }) => {

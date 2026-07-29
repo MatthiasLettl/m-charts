@@ -24,6 +24,7 @@ as the default required source. Add `adapters`, scatter `workers`, or chart
 | Scatter | `packages/m-charts/src/m-scatter/core`, `packages/m-charts/src/m-scatter/engine` | Add `workers` for worker-backed aggregation/selection, `adapters` for dataset helpers, and `react` only for React helpers. |
 | Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for known-count record streams and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
 | Histogram | `packages/m-charts/src/m-histogram/core`, `packages/m-charts/src/m-histogram/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
+| Histogram WebGPU | The histogram `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-histogram-webgpu/core`, and `packages/m-charts/src/m-histogram-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. The shared WebGPU folder contains the embedded Rust aggregation binary. |
 | Parallel | `packages/m-charts/src/m-parallel/core`, `packages/m-charts/src/m-parallel/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
 
 The `core` and `engine` folders are framework-neutral. The `react` folders are
@@ -41,8 +42,8 @@ is not part of the package source.
 Each chart imports shared browser primitives from `plot-engine/core`: disposables,
 typed emitters, DOM input normalization, brush metadata, resize lifecycle,
 WebGL2 context lifecycle, geometry helpers, metrics, and RAF scheduling. WebGPU
-scatter additionally imports adapter/device lifecycle and profiling primitives
-from `plot-engine-webgpu/core`. Keep the relative relationship between the
+scatter and histogram additionally import adapter/device lifecycle, profiling,
+and shared aggregation-WASM primitives from `plot-engine-webgpu/core`. Keep the relative relationship between the
 plot-engine and chart folders intact, or update imports consistently.
 
 A recommended destination layout is:
@@ -53,18 +54,19 @@ src/vendor/m-charts/plot-engine-webgpu
 src/vendor/m-charts/m-scatter
 src/vendor/m-charts/m-scatter-webgpu
 src/vendor/m-charts/m-histogram
+src/vendor/m-charts/m-histogram-webgpu
 src/vendor/m-charts/m-parallel
 ```
 
 With this layout, most internal relative imports remain valid after TypeScript
 and bundler resolution are configured for ESM.
 
-The WebGPU factory returns synchronously but exposes `plot.interactive` and
+Each WebGPU factory returns synchronously but exposes `plot.interactive` and
 `plot.ready`. Await `interactive` before treating the first displayed frame as
 available, or `ready` before treating adapter/device creation, persistent buffer
-upload, and the first complete settled representation as complete. At high
-density that representation is a style-preserving LOD; diagnostics report
-whether it is exact. Both promises reject on initialization failure. The host
+upload, and the first complete settled representation as complete. Scatter can
+report a style-preserving point LOD at high density; histogram always renders
+every resulting bin/stack segment. Both promises reject on initialization failure. The host
 must run in a secure context supported by WebGPU.
 
 If the host TypeScript configuration does not yet declare WebGPU globals, add
@@ -91,6 +93,20 @@ import { createHistogramPlot } from 'm-charts/m-histogram';
 // After, inside a source-copy host:
 import { createHistogramPlot } from './vendor/m-charts/m-histogram/engine/index.js';
 ```
+
+For a histogram WebGPU migration, keep the factory name and options and switch
+the constructor import:
+
+```ts
+import {
+  createHistogramPlot,
+} from './vendor/m-charts/m-histogram-webgpu/engine/index.js';
+```
+
+The WebGPU entry point is a compatibility superset. It adds the creation-only
+`aggregationBackend` and `requestTimestampQuery` options plus readiness and
+diagnostic APIs. `aggregationBackend` defaults to `auto` (Rust/WASM with an
+exact TypeScript compatibility fallback).
 
 If your host app prefers aliases, map a local alias to the copied source and keep
 the rewrite explicit:
@@ -228,6 +244,56 @@ See [the copy-ready migration example](examples/scatter-webgpu-migration.md) and
 [the WebGPU scatter guide](../packages/m-charts/SCATTER_WEBGPU.md) for lifecycle,
 rendering, aggregation, diagnostics, streaming, demo, and benchmark details.
 
+## Migrating An Existing WebGL2 Histogram
+
+The WebGPU histogram reuses the existing histogram `core`, backend-neutral
+`engine`, and default bindings. Existing raw columns, pre-aggregated bars,
+specs, viewport/bin-size state, options, commands, events, overlays, callback
+payloads, and shared `histogram-fast-engine-*` CSS hooks remain valid.
+
+For a workspace package consumer, retain the factory name and change only the
+entry point:
+
+```diff
+- import { createHistogramPlot } from 'm-charts/m-histogram';
++ import { createHistogramPlot } from 'm-charts/m-histogram-webgpu';
+```
+
+For source-copy integration, keep utility and data-contract imports from
+`m-histogram/core`, add the WebGPU folders listed above, and import the factory
+from `m-histogram-webgpu/engine/index.js`. Creation remains synchronous but
+device startup and the first exact frame do not:
+
+```ts
+const plot = createHistogramPlot(host, options);
+plot.use(createDefaultHistogramBindings());
+
+try {
+  await plot.ready;
+} catch (error) {
+  plot.dispose();
+  throw error;
+}
+```
+
+The WebGL2-only `forceWebglUnavailable`, `preserveDrawingBuffer`, and
+`rendererFactory` fields are accepted and ignored by the WebGPU factory.
+WebGPU adds the creation-only `aggregationBackend` and
+`requestTimestampQuery`; recreate the plot to change them.
+`aggregationBackend: 'auto' | 'rust-wasm' | 'typescript'` selects the exact raw
+aggregation implementation. `auto` and `rust-wasm` prefer the embedded
+Rust/WASM implementation for supported typed columns and fall back to the
+TypeScript builder for unsupported shapes. Supported inputs materialize exact
+source membership in Rust/WASM. Pre-aggregated bar mode bypasses raw
+aggregation.
+
+Applications retaining WebGL2 support should diagnose WebGPU, attempt startup,
+dispose a failed WebGPU instance, and then create the original WebGL2 plot in
+the same host. See
+[the copy-ready histogram migration example](examples/histogram-webgpu-migration.md)
+and [the WebGPU histogram guide](../packages/m-charts/HISTOGRAM_WEBGPU.md) for
+fallback code, lifecycle, aggregation, diagnostics, and validation details.
+
 ## Scatter Worker Files
 
 Scatter workers are optional. Synchronous aggregation and selection are available
@@ -343,6 +409,10 @@ You can pass chart contracts directly or copy optional adapters:
 - Histogram: pass `HistogramColumns`, `HistogramPlotSpec`, optional
   `HistogramAggregationSet`, and `HistogramViewport`, or copy
   `m-histogram/adapters`.
+- Histogram WebGPU: pass the same histogram contract and include the shared
+  `plot-engine-webgpu` folder containing the embedded aggregation binary.
+  Typed raw columns with explicit domains can use Rust/WASM; pre-aggregated bar
+  input and TypeScript fallback require no different data contract.
 - Parallel: pass `ParallelBuffers`, usually built with
   `createParallelFastBuffersFromDataset(...)` from `m-parallel/adapters` or with
   lower-level buffer helpers from `m-parallel/core`.
@@ -363,8 +433,9 @@ Then verify the backends that the host intends to support:
 
 - The host element has nonzero width and height.
 - WebGL2 charts render without WebGL context errors.
-- WebGPU scatter runs in a secure context, `diagnoseWebgpuSupport()` reports an
-  adapter, and `plot.interactive`/`plot.ready` resolve for representative data.
+- WebGPU scatter and histogram run in a secure context,
+  `diagnoseWebgpuSupport()` reports an adapter, and
+  `plot.interactive`/`plot.ready` resolve for representative data.
 - If WebGL2 fallback is supported, an unavailable or failed WebGPU startup
   disposes its partial instance and creates WebGL2 in the same host.
 - Pointer, wheel, and keyboard bindings work where enabled.
@@ -372,6 +443,9 @@ Then verify the backends that the host intends to support:
   brush events.
 - Point, bubble, and heat-map scatter retain expected commands, events,
   selections, overlays, styling, and controlled updates after a backend switch.
+- Raw and pre-aggregated WebGPU histogram modes retain expected commands,
+  events, selections, overlays, stacked colors, and controlled updates after a
+  backend switch.
 - Source-copy import paths resolve without depending on this monorepo.
 - Scatter worker factories load the copied worker files, if workers are enabled.
 

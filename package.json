@@ -25,7 +25,9 @@
   ],
   "scripts": {
     "dev": "pnpm --filter @m-charts/demo dev",
-    "build": "pnpm check:scatter-wasm && pnpm --filter m-charts build && pnpm --filter @m-charts/demo build",
+    "build": "pnpm check:aggregation-wasm && pnpm --filter m-charts build && pnpm --filter @m-charts/demo build",
+    "build:aggregation-wasm": "tsx scripts/build-scatter-wasm.ts",
+    "check:aggregation-wasm": "tsx scripts/build-scatter-wasm.ts --check",
     "build:scatter-wasm": "tsx scripts/build-scatter-wasm.ts",
     "check:scatter-wasm": "tsx scripts/build-scatter-wasm.ts --check",
     "lint:rust": "tsx scripts/check-scatter-rust.ts",
@@ -43,7 +45,8 @@
     "benchmark:scatter:custom": "tsx scripts/benchmark-scatter-performance-gate.ts --target custom",
     "benchmark:scatter:webgpu": "tsx scripts/benchmark-scatter-webgpu-performance-gate.ts",
     "benchmark:parallel:custom": "tsx scripts/benchmark-parallel-performance-gate.ts --target custom",
-    "benchmark:histogram:custom": "tsx scripts/benchmark-histogram-performance-gate.ts"
+    "benchmark:histogram:custom": "tsx scripts/benchmark-histogram-performance-gate.ts",
+    "benchmark:histogram:webgpu": "tsx scripts/benchmark-histogram-webgpu-aggregation.ts"
   },
   "dependencies": {
     "react": "^19.1.0",

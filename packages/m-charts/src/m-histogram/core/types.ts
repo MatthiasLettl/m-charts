@@ -2,7 +2,12 @@ export type HistogramParameterKey = string;
 export type HistogramSubplotId = string;
 export type HistogramTableKey = string;
 
-export type HistogramNumericArray = Float32Array | Float64Array;
+export type HistogramNumericArray =
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array;
 export type HistogramSourceIndexArray = Uint32Array;
 export type HistogramColorArray = Uint8Array | Uint32Array;
 export type HistogramColorFormat = 'rgba8' | 'rgba32';

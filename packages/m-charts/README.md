@@ -2,8 +2,9 @@
 
 `packages/m-charts` contains the reusable WebGL2 and WebGPU chart source in this
 repository. WebGL2 powers scatter, parallel-coordinate, and histogram engines;
-the isolated WebGPU scatter backend supports point, bubble, and heat-map modes
-while reusing the public scatter contract and interaction engine.
+the isolated WebGPU scatter backend supports point, bubble, and heat-map modes,
+and the isolated WebGPU histogram backend renders exact aggregated bars. Both
+reuse their existing public contracts and interaction engines.
 
 The chart engines are framework-neutral rendering islands. A host application
 creates a plot in a DOM element, pushes controlled state through
@@ -37,6 +38,8 @@ packages/m-charts/src/m-scatter-webgpu/core -> src/vendor/m-charts/m-scatter-web
 packages/m-charts/src/m-scatter-webgpu/engine -> src/vendor/m-charts/m-scatter-webgpu/engine
 packages/m-charts/src/m-histogram/core   -> src/vendor/m-charts/m-histogram/core
 packages/m-charts/src/m-histogram/engine -> src/vendor/m-charts/m-histogram/engine
+packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram-webgpu/core
+packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
 packages/m-charts/src/m-parallel/core   -> src/vendor/m-charts/m-parallel/core
 packages/m-charts/src/m-parallel/engine -> src/vendor/m-charts/m-parallel/engine
 ```
@@ -95,12 +98,21 @@ import { createScatterPlot } from 'm-charts/m-scatter';
 import { createScatterPlot as createWebgpuScatterPlot } from 'm-charts/m-scatter-webgpu';
 import { createParallelPlot } from 'm-charts/m-parallel';
 import { createHistogramPlot } from 'm-charts/m-histogram';
+import { createHistogramPlot as createWebgpuHistogramPlot } from 'm-charts/m-histogram-webgpu';
 ```
 
 The root package also exposes namespaces:
 
 ```ts
-import { PlotEngine, PlotEngineWebgpu, MScatter, MScatterWebgpu, MParallel, MHistogram } from 'm-charts';
+import {
+  PlotEngine,
+  PlotEngineWebgpu,
+  MScatter,
+  MScatterWebgpu,
+  MParallel,
+  MHistogram,
+  MHistogramWebgpu,
+} from 'm-charts';
 ```
 
 Compatibility aliases are available inside the workspace:
@@ -217,8 +229,8 @@ the plot in the effect cleanup. React helpers live under chart `react` subtrees;
 
 `m-scatter`, `m-histogram`, and `m-parallel` require WebGL2 and report WebGL
 context loss/restoration through typed events and metrics. `m-scatter-webgpu`
-requires a secure WebGPU context and reports asynchronous readiness, device
-loss, recovery, and recovery failure through the compatible scatter lifecycle.
+and `m-histogram-webgpu` require a secure WebGPU context and report
+asynchronous readiness and device loss through their compatible lifecycles.
 Every engine adds canvases inside the host element; use a host with explicit
 size because a zero-sized host cannot produce a useful render.
 
@@ -274,6 +286,22 @@ upload directly and existing 8/12-byte records convert in bounded chunks. See
 [SCATTER_WEBGPU.md](SCATTER_WEBGPU.md) for its precision, packed-buffer,
 selection, profiling, demo, and benchmark contracts.
 
+The WebGPU histogram renders every normalized bin and color-stack segment; it
+does not sample bars. Raw typed columns with explicit domains prefer the shared
+Rust/WASM aggregation binary, while unsupported column/category/color shapes
+use the exact TypeScript builder. Continuous parameters receive persistent
+sorted row-order indexes, so viewport/bin-size rebuilds visit visible candidates
+and reuse unchanged subplot results. Exact source membership remains on the
+Rust/WASM path. Pre-aggregated bar mode bypasses raw aggregation. The WebGPU-only
+`aggregationBackend` option selects `auto`, `rust-wasm`, or `typescript`, and
+`getWebgpuDiagnostics()` reports the requested and active backend, fallback
+reason, setup/build timing, upload bytes, render timing, and device limits.
+`interactive` and `ready` both gate the first exact submitted frame. Existing
+histogram bindings, commands, events, overlays, callbacks, and updates remain
+compatible after switching the factory import. See
+[HISTOGRAM_WEBGPU.md](HISTOGRAM_WEBGPU.md) for migration, fallback,
+aggregation, diagnostics, demo, and validation details.
+
 Finite JSON or server streams can use
 `createFastScatterJsonRecordBatchSource` and
 `createFastScatterWebgpuPlotFromDataSource`. The source declares its count and
@@ -294,6 +322,8 @@ filter preserves exact nearest-point results with lower resident memory.
 - [SCATTER.md](SCATTER.md): scatter plot source layout and exported names.
 - [SCATTER_WEBGPU.md](SCATTER_WEBGPU.md): isolated WebGPU point, bubble, and heat-map scatter.
 - [HISTOGRAM.md](HISTOGRAM.md): histogram source layout and exported names.
+- [HISTOGRAM_WEBGPU.md](HISTOGRAM_WEBGPU.md): compatible WebGPU histogram,
+  WASM aggregation, exact-bar, and large-data contracts.
 - [PARALLEL.md](PARALLEL.md): parallel-coordinate source layout and exported
   names.
 - [llms.md](llms.md): detailed integration reference for commands, events,

@@ -60,11 +60,14 @@ export interface HistogramRendererBuffers {
   readonly rects: Float32Array;
 }
 
-export interface HistogramWebglRendererOptions
+export interface HistogramRendererOptions
   extends HistogramRendererBufferBuildInput {
   readonly canvas: HTMLCanvasElement;
   readonly devicePixelRatio?: number;
   readonly onMetrics?: (metrics: HistogramMetricsEvent) => void;
+}
+
+export interface HistogramWebglRendererOptions extends HistogramRendererOptions {
   readonly preserveDrawingBuffer?: boolean;
 }
 

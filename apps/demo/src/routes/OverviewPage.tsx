@@ -61,6 +61,24 @@ export function OverviewPage() {
     themeMode,
     { preserveKeys: ['histMode'] },
   );
+  const mHistogramWebgpuTarget = createThemeAwareTo(
+    '/m-histogram-webgpu',
+    appendSearchParam(location.search, 'points', '1000000'),
+    themeMode,
+    { preserveKeys: ['points'] },
+  );
+  const mHistogramWebgpuMultiTarget = createThemeAwareTo(
+    '/m-histogram-webgpu',
+    appendSearchParams(location.search, { points: '1000000', tables: 'multi' }),
+    themeMode,
+    { preserveKeys: ['points', 'tables'] },
+  );
+  const mHistogramWebgpuBarTarget = createThemeAwareTo(
+    '/m-histogram-webgpu',
+    appendSearchParam(location.search, 'histMode', 'bar'),
+    themeMode,
+    { preserveKeys: ['histMode'] },
+  );
 
   return (
     <main className="overview-shell" aria-labelledby="overview-title">
@@ -76,11 +94,11 @@ export function OverviewPage() {
         </div>
         <div className="overview-intro">
           <p>
-            m-charts is a WebGL2 and WebGPU charting library built for
-            high-performance data exploration in the browser. This demo
-            showcases scatter plots with up to 25 million points, plus
-            histograms and parallel-coordinate views, with responsive zoom,
-            pan, brushing, selection, measurement, and inspection workflows.
+            m-charts combines WebGL2 and WebGPU rendering with Rust/WASM
+            aggregation for high-performance data exploration in the browser.
+            This demo covers scatter plots, histograms, and parallel coordinates
+            across datasets of up to 25 million records, with responsive zoom,
+            pan, brushing, selection, measurement, and inspection.
           </p>
           <p>
             The library is open source under the MIT license. Repository:{' '}
@@ -130,22 +148,6 @@ export function OverviewPage() {
           <article
             className="prototype-card"
           >
-            <ParallelPreview variant="fast" />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-parallel WebGL2</span>
-              <span className="prototype-card-copy">
-                Compare many records across axes with brushing, hover
-                inspection, selection export, and adjustable line density.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mParallelTarget}>One table</Link>
-                <Link to={mParallelMultiTarget}>Multiple tables</Link>
-              </span>
-            </span>
-          </article>
-          <article
-            className="prototype-card"
-          >
             <HistogramPreview />
             <span className="prototype-card-body">
               <span className="prototype-card-title">m-histogram WebGL2</span>
@@ -157,6 +159,39 @@ export function OverviewPage() {
                 <Link to={mHistogramTarget}>One table</Link>
                 <Link to={mHistogramMultiTarget}>Multiple tables</Link>
                 <Link to={mHistogramBarTarget}>Pre-aggregated bars</Link>
+              </span>
+            </span>
+          </article>
+          <article className="prototype-card">
+            <HistogramPreview />
+            <span className="prototype-card-body">
+              <span className="prototype-card-title">m-histogram WebGPU</span>
+              <span className="prototype-card-copy">
+                Explore distributions across up to 25 million records with
+                WebGL2-compatible interactions. Rust/WASM aggregates every
+                record by default, while WebGPU renders every resulting bin
+                without sampling.
+              </span>
+              <span className="prototype-card-actions">
+                <Link to={mHistogramWebgpuTarget}>One table</Link>
+                <Link to={mHistogramWebgpuMultiTarget}>Multiple tables</Link>
+                <Link to={mHistogramWebgpuBarTarget}>Pre-aggregated bars</Link>
+              </span>
+            </span>
+          </article>
+          <article
+            className="prototype-card"
+          >
+            <ParallelPreview variant="fast" />
+            <span className="prototype-card-body">
+              <span className="prototype-card-title">m-parallel WebGL2</span>
+              <span className="prototype-card-copy">
+                Compare many records across axes with brushing, hover
+                inspection, selection export, and adjustable line density.
+              </span>
+              <span className="prototype-card-actions">
+                <Link to={mParallelTarget}>One table</Link>
+                <Link to={mParallelMultiTarget}>Multiple tables</Link>
               </span>
             </span>
           </article>

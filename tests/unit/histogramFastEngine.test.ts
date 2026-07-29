@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 
 import { createHistogramPlot } from '../../packages/m-charts/src/m-histogram/engine/index.ts';
+import { createHistogramEngine } from '../../packages/m-charts/src/m-histogram/engine/createHistogramEngine.ts';
 import type {
   HistogramPlotOptions,
   HistogramRendererFactory,
   HistogramRendererLike,
 } from '../../packages/m-charts/src/m-histogram/engine/index.ts';
 import {
+  buildHistogramAggregation,
   histogramAxisToPixel,
   normalizeHistogramBarSeries,
+  prepareHistogramAggregationState,
   type HistogramBinSizeState,
   type HistogramColumns,
   type HistogramMetricsEvent,
@@ -314,6 +317,11 @@ assert.equal(viewportEvents[0]?.reason, 'drag');
 assert.equal(viewportEvents[0]?.phase, 'preview');
 assert.equal(plot.commands.getStateSnapshot().aggregation, aggregationBeforePreview);
 assert.equal(renderers[0]?.renders.length, renderCountBeforePreview + 1);
+plot.commands.setViewport(previewViewport, 'drag', 'commit');
+assert.equal(viewportEvents.length, 2);
+assert.equal(viewportEvents[1]?.reason, 'drag');
+assert.equal(viewportEvents[1]?.phase, 'commit');
+assert.notEqual(plot.commands.getStateSnapshot().aggregation, aggregationBeforePreview);
 const nextViewport: HistogramViewport = {
   subplotById: {
     active: {
@@ -327,9 +335,9 @@ const nextViewport: HistogramViewport = {
   },
 };
 plot.commands.setViewport(nextViewport);
-assert.equal(viewportEvents.length, 2);
-assert.equal(viewportEvents[1]?.reason, 'programmatic');
-assert.equal(viewportEvents[1]?.phase, 'commit');
+assert.equal(viewportEvents.length, 3);
+assert.equal(viewportEvents[2]?.reason, 'programmatic');
+assert.equal(viewportEvents[2]?.phase, 'commit');
 assert.deepEqual(renderers[0]?.updates.at(-1)?.viewport, nextViewport);
 
 const aggregationBeforeYOnlyViewport = plot.commands.getStateSnapshot().aggregation;
@@ -354,7 +362,7 @@ const silentViewport: HistogramViewport = {
   },
 };
 plot.update({ viewport: silentViewport });
-assert.equal(viewportEvents.length, 3);
+assert.equal(viewportEvents.length, 4);
 assert.deepEqual(plot.commands.getStateSnapshot().viewport, silentViewport);
 
 const aggregationBeforeThemeUpdate = plot.commands.getStateSnapshot().aggregation;
@@ -724,5 +732,47 @@ const explicitSourceSelection = barCommandPlot.commands.selectBins({
 assert.equal(explicitSourceSelection?.sourceIndicesAvailable, true);
 assert.deepEqual(Array.from(explicitSourceSelection?.sourceIndices ?? []), [99]);
 barCommandPlot.dispose();
+
+const countingHost = new FakeElement(document);
+countingHost.setRect(420, 260);
+let aggregationBuildCount = 0;
+const countingPlot = createHistogramEngine(
+  countingHost as unknown as HTMLElement,
+  createOptions((rendererOptions) => new MockRenderer(rendererOptions)),
+  {
+    aggregationProvider: {
+      build(currentColumns, request) {
+        aggregationBuildCount += 1;
+        return buildHistogramAggregation(currentColumns, request);
+      },
+      dispose() {},
+      prepare: prepareHistogramAggregationState,
+    },
+    canvasClassName: 'histogram-test-canvas',
+    canvasLabel: 'Histogram test canvas',
+    canvasRenderer: 'histogram-test',
+    createRenderer(rendererOptions) {
+      return new MockRenderer(rendererOptions as HistogramWebglRendererOptions);
+    },
+    hostClassName: 'histogram-test-host',
+    setupErrorMessage: 'Histogram test setup failed.',
+  },
+);
+assert.equal(aggregationBuildCount, 1);
+countingPlot.commands.setBinSizes({
+  binSizes: [{
+    binSize: 4,
+    mode: 'continuous',
+    parameterKey: 'temperature',
+    subplotId: 'temperature',
+  }],
+  materializeMembership: false,
+});
+assert.equal(
+  aggregationBuildCount,
+  2,
+  'A bin-size update should aggregate once when viewport normalization only changes Y.',
+);
+countingPlot.dispose();
 
 console.log('histogram-fast engine tests passed');

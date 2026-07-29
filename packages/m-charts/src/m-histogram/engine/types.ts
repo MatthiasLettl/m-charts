@@ -1,5 +1,7 @@
 import type { Disposable, Unsubscribe } from '../../plot-engine/core/index.js';
 import type {
+  HistogramAggregationPreparedState,
+  HistogramAggregationRequest,
   HistogramAggregationSet,
   HistogramBinSizeState,
   HistogramColumns,
@@ -8,6 +10,7 @@ import type {
   HistogramMetricsEvent,
   HistogramPlotSpec,
   HistogramRendererRenderMetrics,
+  HistogramRendererOptions,
   HistogramRendererTheme,
   HistogramRendererUpdate,
   HistogramSelectionEvent,
@@ -26,6 +29,52 @@ import type { HistogramInteractionMode } from './histogramState.js';
 export interface HistogramRendererLike extends Disposable {
   render(): HistogramRendererRenderMetrics | null;
   update(update: HistogramRendererUpdate): void;
+}
+
+export interface HistogramAggregationProvider extends Disposable {
+  build(
+    columns: HistogramColumns,
+    request: HistogramAggregationRequest,
+  ): HistogramAggregationSet;
+  prepare(
+    columns: HistogramColumns,
+    spec: Pick<HistogramPlotSpec, 'parameters'>,
+  ): HistogramAggregationPreparedState;
+}
+
+export interface HistogramEngineContextLifecycleHandlers {
+  onLost(event?: Event): void;
+  onRestored(event?: Event): void;
+}
+
+export interface HistogramEngineRendererLifecycleHandlers {
+  onContextLost(detail?: string): void;
+  onContextRestored(detail?: string): void;
+  onError(error: unknown): void;
+  onReady(): void;
+}
+
+export interface HistogramEngineBackend {
+  readonly aggregationProvider: HistogramAggregationProvider;
+  readonly asynchronousReady?: boolean;
+  readonly canvasClassName: string;
+  readonly canvasLabel: string;
+  readonly canvasRenderer: string;
+  readonly deferMembership?: boolean;
+  readonly hostClassName: string;
+  attachContextLifecycle?(
+    canvas: HTMLCanvasElement,
+    handlers: HistogramEngineContextLifecycleHandlers,
+  ): Disposable;
+  assertAvailable?(options: HistogramPlotOptions): void;
+  createRenderer(
+    options: HistogramRendererOptions,
+    plotOptions: HistogramPlotOptions,
+    lifecycle: HistogramEngineRendererLifecycleHandlers,
+  ): HistogramRendererLike;
+  readonly contextLostMessage?: string;
+  readonly contextRestoreErrorMessage?: string;
+  readonly setupErrorMessage?: string;
 }
 
 export type HistogramRendererFactory = (

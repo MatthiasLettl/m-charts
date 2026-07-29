@@ -420,7 +420,7 @@ const HISTOGRAM_BAR_PARAMETERS = [
     min: 0,
     period: 3.2,
     source: 'search-aggregation:signalValue',
-    stacked: false,
+    stacked: true,
     table: 'benchmark-primary',
     unit: 'a.u.',
   },

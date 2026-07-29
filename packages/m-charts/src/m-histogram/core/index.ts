@@ -94,6 +94,7 @@ export type {
   HistogramRendererBuffers,
   HistogramRendererColor,
   HistogramRendererHoverBin,
+  HistogramRendererOptions,
   HistogramRendererRenderMetrics,
   HistogramRendererTheme,
   HistogramRendererUpdate,

@@ -984,11 +984,15 @@ function createSelectionResult(input: {
 
   for (const selectedBin of input.selectedBins) {
     const membership = selectedBin.bin.membership;
-    if (membership === undefined || !membership.sourceIndicesAvailable) {
+    if (membership === undefined) {
       sourceIndicesAvailable = false;
       continue;
     }
     selectedSourceCount += membership.count;
+    if (!membership.sourceIndicesAvailable) {
+      sourceIndicesAvailable = false;
+      continue;
+    }
 
     if (materializeSourceIndices) {
       const binSourceIndices = materializeHistogramBinSourceIndices(
