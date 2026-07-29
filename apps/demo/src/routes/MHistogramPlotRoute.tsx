@@ -959,7 +959,7 @@ export function MHistogramPlotRoute({
       theme: histogramTheme,
       viewport: initialViewport ?? undefined,
     };
-    const plot = rendererBackend === 'webgpu'
+    const plot: HistogramPlotInstance = rendererBackend === 'webgpu'
       ? createHistogramWebgpuPlot(host, {
           ...commonOptions,
           aggregationBackend: webgpuAggregationBackend,
