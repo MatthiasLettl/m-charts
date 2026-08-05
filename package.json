@@ -45,6 +45,7 @@
     "benchmark:scatter:custom": "tsx scripts/benchmark-scatter-performance-gate.ts --target custom",
     "benchmark:scatter:webgpu": "tsx scripts/benchmark-scatter-webgpu-performance-gate.ts",
     "benchmark:parallel:custom": "tsx scripts/benchmark-parallel-performance-gate.ts --target custom",
+    "benchmark:parallel:webgpu": "tsx scripts/benchmark-parallel-webgpu-selection.ts",
     "benchmark:histogram:custom": "tsx scripts/benchmark-histogram-performance-gate.ts",
     "benchmark:histogram:webgpu": "tsx scripts/benchmark-histogram-webgpu-aggregation.ts"
   },

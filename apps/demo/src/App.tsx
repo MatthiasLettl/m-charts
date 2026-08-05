@@ -23,6 +23,14 @@ export default function App() {
       />
       <Route path="/m-parallel" element={<MParallelPlotRoute />} />
       <Route path="/m-parallel-fixture" element={<MParallelPackageFixture />} />
+      <Route
+        path="/m-parallel-webgpu"
+        element={<MParallelPlotRoute rendererBackend="webgpu" />}
+      />
+      <Route
+        path="/m-parallel-webgpu-fixture"
+        element={<MParallelPackageFixture rendererBackend="webgpu" />}
+      />
       <Route path="/m-histogram" element={<MHistogramPlotRoute />} />
       <Route
         path="/m-histogram-webgpu"

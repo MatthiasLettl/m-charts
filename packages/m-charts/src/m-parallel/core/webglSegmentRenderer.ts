@@ -1,5 +1,6 @@
 import {
   PARALLEL_AXIS_MIN_DISPLAY_VALUE,
+  PARALLEL_AXIS_MAX_DISPLAY_VALUE,
   PARALLEL_MISSING_AXIS_DISPLAY_VALUE,
   PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y,
   type ParallelBuffers,
@@ -50,6 +51,7 @@ const SHADER_NORMALIZED_Y_MIN =
   PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y.toFixed(6);
 const SHADER_DISPLAY_Y_MIN = PARALLEL_MISSING_AXIS_DISPLAY_VALUE.toFixed(6);
 const SHADER_AXIS_MIN_DISPLAY_Y = PARALLEL_AXIS_MIN_DISPLAY_VALUE.toFixed(6);
+const SHADER_AXIS_MAX_DISPLAY_Y = PARALLEL_AXIS_MAX_DISPLAY_VALUE.toFixed(6);
 
 const VERTEX_SHADER_SOURCE = `#version 300 es
 in vec2 a_position;
@@ -66,7 +68,7 @@ float displayY(float value) {
   float projected = clamp(value, ${SHADER_NORMALIZED_Y_MIN}, 1.0);
   float displayValue = projected <= 0.0
     ? ${SHADER_DISPLAY_Y_MIN} + ((projected - ${SHADER_NORMALIZED_Y_MIN}) / (0.0 - ${SHADER_NORMALIZED_Y_MIN})) * (${SHADER_AXIS_MIN_DISPLAY_Y} - ${SHADER_DISPLAY_Y_MIN})
-    : ${SHADER_AXIS_MIN_DISPLAY_Y} + projected * (1.0 - ${SHADER_AXIS_MIN_DISPLAY_Y});
+    : ${SHADER_AXIS_MIN_DISPLAY_Y} + projected * (${SHADER_AXIS_MAX_DISPLAY_Y} - ${SHADER_AXIS_MIN_DISPLAY_Y});
   return displayValue * 2.0 - 1.0;
 }
 
@@ -95,7 +97,7 @@ float displayY(float value) {
   float projected = clamp(value, ${SHADER_NORMALIZED_Y_MIN}, 1.0);
   float displayValue = projected <= 0.0
     ? ${SHADER_DISPLAY_Y_MIN} + ((projected - ${SHADER_NORMALIZED_Y_MIN}) / (0.0 - ${SHADER_NORMALIZED_Y_MIN})) * (${SHADER_AXIS_MIN_DISPLAY_Y} - ${SHADER_DISPLAY_Y_MIN})
-    : ${SHADER_AXIS_MIN_DISPLAY_Y} + projected * (1.0 - ${SHADER_AXIS_MIN_DISPLAY_Y});
+    : ${SHADER_AXIS_MIN_DISPLAY_Y} + projected * (${SHADER_AXIS_MAX_DISPLAY_Y} - ${SHADER_AXIS_MIN_DISPLAY_Y});
   return displayValue * 2.0 - 1.0;
 }
 
@@ -711,7 +713,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function createStyleTextureBuffer(
-  styleColor: Uint8Array | undefined,
+  styleColor: ArrayLike<number> | undefined,
   recordCount: number,
   textureWidth: number,
   textureHeight: number,
@@ -722,7 +724,10 @@ function createStyleTextureBuffer(
     return rgba;
   }
 
-  rgba.set(styleColor.subarray(0, recordCount * 4));
+  const count = Math.min(styleColor.length, recordCount * 4);
+  for (let index = 0; index < count; index += 1) {
+    rgba[index] = styleColor[index] ?? 0;
+  }
   return rgba;
 }
 

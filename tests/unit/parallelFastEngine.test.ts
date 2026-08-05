@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 import {
   createDefaultParallelBindings,
+  createParallelEngine,
   createParallelFastPlot,
 } from '../../packages/m-charts/src/m-parallel/engine/index.ts';
 import type {
@@ -15,19 +16,27 @@ import type {
   ParallelFastHoverRendererFactory,
   ParallelFastHoverRendererLike,
   ParallelFastRendererFactory,
+  ParallelFastRendererLifecycleHandlers,
   ParallelFastRendererLike,
   ParallelFastRendererMetricsEvent,
 } from '../../packages/m-charts/src/m-parallel/engine/index.ts';
 import type {
-  ParallelBuffers,
   NumericRange,
+  ParallelBrushIntervals,
+  ParallelBrushSelectionResult,
+  ParallelBuffers,
   ParallelWebgl2HoverDrawMetrics,
   ParallelWebgl2HoverUpdateMetrics,
   ParallelWebgl2RendererDrawMetrics,
   ParallelWebgl2RendererSetupMetrics,
   ParallelWebgl2SelectedUpdateMetrics,
 } from '../../packages/m-charts/src/m-parallel/core/index.ts';
-import { parallelDisplayValueToRenderedNormalizedValue } from '../../packages/m-charts/src/m-parallel/core/index.ts';
+import {
+  PARALLEL_AXIS_MAX_DISPLAY_VALUE,
+  PARALLEL_AXIS_MIN_DISPLAY_VALUE,
+  parallelDisplayValueToRenderedNormalizedValue,
+  selectParallelRecordIdsByBrushes,
+} from '../../packages/m-charts/src/m-parallel/core/index.ts';
 import type { ParallelFastTheme } from '../../packages/m-charts/src/m-parallel/core/webglSegmentRenderer.ts';
 
 interface ListenerRecord {
@@ -137,6 +146,8 @@ class FakeDocument {
 }
 
 class MockRenderer implements ParallelFastRendererLike {
+  readonly axisViewportPhases: Array<'commit' | 'initial' | 'preview'> = [];
+  readonly brushUpdates: ParallelBrushIntervals[] = [];
   readonly draws: ParallelWebgl2RendererDrawMetrics[] = [];
   readonly preselectedUpdates: Uint32Array[] = [];
   readonly selectedUpdates: Uint32Array[] = [];
@@ -144,6 +155,8 @@ class MockRenderer implements ParallelFastRendererLike {
   hoverFocusActive = false;
   lineOpacityScale = 1;
   theme: ParallelFastTheme | undefined;
+  axisViewports: import('../../packages/m-charts/src/m-parallel/core/index.ts').ParallelAxisViewports =
+    {};
   setupMetrics: ParallelWebgl2RendererSetupMetrics = {
     blendMode: 'src-alpha-one-minus-src-alpha',
     densityMode: 'adaptive-alpha-source-over',
@@ -176,6 +189,18 @@ class MockRenderer implements ParallelFastRendererLike {
 
   updateLineOpacityScale(lineOpacityScale: number): void {
     this.lineOpacityScale = lineOpacityScale;
+  }
+
+  updateAxisViewports(
+    axisViewports: import('../../packages/m-charts/src/m-parallel/core/index.ts').ParallelAxisViewports,
+    options?: { phase: 'commit' | 'preview' },
+  ): void {
+    this.axisViewports = axisViewports;
+    this.axisViewportPhases.push(options?.phase ?? 'initial');
+  }
+
+  updateBrushIntervals(brushIntervals: ParallelBrushIntervals): void {
+    this.brushUpdates.push(brushIntervals);
   }
 
   updatePreselectedSourceIndices(
@@ -470,7 +495,202 @@ function getFirstBrushRange(
   return Array.isArray(interval) ? interval[0] ?? null : interval;
 }
 
+function rawValueAtTestClientY(
+  clientY: number,
+  domain: { min: number; span: number } = { min: 0, span: 2 },
+): number {
+  return domain.min +
+    parallelDisplayValueToRenderedNormalizedValue(1 - clientY / 100) * domain.span;
+}
+
 const document = installDomGlobals();
+
+{
+  const lifecycleHost = new FakeElement(document);
+  lifecycleHost.setRect(320, 180);
+  const lifecycleRenderers: MockRenderer[] = [];
+  const lifecycleHoverRenderers: MockHoverRenderer[] = [];
+  let rendererLifecycle: ParallelFastRendererLifecycleHandlers | null = null;
+  const callbackResidentBytes: number[] = [];
+  const eventResidentBytes: number[] = [];
+  const contextEvents: string[] = [];
+  const lifecyclePlot = createParallelEngine(
+    lifecycleHost as unknown as HTMLElement,
+    {
+      buffers: createBuffers(),
+      onMetrics(event) {
+        if (event.webgpuResidentBytes !== undefined) {
+          callbackResidentBytes.push(event.webgpuResidentBytes);
+        }
+      },
+    },
+    {
+      hoverRendererFactory() {
+        const nextRenderer = new MockHoverRenderer();
+        lifecycleHoverRenderers.push(nextRenderer);
+        return nextRenderer;
+      },
+      rendererFactory(_canvas, _buffers, _options, lifecycle) {
+        rendererLifecycle = lifecycle;
+        const nextRenderer = new MockRenderer();
+        lifecycleRenderers.push(nextRenderer);
+        return nextRenderer;
+      },
+    },
+  );
+  lifecyclePlot.on('metrics', (event) => {
+    if (event.webgpuResidentBytes !== undefined) {
+      eventResidentBytes.push(event.webgpuResidentBytes);
+    }
+  });
+  lifecyclePlot.on('contextlost', (event) => {
+    contextEvents.push(`lost:${event.detail ?? 'none'}`);
+  });
+  lifecyclePlot.on('contextrestored', (event) => {
+    contextEvents.push(`restored:${event.detail ?? 'none'}`);
+  });
+
+  assert.notEqual(rendererLifecycle, null);
+  const activeLifecycle =
+    rendererLifecycle as unknown as ParallelFastRendererLifecycleHandlers;
+  activeLifecycle.onMetrics({
+    rendererKind: 'webgpu-parallel-density',
+    webgpuResidentBytes: 4096,
+  });
+  assert.deepEqual(callbackResidentBytes, [4096]);
+  assert.deepEqual(eventResidentBytes, [4096]);
+
+  activeLifecycle.onContextLost('device removed');
+  assert.equal(
+    lifecyclePlot.commands.getRenderSnapshot().renderState,
+    'rendering',
+  );
+  activeLifecycle.onContextRestored('replacement device ready');
+  assert.equal(lifecyclePlot.commands.getRenderSnapshot().renderState, 'ready');
+  assert.deepEqual(contextEvents, [
+    'lost:device removed',
+    'restored:replacement device ready',
+  ]);
+
+  activeLifecycle.onError(new Error('asynchronous parallel renderer failed'));
+  assert.equal(lifecyclePlot.commands.getRenderSnapshot().renderState, 'error');
+  assert.equal(
+    lifecyclePlot.commands.getRenderSnapshot().renderStateMessage,
+    'asynchronous parallel renderer failed',
+  );
+
+  lifecyclePlot.dispose();
+  activeLifecycle.onMetrics({ webgpuResidentBytes: 8192 });
+  activeLifecycle.onContextLost('stale renderer');
+  assert.deepEqual(callbackResidentBytes, [4096]);
+  assert.deepEqual(contextEvents, [
+    'lost:device removed',
+    'restored:replacement device ready',
+  ]);
+}
+
+{
+  class DeferredSelectionRenderer extends MockRenderer {
+    readonly selectionBuffers: ParallelBuffers[] = [];
+
+    selectByBrushes(
+      buffers: ParallelBuffers,
+      brushIntervals: ParallelBrushIntervals,
+    ) {
+      this.selectionBuffers.push(buffers);
+      return Promise.resolve(
+        selectParallelRecordIdsByBrushes(buffers, brushIntervals),
+      );
+    }
+  }
+
+  const initialBuffers = createBuffers();
+  const replacementBuffers = createBuffers();
+  const deferredRenderers: DeferredSelectionRenderer[] = [];
+  const deferredHost = new FakeElement(document);
+  deferredHost.setRect(320, 180);
+  const deferredPlot = createParallelEngine(
+    deferredHost as unknown as HTMLElement,
+    {
+      brushIntervals: { a: { max: 2.5, min: 1.5 } },
+      buffers: initialBuffers,
+      deferSelectionUntilRenderer: true,
+      selectedVisualUpdateDelayMs: 0,
+    },
+    {
+      hoverRendererFactory: () => new MockHoverRenderer(),
+      rendererFactory: () => {
+        const nextRenderer = new DeferredSelectionRenderer();
+        deferredRenderers.push(nextRenderer);
+        return nextRenderer;
+      },
+    },
+  );
+  deferredPlot.update({ buffers: replacementBuffers });
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  assert.equal(deferredRenderers.length, 2);
+  assert.deepEqual(deferredRenderers[0]!.selectionBuffers, [initialBuffers]);
+  assert.deepEqual(deferredRenderers[1]!.selectionBuffers, [replacementBuffers]);
+  assert.deepEqual(
+    [...deferredPlot.commands.getStateSnapshot().selectedSourceIndices],
+    [1],
+  );
+  deferredPlot.dispose();
+}
+
+{
+  class PendingSelectionRenderer extends MockRenderer {
+    pending: {
+      brushIntervals: ParallelBrushIntervals;
+      buffers: ParallelBuffers;
+      resolve(result: ParallelBrushSelectionResult): void;
+    } | null = null;
+
+    selectByBrushes(
+      buffers: ParallelBuffers,
+      brushIntervals: ParallelBrushIntervals,
+    ): Promise<ParallelBrushSelectionResult> {
+      return new Promise((resolve) => {
+        this.pending = { brushIntervals, buffers, resolve };
+      });
+    }
+  }
+
+  const pendingRenderer = new PendingSelectionRenderer();
+  const pendingHost = new FakeElement(document);
+  pendingHost.setRect(320, 180);
+  const pendingPlot = createParallelEngine(
+    pendingHost as unknown as HTMLElement,
+    { buffers: createBuffers(), selectedVisualUpdateDelayMs: 0 },
+    {
+      hoverRendererFactory: () => new MockHoverRenderer(),
+      rendererFactory: () => pendingRenderer,
+    },
+  );
+  const selectionPayloadBrushes: ParallelBrushIntervals[] = [];
+  pendingPlot.on('selectionchange', (event) => {
+    selectionPayloadBrushes.push(event.brushIntervals);
+  });
+  const committedBrushes = { a: { max: 2.5, min: 1.5 } };
+  const previewBrushes = { b: { max: 2.75, min: 2.25 } };
+  pendingPlot.commands.commitBrushIntervals(committedBrushes);
+  pendingPlot.commands.previewBrushIntervals(previewBrushes);
+  assert.notEqual(pendingRenderer.pending, null);
+  const pendingSelection = pendingRenderer.pending!;
+  pendingSelection.resolve(
+    selectParallelRecordIdsByBrushes(
+      pendingSelection.buffers,
+      pendingSelection.brushIntervals,
+    ),
+  );
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+  assert.deepEqual(selectionPayloadBrushes, [committedBrushes]);
+  assert.deepEqual(
+    pendingPlot.commands.getStateSnapshot().brush.brushIntervals,
+    previewBrushes,
+  );
+  pendingPlot.dispose();
+}
 
 {
   const initialHost = new FakeElement(document);
@@ -633,6 +853,36 @@ const document = installDomGlobals();
     bBrushCount: 1,
   });
   unsubscribeControlledMultiAxisSelection();
+
+  const commandInspection = {
+    activeAxis: 'b',
+    activeAxisValue: 2,
+    distancePx: 0,
+    id: 'r1',
+    normalizedAxisValue: 0.5,
+    projectedAxisPosition: 1,
+    projectedNormalizedValue: 0.5,
+    recordIndex: 1,
+    segmentEndAxis: 'c',
+    segmentStartAxis: 'b',
+    source: 'local-nearest-segment',
+  } as const;
+  controlledPlot.commands.commitBrushIntervals({
+    b: { max: 2.5, min: 1.5 },
+  });
+  controlledPlot.commands.setAxisViewports({
+    a: { max: 1.5, min: 0.5 },
+  });
+  controlledPlot.commands.setInspection(commandInspection);
+  controlledPlot.update({ buffers: createBuffers() });
+  const replacementSnapshot = controlledPlot.commands.getStateSnapshot();
+  assert.deepEqual(replacementSnapshot.brush.brushIntervals, {
+    b: { max: 2.5, min: 1.5 },
+  });
+  assert.deepEqual(replacementSnapshot.axisViewports, {
+    a: { max: 1.5, min: 0.5 },
+  });
+  assert.deepEqual(replacementSnapshot.inspection, commandInspection);
   controlledPlot.dispose();
 }
 
@@ -713,6 +963,86 @@ const document = installDomGlobals();
   assert.equal(transientPlot.commands.getStateSnapshot().inspection, null);
   transientBinding.dispose();
   transientPlot.dispose();
+}
+
+{
+  const zoomedBrushHost = new FakeElement(document);
+  zoomedBrushHost.setRect(320, 100);
+  const zoomedBrushRenderers: MockRenderer[] = [];
+  const zoomedBrushHoverRenderers: MockHoverRenderer[] = [];
+  const zoomedBrushFactories = createRendererFactories(
+    zoomedBrushRenderers,
+    zoomedBrushHoverRenderers,
+  );
+  const zoomedBrushPlot = createParallelFastPlot(
+    zoomedBrushHost as unknown as HTMLElement,
+    {
+      buffers: createBuffers(),
+      ...zoomedBrushFactories,
+      selectedVisualUpdateDelayMs: 0,
+    },
+  );
+  zoomedBrushPlot.commands.setAxisViewports({
+    a: { max: 1.5, min: 0.5 },
+  });
+  const zoomedBrushAdapter = new ManualInputAdapter();
+  const zoomedBrushCommits: NumericRange[] = [];
+  zoomedBrushPlot.on('brushcommit', (event) => {
+    const range = getFirstBrushRange(event.brushIntervals.a);
+    if (range !== null) zoomedBrushCommits.push(range);
+  });
+  const zoomedBrushBinding = zoomedBrushPlot.use(
+    createDefaultParallelBindings({
+      brushHitTest: () => ({
+        axis: 'a',
+        axisBounds: { height: 100, top: 0 },
+        axisRangeIndex: -1,
+        kind: 'create',
+      }),
+      inputAdapter: zoomedBrushAdapter,
+    }),
+  );
+  zoomedBrushAdapter.emit(
+    'pointer',
+    makePointerEvent('pointerdown', {
+      button: 2,
+      clientX: 0,
+      clientY: 20,
+      hostX: 0,
+      hostY: 20,
+      shiftKey: false,
+    }),
+  );
+  zoomedBrushAdapter.emit(
+    'pointer',
+    makePointerEvent('pointermove', {
+      button: 2,
+      clientX: 0,
+      clientY: 60,
+      hostX: 0,
+      hostY: 60,
+      shiftKey: false,
+    }),
+  );
+  zoomedBrushAdapter.emit(
+    'pointer',
+    makePointerEvent('pointerup', {
+      button: 2,
+      clientX: 0,
+      clientY: 60,
+      hostX: 0,
+      hostY: 60,
+      shiftKey: false,
+    }),
+  );
+  assert.deepEqual(zoomedBrushCommits, [
+    {
+      max: rawValueAtTestClientY(20, { min: 0.5, span: 1 }),
+      min: rawValueAtTestClientY(60, { min: 0.5, span: 1 }),
+    },
+  ]);
+  zoomedBrushBinding.dispose();
+  zoomedBrushPlot.dispose();
 }
 
 const host = new FakeElement(document);
@@ -840,11 +1170,16 @@ plot.commands.previewBrushIntervals(
 assert.deepEqual(brushPreviewEvents, ['preview:create:pointer:select:a:0.5:1.5']);
 assert.equal(plot.commands.getStateSnapshot().brush.activeBrushes[0]?.parameter, 'a');
 assert.deepEqual(selectionEvents, []);
+assert.deepEqual(renderers[0]!.brushUpdates, [{}]);
 
 plot.commands.commitBrushIntervals(
   { a: [{ max: 1.5, min: 0.5 }] },
   { reason: 'set', source: 'route' },
 );
+assert.deepEqual(renderers[0]!.brushUpdates.at(-1), {
+  a: [{ max: 1.5, min: 0.5 }],
+});
+assert.equal(renderers[0]!.brushUpdates.length, 2);
 assert.deepEqual(brushChangeEvents, ['commit:set:route:1']);
 assert.deepEqual(brushCommitEvents, ['commit:set:route:select:a:0.5:1.5']);
 assert.equal(plot.commands.getStateSnapshot().brush.activeBrushes.length, 1);
@@ -1024,6 +1359,7 @@ adapter.emit(
   }),
 );
 assert.equal(bindingBrushChanges.length, noHitBrushChangeCount);
+plot.commands.resetAxisViewports();
 const colorRuleAdapter = new ManualInputAdapter();
 const colorRuleBinding = plot.use(
   createDefaultParallelBindings({
@@ -1087,7 +1423,10 @@ const colorRuleBrushOverlay = plot.commands
   .getOverlays()
   .find((overlay) => overlay.kind === 'color-rule-brush');
 assert.equal(colorRuleBrushOverlay?.activeBrushes.length, 1);
-assert.equal(getFirstBrushRange(colorRuleBrushOverlay?.brushIntervals.a)?.min, 0.2608695652173912);
+assert.equal(
+  getFirstBrushRange(colorRuleBrushOverlay?.brushIntervals.a)?.min,
+  rawValueAtTestClientY(80),
+);
 plot.commands.clearOverlays('color-rule-brush');
 assert.equal(
   plot.commands.getOverlays().some((overlay) => overlay.kind === 'color-rule-brush'),
@@ -1176,7 +1515,7 @@ resizeAdapter.emit(
 assert.equal(bindingBrushChanges.at(-1), 'resize-max:1');
 assert.equal(
   getFirstBrushRange(plot.commands.getStateSnapshot().brush.brushIntervals.a)?.max,
-  parallelDisplayValueToRenderedNormalizedValue(0.95) * 2,
+  rawValueAtTestClientY(5),
 );
 resizeBinding.dispose();
 
@@ -1226,9 +1565,10 @@ moveAdapter.emit(
   }),
 );
 assert.equal(bindingBrushChanges.at(-1), 'move:1');
+const movedBrushDelta = rawValueAtTestClientY(60) - rawValueAtTestClientY(50);
 assert.deepEqual(getFirstBrushRange(plot.commands.getStateSnapshot().brush.brushIntervals.a), {
-  max: 1.6739130434782608,
-  min: 0.04347826086956513,
+  max: rawValueAtTestClientY(5) + movedBrushDelta,
+  min: rawValueAtTestClientY(80) + movedBrushDelta,
 });
 moveBinding.dispose();
 
@@ -1465,10 +1805,22 @@ perAxisReplaceAdapter.emit(
 );
 assert.equal(bindingBrushChanges.at(-1), 'create:2');
 const perAxisBrushIntervals = plot.commands.getStateSnapshot().brush.brushIntervals;
-assert.equal(getFirstBrushRange(perAxisBrushIntervals.a)?.min, 0.2608695652173912);
-assert.equal(getFirstBrushRange(perAxisBrushIntervals.a)?.max, 0.6956521739130435);
-assert.equal(getFirstBrushRange(perAxisBrushIntervals.b)?.min, 2.1304347826086953);
-assert.equal(getFirstBrushRange(perAxisBrushIntervals.b)?.max, 2.5652173913043477);
+assert.equal(
+  getFirstBrushRange(perAxisBrushIntervals.a)?.min,
+  rawValueAtTestClientY(80),
+);
+assert.equal(
+  getFirstBrushRange(perAxisBrushIntervals.a)?.max,
+  rawValueAtTestClientY(60),
+);
+assert.equal(
+  getFirstBrushRange(perAxisBrushIntervals.b)?.min,
+  rawValueAtTestClientY(40, { min: 1, span: 2 }),
+);
+assert.equal(
+  getFirstBrushRange(perAxisBrushIntervals.b)?.max,
+  rawValueAtTestClientY(20, { min: 1, span: 2 }),
+);
 perAxisReplaceBinding.dispose();
 
 const removeInput = new FakeElement(document);
@@ -1553,6 +1905,7 @@ Object.assign(globalThis, {
 });
 
 plot.commands.clearBrushes({ source: 'test-hook' });
+const brushUpdateCountBeforeDeferredDrag = renderers[0]!.brushUpdates.length;
 const deferredAdapter = new ManualInputAdapter();
 const deferredBrushEvents: Array<{
   max: number | undefined;
@@ -1596,6 +1949,10 @@ deferredAdapter.emit(
     shiftKey: false,
   }),
 );
+assert.equal(
+  renderers[0]!.brushUpdates.length,
+  brushUpdateCountBeforeDeferredDrag,
+);
 deferredAdapter.emit(
   'pointer',
   makePointerEvent('pointermove', {
@@ -1606,6 +1963,10 @@ deferredAdapter.emit(
     hostY: 20,
     shiftKey: false,
   }),
+);
+assert.equal(
+  renderers[0]!.brushUpdates.length,
+  brushUpdateCountBeforeDeferredDrag,
 );
 deferredAdapter.emit(
   'pointer',
@@ -1618,12 +1979,16 @@ deferredAdapter.emit(
     shiftKey: false,
   }),
 );
+assert.equal(
+  renderers[0]!.brushUpdates.length,
+  brushUpdateCountBeforeDeferredDrag + 1,
+);
 const deferredCommitCount = deferredBrushEvents.filter(
   (event) => event.phase === 'commit',
 ).length;
 assert.deepEqual(deferredBrushEvents.at(-1), {
-  max: 1.565217391304348,
-  min: 0.2608695652173912,
+  max: rawValueAtTestClientY(20),
+  min: rawValueAtTestClientY(80),
   phase: 'commit',
 });
 flushQueuedRafCallbacks();
@@ -1695,8 +2060,8 @@ coalescedAdapter.emit(
 assert.equal(coalescedPreviews.length, 1);
 flushQueuedRafCallbacks();
 assert.deepEqual(coalescedPreviews.at(-1), {
-  max: 1.782608695652174,
-  min: 0.2608695652173912,
+  max: rawValueAtTestClientY(10),
+  min: rawValueAtTestClientY(80),
 });
 coalescedBinding.dispose();
 unsubscribeCoalescedPreview();
@@ -1759,8 +2124,8 @@ cancelAdapter.emit(
   }),
 );
 assert.deepEqual(cancelCommits.at(-1), {
-  max: 1.565217391304348,
-  min: 0.2608695652173912,
+  max: rawValueAtTestClientY(20),
+  min: rawValueAtTestClientY(80),
 });
 cancelAdapter.emit(
   'pointer',
@@ -1774,8 +2139,8 @@ cancelAdapter.emit(
   }),
 );
 assert.deepEqual(cancelCommits.at(-1), {
-  max: 1.565217391304348,
-  min: 0.2608695652173912,
+  max: rawValueAtTestClientY(20),
+  min: rawValueAtTestClientY(80),
 });
 cancelBinding.dispose();
 unsubscribeCancelBrush();
@@ -1796,6 +2161,228 @@ const theme: ParallelFastTheme = {
 plot.commands.updateTheme(theme);
 assert.equal(renderers[0]!.theme, theme);
 assert.equal(hoverRenderers[0]!.theme, theme);
+
+plot.commands.resetAxisViewports();
+const axisViewportEvents: string[] = [];
+plot.on('axisviewportpreview', (event) => {
+  axisViewportEvents.push(`preview:${Object.keys(event.axisViewports).length}`);
+});
+plot.on('axisviewportchange', (event) => {
+  axisViewportEvents.push(`${event.reason}:${Object.keys(event.axisViewports).length}`);
+});
+plot.commands.setAxisViewports(
+  { a: { max: 1.5, min: 0.5 } },
+  { phase: 'preview', reason: 'zoom' },
+);
+plot.commands.setAxisViewports(
+  { a: { max: 1.5, min: 0.5 } },
+  { phase: 'commit', reason: 'zoom' },
+);
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, {
+  a: { max: 1.5, min: 0.5 },
+});
+assert.deepEqual(renderers[0]!.axisViewports, {
+  a: { max: 1.5, min: 0.5 },
+});
+plot.commands.undoAxisViewport();
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, {});
+plot.commands.setAxisViewports({ a: { max: 1.75, min: 0.75 } });
+plot.commands.resetAxisViewports();
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, {});
+assert.deepEqual(axisViewportEvents, [
+  'preview:1',
+  'zoom:1',
+  'undo:0',
+  'set:1',
+  'reset:0',
+]);
+assert.deepEqual(renderers[0]!.axisViewportPhases.slice(-5), [
+  'preview',
+  'commit',
+  'commit',
+  'commit',
+  'commit',
+]);
+
+const viewportAdapter = new ManualInputAdapter();
+const viewportGestureEvents: string[] = [];
+const unsubscribeViewportGesturePreview = plot.on('axisviewportpreview', () => {
+  viewportGestureEvents.push('preview');
+});
+const unsubscribeViewportGestureChange = plot.on('axisviewportchange', (event) => {
+  viewportGestureEvents.push(event.reason);
+});
+const viewportBinding = plot.use(
+  createDefaultParallelBindings({ inputAdapter: viewportAdapter }),
+);
+const viewportOverlay = host.children.find(
+  (child) => child.className === 'parallel-fast-axis-viewport-box',
+);
+assert.ok(viewportOverlay);
+const normalAxisTop = 180 * (1 - PARALLEL_AXIS_MAX_DISPLAY_VALUE);
+const normalAxisBottom = 180 * (1 - PARALLEL_AXIS_MIN_DISPLAY_VALUE);
+const normalAxisHeight = normalAxisBottom - normalAxisTop;
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerdown', {
+    button: 0,
+    clientX: 150,
+    clientY: 0,
+    hostX: 150,
+    hostY: 0,
+    shiftKey: false,
+  }),
+);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointermove', {
+    button: 0,
+    clientX: 150,
+    clientY: 180,
+    hostX: 150,
+    hostY: 180,
+    shiftKey: false,
+  }),
+);
+assert.equal(viewportOverlay.style.top, `${normalAxisTop}px`);
+assert.equal(viewportOverlay.style.height, `${normalAxisHeight}px`);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointercancel', {
+    button: 0,
+    clientX: 150,
+    clientY: 180,
+    hostX: 150,
+    hostY: 180,
+    shiftKey: false,
+  }),
+);
+assert.equal(viewportOverlay.style.display, 'none');
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, {});
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerdown', {
+    button: 0,
+    clientX: 150,
+    clientY: 30,
+    hostX: 150,
+    hostY: 30,
+    shiftKey: false,
+  }),
+);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointermove', {
+    button: 0,
+    clientX: 300,
+    clientY: 120,
+    hostX: 300,
+    hostY: 120,
+    shiftKey: false,
+  }),
+);
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, {});
+assert.deepEqual(renderers[0]!.axisViewports, {});
+assert.deepEqual(viewportGestureEvents, []);
+assert.equal(viewportOverlay.dataset.axis, 'b');
+assert.equal(viewportOverlay.style.display, 'block');
+assert.equal(viewportOverlay.style.left, '160px');
+assert.equal(viewportOverlay.style.top, '30px');
+assert.equal(viewportOverlay.style.height, '90px');
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerup', {
+    button: 0,
+    clientX: 300,
+    clientY: 120,
+    hostX: 300,
+    hostY: 120,
+    shiftKey: false,
+  }),
+);
+const zoomedAxisViewports = plot.commands.getStateSnapshot().axisViewports;
+assert.deepEqual(zoomedAxisViewports, {
+  b: {
+    max: 3 - ((30 - normalAxisTop) / normalAxisHeight) * 2,
+    min: 3 - ((120 - normalAxisTop) / normalAxisHeight) * 2,
+  },
+});
+assert.deepEqual(renderers[0]!.axisViewports, zoomedAxisViewports);
+assert.deepEqual(viewportGestureEvents, ['zoom']);
+assert.equal(viewportOverlay.style.display, 'none');
+
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerdown', {
+    button: 1,
+    clientX: 150,
+    clientY: 60,
+    hostX: 150,
+    hostY: 60,
+    shiftKey: false,
+  }),
+);
+assert.equal(viewportOverlay.style.top, `${normalAxisTop}px`);
+assert.equal(viewportOverlay.style.height, `${normalAxisHeight}px`);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointermove', {
+    button: 1,
+    clientX: 20,
+    clientY: 80,
+    hostX: 20,
+    hostY: 80,
+    shiftKey: false,
+  }),
+);
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, zoomedAxisViewports);
+assert.deepEqual(viewportGestureEvents, ['zoom']);
+assert.equal(viewportOverlay.dataset.axis, 'b');
+assert.equal(viewportOverlay.dataset.interaction, 'pan');
+assert.equal(viewportOverlay.style.borderStyle, 'dashed');
+assert.equal(viewportOverlay.style.top, `${normalAxisTop + 20}px`);
+assert.equal(viewportOverlay.style.height, `${normalAxisHeight}px`);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerup', {
+    button: 1,
+    clientX: 20,
+    clientY: 80,
+    hostX: 20,
+    hostY: 80,
+    shiftKey: false,
+  }),
+);
+assert.notDeepEqual(plot.commands.getStateSnapshot().axisViewports, zoomedAxisViewports);
+assert.deepEqual(viewportGestureEvents, ['zoom', 'pan']);
+
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerdown', {
+    button: 1,
+    clientX: 150,
+    clientY: 60,
+    hostX: 150,
+    hostY: 60,
+    shiftKey: false,
+  }),
+);
+viewportAdapter.emit(
+  'pointer',
+  makePointerEvent('pointerup', {
+    button: 1,
+    clientX: 150,
+    clientY: 60,
+    hostX: 150,
+    hostY: 60,
+    shiftKey: false,
+  }),
+);
+assert.deepEqual(plot.commands.getStateSnapshot().axisViewports, zoomedAxisViewports);
+assert.deepEqual(viewportGestureEvents, ['zoom', 'pan', 'undo']);
+viewportBinding.dispose();
+unsubscribeViewportGestureChange();
+unsubscribeViewportGesturePreview();
 
 host.setRect(400, 200);
 plot.commands.resize();
@@ -1838,6 +2425,6 @@ plot.use(() => {
   throw new Error('disposed plot should not attach bindings');
 });
 assert.equal(renderers[1]!.draws.length, restoredRendererDrawCount);
-assert.deepEqual(hoverEvents, [1, -1, 1, -1, 0, -1]);
+assert.deepEqual(hoverEvents, [1, -1, 1, -1, 1, -1]);
 
 console.log('parallel-fast engine lifecycle tests passed');

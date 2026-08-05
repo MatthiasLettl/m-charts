@@ -26,6 +26,7 @@ as the default required source. Add `adapters`, scatter `workers`, or chart
 | Histogram | `packages/m-charts/src/m-histogram/core`, `packages/m-charts/src/m-histogram/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
 | Histogram WebGPU | The histogram `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-histogram-webgpu/core`, and `packages/m-charts/src/m-histogram-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. The shared WebGPU folder contains the embedded Rust aggregation binary. |
 | Parallel | `packages/m-charts/src/m-parallel/core`, `packages/m-charts/src/m-parallel/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
+| Parallel WebGPU | The parallel `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-parallel-webgpu/core`, and `packages/m-charts/src/m-parallel-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. Use `createParallelWebgpuBuffers` only when WebGL2 fallback is not required. |
 
 The `core` and `engine` folders are framework-neutral. The `react` folders are
 optional helpers only. Full chart-folder copies are possible, but non-React
@@ -42,8 +43,8 @@ is not part of the package source.
 Each chart imports shared browser primitives from `plot-engine/core`: disposables,
 typed emitters, DOM input normalization, brush metadata, resize lifecycle,
 WebGL2 context lifecycle, geometry helpers, metrics, and RAF scheduling. WebGPU
-scatter and histogram additionally import adapter/device lifecycle, profiling,
-and shared aggregation-WASM primitives from `plot-engine-webgpu/core`. Keep the relative relationship between the
+charts additionally import adapter/device lifecycle, profiling, and shared
+aggregation-WASM primitives from `plot-engine-webgpu/core`. Keep the relative relationship between the
 plot-engine and chart folders intact, or update imports consistently.
 
 A recommended destination layout is:
@@ -56,6 +57,7 @@ src/vendor/m-charts/m-scatter-webgpu
 src/vendor/m-charts/m-histogram
 src/vendor/m-charts/m-histogram-webgpu
 src/vendor/m-charts/m-parallel
+src/vendor/m-charts/m-parallel-webgpu
 ```
 
 With this layout, most internal relative imports remain valid after TypeScript
@@ -65,8 +67,10 @@ Each WebGPU factory returns synchronously but exposes `plot.interactive` and
 `plot.ready`. Await `interactive` before treating the first displayed frame as
 available, or `ready` before treating adapter/device creation, persistent buffer
 upload, and the first complete settled representation as complete. Scatter can
-report a style-preserving point LOD at high density; histogram always renders
-every resulting bin/stack segment. Both promises reject on initialization failure. The host
+report a style-preserving point LOD at high density; parallel coordinates can
+report a bounded exact-style representative layer before complete density;
+histogram always renders every resulting bin/stack segment. Both promises
+reject on initialization failure. The host
 must run in a secure context supported by WebGPU.
 
 If the host TypeScript configuration does not yet declare WebGPU globals, add
@@ -294,6 +298,59 @@ the same host. See
 and [the WebGPU histogram guide](../packages/m-charts/HISTOGRAM_WEBGPU.md) for
 fallback code, lifecycle, aggregation, diagnostics, and validation details.
 
+## Migrating Existing WebGL2 Parallel Coordinates
+
+The WebGPU parallel renderer uses the existing parallel `core`, backend-neutral
+`engine`, and default bindings. Existing buffers, brush intervals, selected and
+preselected indices, options, commands, events, overlays, selection and
+inspection payloads, themes, keyboard shortcuts, and controlled updates remain
+valid.
+
+For a workspace package consumer, retain the factory name and change only the
+entry point:
+
+```diff
+- import { createParallelPlot } from 'm-charts/m-parallel';
++ import { createParallelPlot } from 'm-charts/m-parallel-webgpu';
+```
+
+For source-copy integration, keep utility/data-contract imports from
+`m-parallel/core`, add the WebGPU folders listed above, and import the factory
+from `m-parallel-webgpu/engine/index.js`. Creation remains synchronous, but the
+representative and settled density frames do not:
+
+```ts
+const plot = createParallelPlot(host, options);
+plot.use(createDefaultParallelBindings());
+
+try {
+  await plot.interactive;
+  await plot.ready;
+} catch (error) {
+  plot.dispose();
+  throw error;
+}
+```
+
+WebGPU adds the creation-only `aggregationBackend`, `binResolution`,
+`directSegmentLimit`, `renderMode`, `representativeRecordLimit`, and
+`requestTimestampQuery` options. The WebGL2-only `forceWebglUnavailable` and
+`rendererFactory` fields are accepted and ignored. A custom
+`hoverRendererFactory` remains active, and `preserveDrawingBuffer` is forwarded
+to it without configuring the WebGPU surface. Recreate the plot to change
+creation-only options; continue using `plot.update(...)` for shared mutable
+state.
+
+Applications retaining WebGL2 support should use regular
+`createParallelBuffers`, diagnose WebGPU, attempt asynchronous startup, dispose
+a failed WebGPU instance, and only then create WebGL2 in the same host. Compact
+`createParallelWebgpuBuffers` output intentionally omits expanded WebGL line and
+segment buffers. See
+[the copy-ready parallel migration example](examples/parallel-webgpu-migration.md)
+and [the WebGPU parallel guide](../packages/m-charts/PARALLEL_WEBGPU.md) for
+fallback code, lifecycle, rendering, exact selection, diagnostics, and
+validation details.
+
 ## Scatter Worker Files
 
 Scatter workers are optional. Synchronous aggregation and selection are available
@@ -416,6 +473,10 @@ You can pass chart contracts directly or copy optional adapters:
 - Parallel: pass `ParallelBuffers`, usually built with
   `createParallelFastBuffersFromDataset(...)` from `m-parallel/adapters` or with
   lower-level buffer helpers from `m-parallel/core`.
+- Parallel WebGPU: pass the same `ParallelBuffers` contract. WebGPU-only hosts
+  can use `createParallelWebgpuBuffers` or its packed-page source to avoid
+  WebGL line/segment expansion; hosts retaining WebGL2 fallback should use
+  regular parallel buffers.
 
 Demo route loaders and generated fixtures are examples, not reusable API.
 
@@ -433,7 +494,7 @@ Then verify the backends that the host intends to support:
 
 - The host element has nonzero width and height.
 - WebGL2 charts render without WebGL context errors.
-- WebGPU scatter and histogram run in a secure context,
+- WebGPU scatter, histogram, and parallel coordinates run in a secure context,
   `diagnoseWebgpuSupport()` reports an adapter, and
   `plot.interactive`/`plot.ready` resolve for representative data.
 - If WebGL2 fallback is supported, an unavailable or failed WebGPU startup
@@ -446,6 +507,9 @@ Then verify the backends that the host intends to support:
 - Raw and pre-aggregated WebGPU histogram modes retain expected commands,
   events, selections, overlays, stacked colors, and controlled updates after a
   backend switch.
+- WebGPU parallel coordinates retain exact brush payloads, inspection,
+  preselection, styling, shortcuts, axis viewport state, device lifecycle
+  events, renderer metrics, and controlled updates after a backend switch.
 - Source-copy import paths resolve without depending on this monorepo.
 - Scatter worker factories load the copied worker files, if workers are enabled.
 

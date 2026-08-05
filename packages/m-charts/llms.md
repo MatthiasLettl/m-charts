@@ -4,8 +4,8 @@ This file is the detailed integration reference for agents and humans using the
 `m-charts` package in another application. It documents the reusable WebGL2 and
 WebGPU plot library in this repository. WebGL2 powers scatter, histogram, and
 parallel-coordinate engines; WebGPU is an alternative point, bubble, and
-heat-map scatter renderer and an alternative histogram renderer over the same
-respective public contracts.
+heat-map scatter renderer, histogram renderer, and pairwise-density parallel
+renderer over the same respective public contracts.
 
 `m-charts` is not published to npm yet, and `npm install m-charts` is not a
 supported consumer path. The current public usage path is source-copy
@@ -23,6 +23,7 @@ import { createScatterPlot as createWebgpuScatterPlot } from 'm-charts/m-scatter
 import { createHistogramPlot } from 'm-charts/m-histogram';
 import { createHistogramPlot as createWebgpuHistogramPlot } from 'm-charts/m-histogram-webgpu';
 import { createParallelPlot } from 'm-charts/m-parallel';
+import { createParallelPlot as createWebgpuParallelPlot } from 'm-charts/m-parallel-webgpu';
 ```
 
 The demo routes in `apps/demo` are integration examples, not the library API.
@@ -46,6 +47,8 @@ packages/m-charts/src/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine
 packages/m-charts/src/m-parallel/core
 packages/m-charts/src/m-parallel/engine
+packages/m-charts/src/m-parallel-webgpu/core
+packages/m-charts/src/m-parallel-webgpu/engine
 ```
 
 Optional package helpers live under visualization `adapters`, `react`,
@@ -149,6 +152,92 @@ The full human guide and copy-ready fallback example are in
 `packages/m-charts/HISTOGRAM_WEBGPU.md`,
 `docs/source-copy-integration.md`, and
 `docs/examples/histogram-webgpu-migration.md`.
+
+## Migrating Existing WebGL2 Parallel Coordinates To WebGPU
+
+Keep `ParallelBuffers`, bindings, commands, brush/selection events, overlays,
+themes, inspection payloads, and controlled updates. Change the factory entry:
+
+```diff
+- import { createParallelPlot } from 'm-charts/m-parallel';
++ import { createParallelPlot } from 'm-charts/m-parallel-webgpu';
+```
+
+For source-copy integrations, retain `plot-engine`, `m-parallel/core`, and
+`m-parallel/engine`; add `plot-engine-webgpu`, `m-parallel-webgpu/core`, and
+`m-parallel-webgpu/engine`. Await `plot.interactive` or `plot.ready`, handle
+rejection, and dispose before creating a WebGL2 fallback.
+Use regular parallel buffers for a dual-backend fallback; compact
+`createParallelWebgpuBuffers` output intentionally omits WebGL line/segment
+expansion. The copy-ready example is
+`docs/examples/parallel-webgpu-migration.md`.
+
+The WebGPU entry is an export/type superset. Its creation-only options are
+`aggregationBackend`, `binResolution`, `directSegmentLimit`, `renderMode`,
+`representativeRecordLimit`, and `requestTimestampQuery`.
+`createParallelWebgpuBuffers` omits line-series/WebGL expansion for large
+WebGPU-only data, reuses compact raw/style views, and derives normalized CPU
+values on demand. Its optional second argument accepts exact prepared domains,
+missing counts, trusted encoded typed columns, and an asynchronous packed-page
+source. Demo page decoding uses that source to fuse and stream work from a
+worker. Large inputs store two
+16-bit normalized values per GPU word and keep compact RGBA4444 density styles
+resident. Viewport aggregation therefore avoids repeated CPU repacking and GPU
+uploads while retaining RGBA8 for the bounded representative styles. The
+full-population density path remains 16-bit, while committed hybrid refinement
+reads back only bounded source indices and uploads raw-derived,
+viewport-relative Float32 detail coordinates. Refined direct lines and GPU
+hover therefore share the exact overlay geometry at deep zoom without a
+full-column CPU scan.
+For hybrid rendering, `interactive` resolves after the exact-style
+representative frame and `ready` after the full-population density frame.
+Device loss/restoration and renderer metrics retain the shared typed engine
+event and option-callback paths.
+
+Every source row contributes to pairwise adjacent-axis screen bins. Density
+stores count and quantized premultiplied color statistics; selected and
+preselected bins are independent uniform-color overlays. Direct mode draws all
+lines for small data, while large data combines density with deterministic
+exact-style representatives. Representatives prioritize per-axis extrema and
+categorical coverage, retain local category/extrema coverage across
+source-order blocks, and use pseudo-randomized bucket sampling for the
+remaining bounded capacity. A two-pass GPU reduction resolves hover against
+all records in direct/density-only modes and against the currently drawn
+population in hybrid mode, mapping the winner back to its public source index.
+Hybrid hover uses a two-pixel exact-detail fast path, then a coalesced
+full-population GPU fallback for density-only and overflow segments. Hit tests
+at an axis include both adjacent pairs, and the winning compact candidate is
+revalidated against raw viewport geometry before inspection is published.
+Committed hybrid viewports fuse a bounded GPU compaction into the affected-pair
+density pass. Records inside every active viewport are deterministically
+strided while dense; once the qualified count fits the representative limit,
+stride one renders every qualifying line. Preview continues to use the static
+representatives. The completed pass performs only a bounded source-index
+readback and detail-coordinate upload, so no full-data CPU scan or second
+full-data GPU pass blocks gestures.
+
+Axis viewports are independent of brushes. Left-drag a brush-like vertical box
+to zoom the nearest axis only; middle-drag pans that one axis, middle-click
+undoes, and `resetAxisViewports()` restores domains. Pointer drags update only
+the lightweight overlay and commit the viewport once on release, avoiding live
+line/density recomputation. A commit recomputes only density pairs adjacent to
+axes whose viewport changed. Programmatic previews can still emit
+`axisviewportpreview`; committed gestures emit `axisviewportchange`.
+Out-of-viewport values route to fixed above/below rails, distinct from the
+neutral missing-value rail. Hosts can use
+`ParallelBuffers.missingValueCountByAxis` to show missing-value affordances
+only where they apply; keeping all rail coordinates reserved avoids layout
+movement when zoom state changes.
+The demo persists committed parallel viewports as
+`pf.<axis>.min`/`pf.<axis>.max` and restores them through the existing
+`axisViewports` option; previews do not write the URL. Hover projection uses
+display-space interpolation so rail-to-axis markers stay on rendered lines.
+
+The GPU pass provides immediate membership/density. Exact public source-index
+selection uses Rust/Wasm through two million rows when its retained typed copy
+is bounded, then uses the source-column implementation for larger data rather
+than duplicating a large dataset in Wasm. See
+`packages/m-charts/PARALLEL_WEBGPU.md`.
 
 ## Architecture Mental Model
 
@@ -611,6 +700,18 @@ Parallel coordinates:
 - Drag an existing brush band with right button: move it.
 - Drag brush min/max handles with right button: resize it.
 - Right double-click an existing brush: remove it.
+- Pointer brush previews update the brush overlay without recalculating line
+  membership; selection is evaluated when the pointer is released and the
+  brush commits. This keeps WebGPU density rendering aligned with the WebGL2
+  interaction timing.
+- WebGPU brush commits reuse existing background density and run a dedicated
+  selected-bin/membership pass. Exact public source indices validate the
+  compact GPU candidate mask against raw values instead of rescanning every
+  record. Selected-only bins render without the original series color beneath
+  the stronger committed-selection overlay. While selection is active,
+  remaining density retains 62% opacity with mild desaturation, exact-color
+  representatives retain 42%, dense selected bundles use a clean bright-yellow
+  line, and only sparse selected bins receive a subtle contrasting halo.
 - Holding `Shift` while moving the pointer inspects the nearest source line
   through the hover overlay. Background lines are not dimmed or redrawn by
   hover. Inspection clears on `Shift` release or pointer leave unless

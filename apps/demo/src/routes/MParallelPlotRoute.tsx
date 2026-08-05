@@ -19,7 +19,9 @@ import {
   type ParallelBuffers,
 } from '../data/parallelBuffers.ts';
 import {
+  FAST_ROUTE_TABLES_PARAM,
   MIXED_TABLE_FIXTURE_URL,
+  formatFastRouteTableMode,
   parseFastRouteTableMode,
   type FastRouteTableMode,
 } from '../data/fastRouteDataMode.ts';
@@ -57,7 +59,12 @@ import {
 } from 'm-charts/m-parallel';
 import {
   PARALLEL_FAST_DEFAULT_LINE_OPACITY_SCALE,
+  PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE,
+  PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y,
+  PARALLEL_AXIS_MAX_DISPLAY_VALUE,
   PARALLEL_AXIS_MIN_DISPLAY_VALUE,
+  PARALLEL_BELOW_VIEWPORT_DISPLAY_VALUE,
+  PARALLEL_BELOW_VIEWPORT_ROUTE_NORMALIZED_Y,
   PARALLEL_MISSING_AXIS_DISPLAY_VALUE,
   PARALLEL_FAST_LINE_OPACITY_SCALE_PARAM,
   PARALLEL_FAST_SMALL_DISCRETE_TICK_LIMIT,
@@ -66,9 +73,11 @@ import {
   formatParallelFastAxisValue,
   formatParallelFastRecordAxisValue,
   createParallelHoverIndex,
+  readParallelNormalizedValue,
   getNextLineOpacityScale,
   getPreviousLineOpacityScale,
   parallelRenderedNormalizedValueToDisplayValue,
+  projectParallelViewportNormalizedValue,
   parseLineOpacityScaleSearchParam,
 } from 'm-charts/m-parallel';
 import type {
@@ -81,6 +90,10 @@ import {
   isPlotInteractionGateActive,
   type PlotInteractionGateState,
 } from '../state/viewSearchParams.ts';
+import {
+  parseParallelAxisViewportsSearchParams,
+  serializeParallelAxisViewportsSearchParams,
+} from '../state/parallelViewSearchParams.ts';
 import { createThemeAwareTo } from '../state/themeMode.ts';
 import { useThemeMode } from '../theme/ThemeModeProvider.tsx';
 import { getParallelFastTheme } from '../theme/plotTheme.ts';
@@ -91,14 +104,45 @@ import {
 import { adaptMixedTablesForParallelFast } from 'm-charts/m-parallel';
 import { adaptScatterBenchmarkForParallelFast } from 'm-charts/m-parallel';
 import type { LoadedScatterFastBenchmarkSource } from '../data/fastPlotTableSources.ts';
+import {
+  createParallelWebgpuPlot,
+  type ParallelAxisViewports,
+  type ParallelWebgpuDiagnostics,
+  type ParallelWebgpuPlotInstance,
+} from 'm-charts/m-parallel-webgpu';
+import {
+  LocalParallelWebgpuDatasetUnavailableError,
+  loadParallelWebgpuDataset,
+  type LoadedParallelWebgpuDataset,
+} from '../data/parallelWebgpuDatasetAdapter.ts';
+import {
+  SCATTER_WEBGPU_DEMO_POINT_COUNTS,
+  deleteStoredScatterWebgpuDataset,
+  generateAndStoreScatterWebgpuDataset,
+} from '../data/scatterWebgpuDatasetStore.ts';
 
 type ParallelFastDatasetLoadState =
   | { status: 'loading' }
+  | { status: 'missing'; message?: string; pointCount: number }
+  | {
+      status: 'generating';
+      completedPages: number;
+      pageCount: number;
+      pointCount: number;
+    }
   | { status: 'error'; message: string }
   | {
       status: 'loaded';
-      dataset: LoadedScatterFastBenchmarkSource | MixedTableFixture | ParallelDataset;
-      datasetKind: 'legacy-parallel' | 'mixed-tables' | 'scatter-fast-benchmark';
+      dataset:
+        | LoadedParallelWebgpuDataset
+        | LoadedScatterFastBenchmarkSource
+        | MixedTableFixture
+        | ParallelDataset;
+      datasetKind:
+        | 'legacy-parallel'
+        | 'mixed-tables'
+        | 'scatter-fast-benchmark'
+        | 'webgpu-buffers';
       loadTimeMs: number;
     };
 
@@ -144,7 +188,10 @@ interface ParallelFastDiagnostics {
   hoverResolveMs: number | null;
   hoverVisualBaseRedrawMs: number | null;
   hoverVisualGpuUploadMs: number | null;
-  hoverVisualMode: 'webgl2-hover-overlay-canvas' | 'n/a';
+  hoverVisualMode:
+    | 'canvas2d-hover-overlay'
+    | 'webgl2-hover-overlay-canvas'
+    | 'n/a';
   hoverVisualRedrawMs: number | null;
   hoverVisualSkipped: boolean;
   hoverVisualUpdateMs: number | null;
@@ -196,6 +243,7 @@ interface ParallelFastBrushHookSelector {
 interface ParallelFastBrushHooks {
   clearBrushes: () => void;
   getTableMode: () => FastRouteTableMode;
+  getWebgpuDiagnostics: () => ParallelWebgpuDiagnostics | null;
   getHoverIndexState: () => string;
   getInspection: () => ParallelFastInspectionState | null;
   getLineOpacityScale: () => number;
@@ -204,6 +252,7 @@ interface ParallelFastBrushHooks {
   inspectRecord: (recordId: string, axis: ParallelParameter) => void;
   serializeSelectedIdsForBenchmark: () => { byteLength: number; ms: number };
   setBrushes: (selectors: readonly ParallelFastBrushHookSelector[]) => void;
+  setAxisViewports: (axisViewports: ParallelAxisViewports) => void;
   setLineOpacityScale: (scale: number) => void;
   setPreselectedOverlayEnabled: (enabled: boolean) => void;
 }
@@ -219,9 +268,12 @@ interface ParallelFastRoutePlotHandle {
     brushIntervals: ParallelBrushIntervals,
     source?: string,
   ) => void;
+  getWebgpuDiagnostics: () => ParallelWebgpuDiagnostics | null;
   requestLineOpacityAdjustment: (
     adjustment: ParallelLineOpacityAdjustment,
   ) => void;
+  resetAxisViewports: () => void;
+  setAxisViewports: (axisViewports: ParallelAxisViewports) => void;
   setInspection: (
     inspection: ParallelFastInspectionState | null,
     resolveMs?: number | null,
@@ -261,6 +313,11 @@ const PARALLEL_SHORTCUT_GROUPS = [
 
 const PARALLEL_TRY_THIS_ITEMS = [
   {
+    label: 'Zoom an axis',
+    detail:
+      'Left-drag a vertical box on one axis; release to apply it. Middle-drag pans one axis and middle-click undoes.',
+  },
+  {
     label: 'Brush an axis',
     detail:
       'Right-drag vertically on an axis to select a value range; hold Ctrl to append another range.',
@@ -283,7 +340,14 @@ const PARALLEL_TRY_THIS_ITEMS = [
   },
 ] as const;
 
-export function MParallelPlotRoute() {
+const PARALLEL_WEBGPU_POINT_COUNTS = SCATTER_WEBGPU_DEMO_POINT_COUNTS;
+type ParallelRendererBackend = 'webgl2' | 'webgpu';
+
+export function MParallelPlotRoute({
+  rendererBackend = 'webgl2',
+}: {
+  rendererBackend?: ParallelRendererBackend;
+}) {
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const { themeMode } = useThemeMode();
@@ -291,6 +355,7 @@ export function MParallelPlotRoute() {
   const [datasetState, setDatasetState] = useState<ParallelFastDatasetLoadState>({
     status: 'loading',
   });
+  const [datasetRefreshVersion, setDatasetRefreshVersion] = useState(0);
   const [bufferState, setBufferState] = useState<ParallelFastBufferState>({
     status: 'idle',
   });
@@ -306,6 +371,10 @@ export function MParallelPlotRoute() {
   const [parallelOverlays, setParallelOverlays] = useState<
     readonly ParallelFastOverlayDescriptor[]
   >([]);
+  const [axisViewportState, setAxisViewportState] = useState<{
+    buffers: ParallelBuffers | null;
+    viewports: ParallelAxisViewports;
+  }>({ buffers: null, viewports: {} });
   const [tableMetadata, setTableMetadata] = useState<ParallelFastTableMetadata>(() =>
     createEmptyParallelFastTableMetadata(),
   );
@@ -323,9 +392,51 @@ export function MParallelPlotRoute() {
     ids: readonly string[];
     sourceIndices: Uint32Array;
   } | null>(null);
+  const componentActiveRef = useRef(true);
+  const datasetGenerationAbortRef = useRef<AbortController | null>(null);
 
   const baseReadyBuffers = bufferState.status === 'ready' ? bufferState.buffers : null;
   const readyBuffers = baseReadyBuffers;
+  const persistedAxisViewports = useMemo(
+    () =>
+      readyBuffers === null
+        ? {}
+        : parseParallelAxisViewportsSearchParams(
+            new URLSearchParams(location.search),
+            readyBuffers.axisOrder,
+            readyBuffers.domainsByAxis,
+          ),
+    [location.search, readyBuffers],
+  );
+  const axisViewports =
+    axisViewportState.buffers === readyBuffers
+      ? axisViewportState.viewports
+      : persistedAxisViewports;
+  const adjustedAxisCount = Object.keys(axisViewports).length;
+
+  const handleAxisViewportsChange = useCallback(
+    (
+      nextAxisViewports: ParallelAxisViewports,
+      phase: 'preview' | 'commit',
+    ) => {
+      setAxisViewportState({
+        buffers: readyBuffers,
+        viewports: nextAxisViewports,
+      });
+      if (phase !== 'commit' || readyBuffers === null) return;
+
+      const currentParams = new URLSearchParams(window.location.search);
+      const nextParams = serializeParallelAxisViewportsSearchParams(
+        nextAxisViewports,
+        readyBuffers.axisOrder,
+        currentParams,
+      );
+      if (nextParams.toString() !== currentParams.toString()) {
+        setSearchParams(nextParams, { replace: true });
+      }
+    },
+    [readyBuffers, setSearchParams],
+  );
 
   const updatePreselectedOverlayEnabled = useCallback((enabled: boolean) => {
     setPreselectedOverlayEnabled(enabled);
@@ -342,6 +453,17 @@ export function MParallelPlotRoute() {
   const plotInteractionActive = isPlotInteractionGateActive(plotInteractionGate);
   const plotInteractionActiveRef = useRef(plotInteractionActive);
   const tableMode = useMemo(() => parseFastRouteTableMode(searchParams), [searchParams]);
+  const webgpuPointCount = useMemo(
+    () => parseParallelWebgpuPointCount(searchParams),
+    [searchParams],
+  );
+  const webgpuManifestUrl = useMemo(() => {
+    if (searchParams.get('webgpuData') !== 'http') return undefined;
+    return searchParams.get('__e2eParallelWebgpuManifest') ??
+      (webgpuPointCount > 10_000_000
+        ? '/data/scatter-webgpu-25m.json'
+        : '/data/scatter-webgpu-10m.json');
+  }, [searchParams, webgpuPointCount]);
   const datasetOverrideUrl = useMemo(
     () => getParallelFastDatasetOverrideUrl(location.search),
     [location.search],
@@ -350,6 +472,90 @@ export function MParallelPlotRoute() {
     () => resolveFastPlotFixtureUrl(searchParams, MIXED_TABLE_FIXTURE_URL),
     [searchParams],
   );
+  const nonWebgpuDatasetSearch = rendererBackend === 'webgpu'
+    ? ''
+    : searchParams.toString();
+
+  const selectWebgpuPointCount = useCallback((pointCount: number) => {
+    if (pointCount === webgpuPointCount) return;
+    const next = new URL(window.location.href);
+    next.searchParams.set('points', String(pointCount));
+    window.location.assign(next.href);
+  }, [webgpuPointCount]);
+
+  const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
+    if (mode === tableMode) return;
+    const next = new URL(window.location.href);
+    const value = formatFastRouteTableMode(mode);
+    if (value === null) next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
+    else next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
+    window.location.assign(next.href);
+  }, [tableMode]);
+
+  const generateWebgpuDataset = useCallback(async () => {
+    datasetGenerationAbortRef.current?.abort();
+    const controller = new AbortController();
+    datasetGenerationAbortRef.current = controller;
+    setDatasetState({
+      completedPages: 0,
+      pageCount: Math.ceil(webgpuPointCount / 250_000),
+      pointCount: webgpuPointCount,
+      status: 'generating',
+    });
+    try {
+      await generateAndStoreScatterWebgpuDataset({
+        onProgress: ({ completedPages, pageCount }) => {
+          if (componentActiveRef.current && !controller.signal.aborted) {
+            setDatasetState({
+              completedPages,
+              pageCount,
+              pointCount: webgpuPointCount,
+              status: 'generating',
+            });
+          }
+        },
+        pointCount: webgpuPointCount,
+        signal: controller.signal,
+      });
+      if (componentActiveRef.current && !controller.signal.aborted) {
+        setDatasetState({ status: 'loading' });
+        setDatasetRefreshVersion((version) => version + 1);
+      }
+    } catch (error) {
+      if (!componentActiveRef.current) return;
+      setDatasetState({
+        ...(controller.signal.aborted
+          ? {}
+          : {
+              message: error instanceof Error
+                ? error.message
+                : 'Unknown WebGPU dataset generation error.',
+            }),
+        pointCount: webgpuPointCount,
+        status: 'missing',
+      });
+    } finally {
+      if (datasetGenerationAbortRef.current === controller) {
+        datasetGenerationAbortRef.current = null;
+      }
+    }
+  }, [webgpuPointCount]);
+
+  const deleteWebgpuDataset = useCallback(async () => {
+    datasetGenerationAbortRef.current?.abort();
+    try {
+      await deleteStoredScatterWebgpuDataset(webgpuPointCount);
+      setBufferState({ status: 'idle' });
+      setDatasetState({ pointCount: webgpuPointCount, status: 'missing' });
+    } catch (error) {
+      setDatasetState({
+        message: error instanceof Error
+          ? error.message
+          : 'Could not delete the local dataset.',
+        status: 'error',
+      });
+    }
+  }, [webgpuPointCount]);
 
   const updateLineOpacityScale = useCallback(
     (scale: number) => {
@@ -417,17 +623,46 @@ export function MParallelPlotRoute() {
   }, [plotInteractionActive]);
 
   useEffect(() => {
+    componentActiveRef.current = true;
+    return () => {
+      componentActiveRef.current = false;
+      datasetGenerationAbortRef.current?.abort();
+    };
+  }, []);
+
+  useEffect(() => {
     let isActive = true;
     const startedAt = performance.now();
+    const controller = new AbortController();
 
     async function loadDataset() {
       try {
         const loaded =
-          datasetOverrideUrl !== null
+          rendererBackend === 'webgpu'
+            ? await loadParallelWebgpuDataset({
+                fixtureUrl: mixedTableFixtureUrl,
+                ...(webgpuManifestUrl === undefined
+                  ? {}
+                  : { manifestUrl: webgpuManifestUrl }),
+                pointCount: webgpuPointCount,
+                signal: controller.signal,
+                startedAt,
+                tableMode,
+              }).then((dataset) => ({
+                dataset,
+                datasetKind: 'webgpu-buffers' as const,
+                metrics: {
+                  fetchMs: dataset.loadMs,
+                  parseMs: 0,
+                },
+              }))
+            : datasetOverrideUrl !== null
             ? await loadParallelFastRouteDataset(datasetOverrideUrl)
             : tableMode === 'multi'
               ? await loadMixedTableParallelFastRouteDataset(mixedTableFixtureUrl)
-              : await loadScatterFastBenchmarkSource(searchParams).then((dataset) => ({
+              : await loadScatterFastBenchmarkSource(
+                  new URLSearchParams(nonWebgpuDatasetSearch),
+                ).then((dataset) => ({
                   dataset,
                   datasetKind: 'scatter-fast-benchmark' as const,
                   metrics: {
@@ -458,6 +693,17 @@ export function MParallelPlotRoute() {
           return;
         }
 
+        if (
+          error instanceof LocalParallelWebgpuDatasetUnavailableError &&
+          rendererBackend === 'webgpu'
+        ) {
+          setDatasetState({
+            pointCount: webgpuPointCount,
+            status: 'missing',
+          });
+          return;
+        }
+
         setDatasetState({
           message:
             error instanceof Error
@@ -472,8 +718,18 @@ export function MParallelPlotRoute() {
 
     return () => {
       isActive = false;
+      controller.abort();
     };
-  }, [datasetOverrideUrl, mixedTableFixtureUrl, searchParams, tableMode]);
+  }, [
+    datasetOverrideUrl,
+    datasetRefreshVersion,
+    mixedTableFixtureUrl,
+    nonWebgpuDatasetSearch,
+    rendererBackend,
+    tableMode,
+    webgpuManifestUrl,
+    webgpuPointCount,
+  ]);
 
   useEffect(() => {
     if (datasetState.status !== 'loaded') {
@@ -491,9 +747,30 @@ export function MParallelPlotRoute() {
 
       try {
         const bufferStartedAt = performance.now();
-        const routeBuffers = createParallelFastRouteBuffers(datasetState, {
-          includeWebglSegmentBuffers: true,
-        }, tableMode);
+        const routeBuffers =
+          datasetState.datasetKind === 'webgpu-buffers'
+            ? {
+                buffers: (datasetState.dataset as LoadedParallelWebgpuDataset)
+                  .buffers,
+                tableMetadata: {
+                  tableCount: (
+                    datasetState.dataset as LoadedParallelWebgpuDataset
+                  ).tableNames.length,
+                  tableNames: (
+                    datasetState.dataset as LoadedParallelWebgpuDataset
+                  ).tableNames,
+                  tableRecordCounts: (
+                    datasetState.dataset as LoadedParallelWebgpuDataset
+                  ).tableRecordCounts,
+                },
+              }
+            : createParallelFastRouteBuffers(
+                datasetState,
+                {
+                  includeWebglSegmentBuffers: true,
+                },
+                tableMode,
+              );
         const buffers = routeBuffers.buffers;
         const bufferBuildMs = performance.now() - bufferStartedAt;
 
@@ -509,10 +786,12 @@ export function MParallelPlotRoute() {
           bufferBuildMs,
           tableMode,
           gapCount: buffers.lineSeriesBuffers.gapCount,
-          hoverIndexState: 'building',
-          hoverIndexBuildMs: null,
+          hoverIndexState:
+            rendererBackend === 'webgpu' ? 'ready' : 'building',
+          hoverIndexBuildMs: rendererBackend === 'webgpu' ? 0 : null,
           hoverIndexBytes: 0,
-          hoverLookupSource: 'none',
+          hoverLookupSource:
+            rendererBackend === 'webgpu' ? 'index' : 'none',
           preselectedCount: buffers.preselectedCount,
           recordCount: buffers.recordCount,
           sampleCount: buffers.lineSeriesBuffers.sampleCount,
@@ -544,10 +823,13 @@ export function MParallelPlotRoute() {
     return () => {
       isActive = false;
     };
-  }, [datasetState, tableMode]);
+  }, [datasetState, rendererBackend, tableMode]);
 
   useEffect(() => {
     if (!baseReadyBuffers) {
+      return;
+    }
+    if (rendererBackend === 'webgpu') {
       return;
     }
 
@@ -587,7 +869,7 @@ export function MParallelPlotRoute() {
       isActive = false;
       window.clearTimeout(timeout);
     };
-  }, [baseReadyBuffers]);
+  }, [baseReadyBuffers, rendererBackend]);
 
   const handleRendererMetricsChange = (event: ParallelFastRendererMetricsEvent) => {
     setDiagnostics((currentDiagnostics) => ({
@@ -841,6 +1123,8 @@ export function MParallelPlotRoute() {
         chartHandleRef.current?.clearBrushes('e2e-clear');
       },
       getTableMode: () => parseFastRouteTableMode(new URLSearchParams(window.location.search)),
+      getWebgpuDiagnostics: () =>
+        chartHandleRef.current?.getWebgpuDiagnostics() ?? null,
       getHoverIndexState: () => diagnostics.hoverIndexState,
       getInspection: () => inspectionStateRef.current,
       getLineOpacityScale: () =>
@@ -890,10 +1174,10 @@ export function MParallelPlotRoute() {
           distancePx: 0,
           id: recordId,
           normalizedAxisValue:
-            readyBuffers.normalizedValuesByAxis[axis][recordIndex],
+            readParallelNormalizedValue(readyBuffers, axis, recordIndex),
           projectedAxisPosition: axisIndex,
           projectedNormalizedValue:
-            readyBuffers.normalizedValuesByAxis[axis][recordIndex],
+            readParallelNormalizedValue(readyBuffers, axis, recordIndex),
           ...(readyBuffers.recordIdentityBySourceIndex?.[recordIndex] === undefined
             ? {}
             : { record: readyBuffers.recordIdentityBySourceIndex[recordIndex] }),
@@ -956,6 +1240,9 @@ export function MParallelPlotRoute() {
 
         chartHandleRef.current?.commitBrushIntervals(nextBrushIntervals, 'e2e-brush');
       },
+      setAxisViewports: (nextAxisViewports) => {
+        chartHandleRef.current?.setAxisViewports(nextAxisViewports);
+      },
       setLineOpacityScale: updateLineOpacityScale,
       setPreselectedOverlayEnabled: (enabled) => {
         updatePreselectedOverlayEnabled(enabled);
@@ -981,6 +1268,16 @@ export function MParallelPlotRoute() {
       <section className="workspace">
         <div className="workspace-grid parallel-workspace-grid">
           <section className="parallel-main-panel" aria-label="Parallel fast chart panel">
+            {datasetState.status === 'missing' ||
+            datasetState.status === 'generating' ? (
+              <ParallelWebgpuDatasetSetup
+                datasetState={datasetState}
+                onCancel={() => datasetGenerationAbortRef.current?.abort()}
+                onGenerate={() => void generateWebgpuDataset()}
+                onSelectPointCount={selectWebgpuPointCount}
+                pointCount={webgpuPointCount}
+              />
+            ) : null}
             {datasetState.status === 'loading' ? (
               <div className="workspace-placeholder" role="status">
                 Loading parallel dataset...
@@ -1035,9 +1332,13 @@ export function MParallelPlotRoute() {
                     tabIndex={0}
                   >
                     <MParallelEngineChart
+                      rendererBackend={rendererBackend}
+                      axisViewports={axisViewports}
+                      onAxisViewportsChange={handleAxisViewportsChange}
                       onHandleChange={handleParallelFastHandleChange}
                       axisOverlay={
                         <MParallelAxisBrushOverlay
+                          axisViewports={axisViewports}
                           buffers={readyBuffers}
                           overlays={parallelOverlays}
                         />
@@ -1093,10 +1394,80 @@ export function MParallelPlotRoute() {
               links={[
                 { icon: 'overview', label: 'Overview', to: createThemeAwareTo('/', location.search, themeMode) },
               ]}
-              title="m-parallel"
+              title={
+                rendererBackend === 'webgpu'
+                  ? 'm-parallel WebGPU'
+                  : 'm-parallel'
+              }
             />
             <section className="control-section">
               <h2>Dataset</h2>
+              {rendererBackend === 'webgpu' ? (
+                <div className="scatter-webgpu-dataset-controls">
+                  <div
+                    aria-label="WebGPU parallel dataset size"
+                    className="segmented-control"
+                    data-testid="parallel-webgpu-point-count"
+                  >
+                    {PARALLEL_WEBGPU_POINT_COUNTS.map((count) => (
+                      <button
+                        className={webgpuPointCount === count ? 'is-active' : undefined}
+                        disabled={datasetState.status === 'generating'}
+                        key={count}
+                        onClick={() => selectWebgpuPointCount(count)}
+                        type="button"
+                      >
+                        {formatCompactParallelPointCount(count)}
+                      </button>
+                    ))}
+                  </div>
+                  <div
+                    aria-label="WebGPU parallel table mode"
+                    className="segmented-control scatter-webgpu-table-mode-control"
+                    data-testid="parallel-webgpu-table-mode"
+                  >
+                    {(['single', 'multi'] as const).map((mode) => (
+                      <button
+                        aria-pressed={tableMode === mode}
+                        className={tableMode === mode ? 'is-active' : undefined}
+                        disabled={datasetState.status === 'generating'}
+                        key={mode}
+                        onClick={() => selectWebgpuTableMode(mode)}
+                        type="button"
+                      >
+                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
+                      </button>
+                    ))}
+                  </div>
+                  <details
+                    className="control-disclosure scatter-webgpu-dataset-details"
+                    data-testid="parallel-webgpu-dataset-details"
+                  >
+                    <summary>Dataset details</summary>
+                    <div className="control-disclosure-body">
+                      <p className="compact-note">
+                        Uses the same locally generated, paged dataset as m-scatter
+                        and m-histogram WebGPU, including each record&apos;s color.
+                      </p>
+                      <p className="compact-note">
+                        Density rendering evaluates every record. Exact hover and axis
+                        brush selection also resolve against the complete source data.
+                        Multiple tables adds the fixed 1,000-record secondary table.
+                      </p>
+                    </div>
+                  </details>
+                  {datasetState.status === 'loaded' && webgpuManifestUrl === undefined ? (
+                    <button
+                      className="secondary-link"
+                      data-testid="parallel-webgpu-delete-dataset"
+                      onClick={() => void deleteWebgpuDataset()}
+                      type="button"
+                    >
+                      Delete local dataset
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               <dl className="metrics-grid">
                 <MetricTerm label="Records" value={diagnostics.recordCount} />
                 <MetricTerm label="Tables" value={`${tableMetadata.tableCount} (${tableMode})`} />
@@ -1108,6 +1479,33 @@ export function MParallelPlotRoute() {
                   <MetricTerm label="Preselected" value={diagnostics.preselectedCount} />
                 ) : null}
               </dl>
+            </section>
+            <section className="control-section">
+              <h2>Viewport</h2>
+              <div className="route-viewport-controls">
+                <div className="route-viewport-group">
+                  <span
+                    className="route-viewport-group-label"
+                    data-testid="parallel-viewport-status"
+                  >
+                    {adjustedAxisCount === 0
+                      ? 'All axes at full range'
+                      : `${adjustedAxisCount} ${
+                          adjustedAxisCount === 1 ? 'axis' : 'axes'
+                        } adjusted`}
+                  </span>
+                  <button
+                    aria-label="Reset viewport"
+                    className="secondary-link route-reset-button"
+                    data-testid="parallel-reset-viewport"
+                    disabled={adjustedAxisCount === 0}
+                    onClick={() => chartHandleRef.current?.resetAxisViewports()}
+                    type="button"
+                  >
+                    Reset viewport
+                  </button>
+                </div>
+              </div>
             </section>
             <InteractionCheatSheet
               groups={PARALLEL_SHORTCUT_GROUPS}
@@ -1445,6 +1843,9 @@ export function MParallelPlotRoute() {
 }
 
 function MParallelEngineChart({
+  rendererBackend,
+  axisViewports,
+  onAxisViewportsChange,
   axisOverlay,
   brushIntervals,
   buffers,
@@ -1466,6 +1867,12 @@ function MParallelEngineChart({
   shortcutGate,
   theme,
 }: {
+  rendererBackend: ParallelRendererBackend;
+  axisViewports: ParallelAxisViewports;
+  onAxisViewportsChange: (
+    axisViewports: ParallelAxisViewports,
+    phase: 'preview' | 'commit',
+  ) => void;
   axisOverlay: ReactNode;
   brushIntervals: ParallelBrushIntervals;
   buffers: ParallelBuffers;
@@ -1502,6 +1909,7 @@ function MParallelEngineChart({
   const plotRef = useRef<ParallelPlotInstance | null>(null);
   const latestHoverIndexRef = useRef<ParallelHoverIndex | null>(hoverIndex);
   const latestEngineOptionsRef = useRef({
+    axisViewports,
     brushIntervals,
     buffers,
     inspection,
@@ -1513,6 +1921,7 @@ function MParallelEngineChart({
     theme,
   });
   const callbacksRef = useRef({
+    onAxisViewportsChange,
     onBrushIntervalsPreview,
     onInspectionChange,
     onLineOpacityAdjustRequest,
@@ -1536,6 +1945,7 @@ function MParallelEngineChart({
 
   useEffect(() => {
     callbacksRef.current = {
+      onAxisViewportsChange,
       onBrushIntervalsPreview,
       onInspectionChange,
       onLineOpacityAdjustRequest,
@@ -1544,6 +1954,7 @@ function MParallelEngineChart({
       onSelectionChange,
     };
   }, [
+    onAxisViewportsChange,
     onBrushIntervalsPreview,
     onInspectionChange,
     onLineOpacityAdjustRequest,
@@ -1558,6 +1969,7 @@ function MParallelEngineChart({
 
   useEffect(() => {
     latestEngineOptionsRef.current = {
+      axisViewports,
       brushIntervals,
       buffers,
       inspection,
@@ -1569,6 +1981,7 @@ function MParallelEngineChart({
       theme,
     };
   }, [
+    axisViewports,
     brushIntervals,
     buffers,
     inspection,
@@ -1587,9 +2000,16 @@ function MParallelEngineChart({
       return;
     }
     const initialOptions = latestEngineOptionsRef.current;
-    const plot = createParallelPlot(host, {
+    const createPlot =
+      rendererBackend === 'webgpu'
+        ? createParallelWebgpuPlot
+        : createParallelPlot;
+    const plot = createPlot(host, {
+      axisViewports: initialOptions.axisViewports,
       baseCanvasClassName:
-        'parallel-fast-webgl-canvas parallel-fast-webgl-canvas-base',
+        rendererBackend === 'webgpu'
+          ? 'parallel-fast-webgpu-canvas parallel-fast-webgpu-canvas-base'
+          : 'parallel-fast-webgl-canvas parallel-fast-webgl-canvas-base',
       buffers: initialOptions.buffers,
       brushIntervals: initialOptions.brushIntervals,
       hoverCanvasClassName:
@@ -1626,10 +2046,20 @@ function MParallelEngineChart({
           source: 'route',
         });
       },
+      getWebgpuDiagnostics: () =>
+        rendererBackend === 'webgpu'
+          ? (plot as ParallelWebgpuPlotInstance).getWebgpuDiagnostics()
+          : null,
       requestLineOpacityAdjustment: (adjustment) => {
         plot.commands.requestLineOpacityAdjustment(adjustment, {
           source: 'route',
         });
+      },
+      resetAxisViewports: () => {
+        plot.commands.resetAxisViewports({ source: 'route' });
+      },
+      setAxisViewports: (nextAxisViewports) => {
+        plot.commands.setAxisViewports(nextAxisViewports, { source: 'route' });
       },
       setInspection: (nextInspection, resolveMs = null) => {
         plot.commands.setInspection(nextInspection, {
@@ -1692,8 +2122,19 @@ function MParallelEngineChart({
     const unsubscribeLineOpacity = plot.on('lineopacityadjustrequest', (event) => {
       callbacksRef.current.onLineOpacityAdjustRequest(event.adjustment);
     });
+    const unsubscribeAxisViewport = plot.on('axisviewportchange', (event) => {
+      callbacksRef.current.onAxisViewportsChange(event.axisViewports, 'commit');
+    });
+    const unsubscribeAxisViewportPreview = plot.on(
+      'axisviewportpreview',
+      (event) => {
+        callbacksRef.current.onAxisViewportsChange(event.axisViewports, 'preview');
+      },
+    );
 
     return () => {
+      unsubscribeAxisViewportPreview();
+      unsubscribeAxisViewport();
       unsubscribeLineOpacity();
       unsubscribeInspection();
       unsubscribeSelection();
@@ -1705,7 +2146,14 @@ function MParallelEngineChart({
       plotRef.current = null;
       plot.dispose();
     };
-  }, [buffers, onHandleChange, onOverlaysChange, preserveDrawingBuffer, shortcutGate]);
+  }, [
+    buffers,
+    onHandleChange,
+    onOverlaysChange,
+    preserveDrawingBuffer,
+    rendererBackend,
+    shortcutGate,
+  ]);
 
   useEffect(() => {
     plotRef.current?.update({ theme });
@@ -1738,27 +2186,37 @@ function MParallelEngineChart({
   }, [inspection]);
 
   const plotReadyForInteraction = renderState.status === 'ready';
+  const plotPreparing = !plotReadyForInteraction && renderState.status !== 'error';
 
   return (
     <div
       ref={shellRef}
-      aria-label="Parallel fast WebGL2 chart"
-      aria-busy={plotReadyForInteraction ? undefined : true}
+      aria-label={`Parallel fast ${rendererBackend === 'webgpu' ? 'WebGPU' : 'WebGL2'} chart`}
+      aria-busy={plotPreparing ? true : undefined}
       className="parallel-fast-chart-shell"
       data-plot-ready={plotReadyForInteraction ? 'true' : 'false'}
       role="region"
     >
       <div
         ref={hostRef}
-        aria-label="WebGL2 segment parallel renderer"
+        aria-label={
+          rendererBackend === 'webgpu'
+            ? 'WebGPU density parallel renderer'
+            : 'WebGL2 segment parallel renderer'
+        }
         className="parallel-fast-chart-host"
         data-axis-count={buffers.axisCount}
+        data-axis-viewport-count={Object.keys(axisViewports).length}
         data-axis-labels={buffers.axisOrder.join('|')}
         data-density-blend-mode="src-alpha-one-minus-src-alpha"
         data-density-mode="adaptive-alpha-source-over"
         data-gap-count={buffers.lineSeriesBuffers.gapCount}
         data-hover-highlight-count={inspection === null ? 0 : 1}
-        data-hover-visual-mode="webgl2-hover-overlay-canvas"
+        data-hover-visual-mode={
+          rendererBackend === 'webgpu'
+            ? 'canvas2d-hover-overlay'
+            : 'webgl2-hover-overlay-canvas'
+        }
         data-line-opacity-scale={lineOpacityScale.toFixed(4)}
         data-preselected-highlight-count={
           preselectedOverlayEnabled ? preselectedSourceIndices.length : 0
@@ -1768,10 +2226,18 @@ function MParallelEngineChart({
         }
         data-record-count={buffers.recordCount}
         data-render-state={renderState.status}
-        data-renderer="webgl2-segments"
+        data-renderer={
+          rendererBackend === 'webgpu'
+            ? 'webgpu-parallel-density'
+            : 'webgl2-segments'
+        }
         data-sample-count={buffers.lineSeriesBuffers.sampleCount}
         data-selected-highlight-count={selectedHighlightCount}
-        data-selected-visual-mode="webgl2-selected-mask"
+        data-selected-visual-mode={
+          rendererBackend === 'webgpu'
+            ? 'webgpu-selected-density'
+            : 'webgl2-selected-mask'
+        }
         data-selected-visual-precedence="brush-over-dataset"
         data-style-color-format={styleBuffers?.colorFormat ?? 'none'}
         data-style-opacity-count={styleBuffers?.opacity.length ?? 0}
@@ -1785,17 +2251,12 @@ function MParallelEngineChart({
             : 0
         }
       />
-      {plotReadyForInteraction ? null : (
+      {plotPreparing ? (
         <PlotLoadingOverlay
           detail={renderState.message ?? 'Loading renderer and plot data'}
           label="Preparing parallel plot"
           testId="parallel-fast-plot-loading"
         />
-      )}
-      {renderState.status === 'rendering' ? (
-        <div className="lc-status" role="status">
-          Rendering WebGL2 parallel chart...
-        </div>
       ) : null}
       {renderState.status === 'error' ? (
         <div className="lc-status lc-status-error" role="alert">
@@ -1831,9 +2292,11 @@ function PlotLoadingOverlay({
 }
 
 function MParallelAxisBrushOverlay({
+  axisViewports,
   buffers,
   overlays,
 }: {
+  axisViewports: ParallelAxisViewports;
   buffers: ParallelBuffers;
   overlays: readonly ParallelFastOverlayDescriptor[];
 }) {
@@ -1893,14 +2356,27 @@ function MParallelAxisBrushOverlay({
       }
     >
       {inspection ? (
-        <MParallelInspectionMarkers buffers={buffers} inspection={inspection} />
+        <MParallelInspectionMarkers
+          axisViewports={axisViewports}
+          buffers={buffers}
+          inspection={inspection}
+        />
       ) : null}
       {buffers.axisOrder.map((parameter, axisIndex) => {
         const brushRanges = getBrushRangesForAxis(
           brushIntervals,
           parameter,
         );
-        const domain = buffers.domainsByAxis[parameter];
+        const completeDomain = buffers.domainsByAxis[parameter];
+        const viewport = axisViewports[parameter];
+        const domain =
+          viewport === null || viewport === undefined
+            ? completeDomain
+            : {
+                max: viewport.max,
+                min: viewport.min,
+                span: viewport.max - viewport.min,
+              };
         const axisMetadata = (
           buffers as ParallelBuffers & {
             axisMetadataByAxis?: Readonly<Record<string, ParallelFastAxisMetadata>>;
@@ -1927,7 +2403,22 @@ function MParallelAxisBrushOverlay({
             ? 50
             : (axisIndex / (buffers.axisCount - 1)) * 100;
         const axisBottomPercent = PARALLEL_AXIS_MIN_DISPLAY_VALUE * 100;
+        const axisTopPercent = (1 - PARALLEL_AXIS_MAX_DISPLAY_VALUE) * 100;
         const missingAnchorPercent = PARALLEL_MISSING_AXIS_DISPLAY_VALUE * 100;
+        const belowViewportAnchorPercent =
+          PARALLEL_BELOW_VIEWPORT_DISPLAY_VALUE * 100;
+        const aboveViewportAnchorPercent =
+          (1 - PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE) * 100;
+        const viewportActive =
+          viewport !== null &&
+          viewport !== undefined &&
+          (viewport.min !== completeDomain.min || viewport.max !== completeDomain.max);
+        const hasBelowViewportValues =
+          viewportActive && completeDomain.min < viewport.min;
+        const hasAboveViewportValues =
+          viewportActive && completeDomain.max > viewport.max;
+        const hasMissingValues =
+          (buffers.missingValueCountByAxis?.[parameter] ?? 0) > 0;
 
         return (
           <div
@@ -1944,6 +2435,9 @@ function MParallelAxisBrushOverlay({
             data-axis={parameter}
             data-axis-kind={axisKind}
             data-axis-label={axisLabel}
+            data-above-viewport={hasAboveViewportValues ? 'true' : 'false'}
+            data-below-viewport={hasBelowViewportValues ? 'true' : 'false'}
+            data-missing-values={hasMissingValues ? 'true' : 'false'}
             data-max-label={axisBoundaries.max.label}
             data-min-label={axisBoundaries.min.label}
             data-rendered-tick-labels={renderedTicks.map((tick) => tick.label).join('|')}
@@ -1952,11 +2446,41 @@ function MParallelAxisBrushOverlay({
             style={
               {
                 '--parallel-fast-normal-axis-bottom': `${axisBottomPercent}%`,
+                '--parallel-fast-normal-axis-top': `${axisTopPercent}%`,
                 '--parallel-fast-missing-axis-anchor': `${missingAnchorPercent}%`,
+                '--parallel-fast-below-viewport-anchor': `${belowViewportAnchorPercent}%`,
+                '--parallel-fast-above-viewport-anchor': `${aboveViewportAnchorPercent}%`,
                 left: `${axisLeftPercent}%`,
               } as CSSProperties
             }
           >
+            <div
+              aria-hidden={!hasMissingValues}
+              aria-label="Missing value"
+              className="parallel-fast-axis-special-rail parallel-fast-axis-missing-rail"
+              data-visible={hasMissingValues ? 'true' : 'false'}
+              title="Missing value"
+            >
+              <span aria-hidden="true">∅</span>
+            </div>
+            <div
+              aria-hidden={!hasBelowViewportValues}
+              aria-label="Below visible range"
+              className="parallel-fast-axis-special-rail parallel-fast-axis-overflow-rail parallel-fast-axis-overflow-rail-below"
+              data-visible={hasBelowViewportValues ? 'true' : 'false'}
+              title={`Below visible range (< ${axisBoundaries.min.title})`}
+            >
+              <span aria-hidden="true">↓</span>
+            </div>
+            <div
+              aria-hidden={!hasAboveViewportValues}
+              aria-label="Above visible range"
+              className="parallel-fast-axis-special-rail parallel-fast-axis-overflow-rail parallel-fast-axis-overflow-rail-above"
+              data-visible={hasAboveViewportValues ? 'true' : 'false'}
+              title={`Above visible range (> ${axisBoundaries.max.title})`}
+            >
+              <span aria-hidden="true">↑</span>
+            </div>
             <div className="parallel-fast-axis-line" />
             <div className="parallel-fast-axis-ticks" aria-hidden="true">
               {renderedTicks.map((tick) => {
@@ -2211,6 +2735,7 @@ function MParallelAxisBrush({
         <button
           aria-label={`Move ${parameter} brush range`}
           className="parallel-fast-axis-brush-band"
+          title={`${brushRangeLabels.min} – ${brushRangeLabels.max}`}
           type="button"
         >
           <span>{brushRangeLabels.min}</span>
@@ -2227,13 +2752,19 @@ function MParallelAxisBrush({
 }
 
 function MParallelInspectionMarkers({
+  axisViewports,
   buffers,
   inspection,
 }: {
+  axisViewports: ParallelAxisViewports;
   buffers: ParallelBuffers;
   inspection: ParallelFastInspectionState;
 }) {
-  const axisLabels = getParallelFastInspectionAxisLabels(buffers, inspection);
+  const axisLabels = getParallelFastInspectionAxisLabels(
+    axisViewports,
+    buffers,
+    inspection,
+  );
   const leftPercent =
     buffers.axisCount <= 1
       ? 50
@@ -2318,20 +2849,36 @@ type ParallelFastInspectionFormatterBuffers = ParallelBuffers & {
 };
 
 function getParallelFastInspectionAxisLabels(
+  axisViewports: ParallelAxisViewports,
   buffers: ParallelBuffers,
   inspection: ParallelFastInspectionState,
 ): ParallelFastInspectionAxisLabel[] {
   const formatterBuffers = buffers as ParallelFastInspectionFormatterBuffers;
   const labels = buffers.axisOrder
     .map((axis, axisIndex) => {
-      const normalizedValue =
-        buffers.normalizedValuesByAxis[axis][inspection.recordIndex];
+      const normalizedValue = readParallelInspectionAxisNormalizedValue(
+        axisViewports,
+        buffers,
+        axis,
+        inspection.recordIndex,
+      );
 
       if (!Number.isFinite(normalizedValue)) {
         return null;
       }
 
       const axisMetadata = formatterBuffers.axisMetadataByAxis?.[axis];
+      const formattedValue = formatParallelFastRecordAxisValue(
+        formatterBuffers,
+        axis,
+        inspection.recordIndex,
+      );
+      const valueText =
+        normalizedValue === PARALLEL_BELOW_VIEWPORT_ROUTE_NORMALIZED_Y
+          ? `Below range: ${formattedValue}`
+          : normalizedValue === PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y
+            ? `Above range: ${formattedValue}`
+            : formattedValue;
 
       return {
         axis,
@@ -2346,11 +2893,7 @@ function getParallelFastInspectionAxisLabels(
             : (axisIndex / (buffers.axisCount - 1)) * 100,
         markerTopPercent: parallelNormalizedValueToTopPercent(normalizedValue),
         side: getParallelFastInspectionLabelSide(axisIndex, buffers.axisCount),
-        valueText: formatParallelFastRecordAxisValue(
-          formatterBuffers,
-          axis,
-          inspection.recordIndex,
-        ),
+        valueText,
       } satisfies ParallelFastInspectionAxisLabel;
     })
     .filter(
@@ -2367,6 +2910,26 @@ function getParallelFastInspectionAxisLabels(
   }
 
   return limitedLabels;
+}
+
+function readParallelInspectionAxisNormalizedValue(
+  axisViewports: ParallelAxisViewports,
+  buffers: ParallelBuffers,
+  axis: ParallelParameter,
+  recordIndex: number,
+): number {
+  const viewport = axisViewports[axis];
+  const domain = buffers.domainsByAxis[axis];
+
+  if (viewport === null || viewport === undefined || domain === undefined) {
+    return readParallelNormalizedValue(buffers, axis, recordIndex);
+  }
+
+  const rawValue = buffers.rawValuesByAxis[axis]?.[recordIndex] ?? Number.NaN;
+  return projectParallelViewportNormalizedValue(
+    (rawValue - viewport.min) /
+      Math.max(Number.EPSILON, viewport.max - viewport.min),
+  );
 }
 
 function limitParallelFastInspectionAxisLabels(
@@ -2951,6 +3514,98 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+function ParallelWebgpuDatasetSetup({
+  datasetState,
+  onCancel,
+  onGenerate,
+  onSelectPointCount,
+  pointCount,
+}: {
+  datasetState: Extract<
+    ParallelFastDatasetLoadState,
+    { status: 'generating' | 'missing' }
+  >;
+  onCancel: () => void;
+  onGenerate: () => void;
+  onSelectPointCount: (pointCount: number) => void;
+  pointCount: number;
+}) {
+  const progress = datasetState.status === 'generating' && datasetState.pageCount > 0
+    ? datasetState.completedPages / datasetState.pageCount
+    : 0;
+  return (
+    <div
+      className="workspace-placeholder scatter-webgpu-dataset-setup"
+      data-testid="parallel-webgpu-dataset-setup"
+    >
+      <h2>Generate the WebGPU demo dataset</h2>
+      <p>
+        The shared scatter, histogram, and parallel dataset is generated in this
+        browser and retained in IndexedDB. Nothing is uploaded. It uses about{' '}
+        {formatParallelBytes(pointCount * 8)} of browser storage.
+      </p>
+      {datasetState.status === 'missing' && datasetState.message !== undefined ? (
+        <p role="alert">{datasetState.message}</p>
+      ) : null}
+      <div aria-label="WebGPU parallel dataset size" className="segmented-control">
+        {PARALLEL_WEBGPU_POINT_COUNTS.map((candidate) => (
+          <button
+            className={pointCount === candidate ? 'is-active' : undefined}
+            disabled={datasetState.status === 'generating'}
+            key={candidate}
+            onClick={() => onSelectPointCount(candidate)}
+            type="button"
+          >
+            {formatCompactParallelPointCount(candidate)} points
+          </button>
+        ))}
+      </div>
+      {datasetState.status === 'generating' ? (
+        <div
+          aria-live="polite"
+          className="scatter-webgpu-generation-progress"
+          role="status"
+        >
+          <progress max={1} value={progress} />
+          <span>
+            Generated {datasetState.completedPages} of {datasetState.pageCount} pages
+          </span>
+          <button className="secondary-link" onClick={onCancel} type="button">
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          data-testid="parallel-webgpu-generate-dataset"
+          onClick={onGenerate}
+          type="button"
+        >
+          Generate {formatCompactParallelPointCount(pointCount)} points locally
+        </button>
+      )}
+    </div>
+  );
+}
+
+function formatCompactParallelPointCount(pointCount: number): string {
+  return pointCount >= 1_000_000
+    ? `${pointCount / 1_000_000}M`
+    : pointCount.toLocaleString('en-US');
+}
+
+function formatParallelBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MiB`;
+}
+
+function parseParallelWebgpuPointCount(
+  searchParams: URLSearchParams,
+): (typeof PARALLEL_WEBGPU_POINT_COUNTS)[number] {
+  const parsed = Number(searchParams.get('points'));
+  return PARALLEL_WEBGPU_POINT_COUNTS.find((count) => count === parsed) ??
+    PARALLEL_WEBGPU_POINT_COUNTS[0];
+}
+
 async function loadParallelFastRouteDataset(
   url: string,
 ): Promise<{
@@ -3011,9 +3666,16 @@ async function loadMixedTableParallelFastRouteDataset(
 }
 
 function getParallelFastRouteRecordCount(
-  dataset: LoadedScatterFastBenchmarkSource | MixedTableFixture | ParallelDataset,
+  dataset:
+    | LoadedParallelWebgpuDataset
+    | LoadedScatterFastBenchmarkSource
+    | MixedTableFixture
+    | ParallelDataset,
   tableMode: FastRouteTableMode,
 ): number {
+  if ('buffers' in dataset && 'storedBytes' in dataset) {
+    return dataset.buffers.recordCount;
+  }
   if ('columns' in dataset && 'spec' in dataset) {
     return dataset.columns.ids.length;
   }

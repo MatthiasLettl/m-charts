@@ -1,6 +1,7 @@
 import {
   PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y,
   forEachParallelRoutedSegment,
+  interpolateParallelRenderedNormalizedValue,
   parallelRenderedNormalizedValueToDisplayValue,
   projectParallelRenderedNormalizedValue,
   resolveParallelRecordIdentity,
@@ -356,8 +357,11 @@ function refineNearestCandidate({
           projectedAxisPosition:
             segment.startAxisIndex +
             (segment.endAxisIndex - segment.startAxisIndex) * projection,
-          projectedNormalizedValue:
-            startNormalized + (endNormalized - startNormalized) * projection,
+          projectedNormalizedValue: interpolateParallelRenderedNormalizedValue(
+            startNormalized,
+            endNormalized,
+            projection,
+          ),
           ...(record === undefined ? {} : { record }),
           recordIndex: sourceIndex,
           segmentEndAxis: segment.endAxis,

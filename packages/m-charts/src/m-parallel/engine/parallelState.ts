@@ -1,5 +1,6 @@
 import type {
   ParallelActiveBrushInterval,
+  ParallelAxisViewports,
   ParallelBrushIntervals,
   ParallelBuffers,
 } from '../core/index.js';
@@ -39,6 +40,7 @@ export interface ParallelFastStateSnapshot {
   inspection: ParallelFastInspectionState | null;
   lineOpacityScale: number;
   brush: ParallelFastBrushStateSnapshot;
+  axisViewports: ParallelAxisViewports;
   preselectedOverlayEnabled: boolean;
   preselectedSourceIndices: Uint32Array;
   render: ParallelFastRenderSnapshot;

@@ -127,10 +127,124 @@ struct Session {
     bubble_results: Vec<BubbleResult>,
 }
 
+#[derive(Default)]
+struct ParallelSession {
+    axis_match: Vec<u8>,
+    columns: Vec<Column>,
+    point_count: usize,
+    selected: Vec<u8>,
+    source_indices: Vec<u32>,
+}
+
 thread_local! {
     static SESSION: RefCell<Session> = RefCell::new(Session::default());
     static HISTOGRAM_SESSION: RefCell<HistogramSession> =
         RefCell::new(HistogramSession::default());
+    static PARALLEL_SESSION: RefCell<ParallelSession> =
+        RefCell::new(ParallelSession::default());
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_session_reset(point_count: u32, axis_count: u32) {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        *session = ParallelSession {
+            axis_match: vec![0; point_count as usize],
+            columns: (0..axis_count).map(|_| Column::default()).collect(),
+            point_count: point_count as usize,
+            selected: vec![1; point_count as usize],
+            source_indices: Vec::new(),
+        };
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_column_reserve(axis: u32, kind: u32, byte_length: u32) -> u32 {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        let Some(column) = session.columns.get_mut(axis as usize) else {
+            return 0;
+        };
+        column.kind = kind;
+        column.bytes.resize(byte_length as usize, 0);
+        column.bytes.as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_selection_begin() {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        session.selected.fill(1);
+        session.source_indices.clear();
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_selection_axis_begin() {
+    PARALLEL_SESSION.with_borrow_mut(|session| session.axis_match.fill(0));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_selection_axis_range(axis: u32, min: f64, max: f64) -> u32 {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        let Some(column) = session.columns.get(axis as usize) else {
+            return 0;
+        };
+        for index in 0..session.point_count {
+            let value = column.read(index);
+            if value.is_finite() && value >= min && value <= max {
+                session.axis_match[index] = 1;
+            }
+        }
+        1
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_selection_axis_commit() {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        for index in 0..session.point_count {
+            session.selected[index] &= session.axis_match[index];
+        }
+    });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_selection_finish() -> u32 {
+    PARALLEL_SESSION.with_borrow_mut(|session| {
+        session.source_indices.clear();
+        for (index, selected) in session.selected.iter().enumerate() {
+            if *selected != 0 {
+                session.source_indices.push(index as u32);
+            }
+        }
+        session.source_indices.len().min(u32::MAX as usize) as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_source_indices_ptr() -> u32 {
+    PARALLEL_SESSION.with_borrow(|session| session.source_indices.as_ptr() as u32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_source_indices_len() -> u32 {
+    PARALLEL_SESSION
+        .with_borrow(|session| session.source_indices.len().min(u32::MAX as usize) as u32)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn parallel_session_resident_bytes() -> u32 {
+    PARALLEL_SESSION.with_borrow(|session| {
+        let column_bytes: usize = session
+            .columns
+            .iter()
+            .map(|column| column.bytes.len())
+            .sum();
+        let total = column_bytes
+            + session.axis_match.len()
+            + session.selected.len()
+            + session.source_indices.capacity() * std::mem::size_of::<u32>();
+        total.min(u32::MAX as usize) as u32
+    })
 }
 
 #[unsafe(no_mangle)]

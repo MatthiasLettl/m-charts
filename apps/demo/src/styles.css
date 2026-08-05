@@ -931,36 +931,70 @@ kbd {
   touch-action: none;
 }
 
-.parallel-fast-axis-guide::before,
-.parallel-fast-axis-guide::after {
-  content: "";
+.parallel-fast-axis-special-rail {
   position: absolute;
   left: 50%;
   z-index: 1;
+  width: 1.05rem;
+  height: 2px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.86);
   pointer-events: none;
   transform: translate(-50%, 50%);
 }
 
-.parallel-fast-axis-guide::before {
-  bottom: var(--parallel-fast-missing-axis-anchor, 4%);
-  width: 1.05rem;
-  height: 2px;
-  border-radius: 999px;
-  background: rgba(52, 64, 84, 0.5);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.86);
+.parallel-fast-axis-special-rail span {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 0.28rem);
+  color: inherit;
+  font-size: 0.58rem;
+  font-weight: 900;
+  line-height: 1;
+  transform: translateY(-50%);
 }
 
-.parallel-fast-axis-guide::after {
-  bottom: calc(var(--parallel-fast-missing-axis-anchor, 4%) - 0.43rem);
-  width: 2px;
-  height: 0.86rem;
-  border-radius: 999px;
-  background: rgba(52, 64, 84, 0.38);
+.parallel-fast-axis-missing-rail {
+  bottom: var(--parallel-fast-missing-axis-anchor, 4%);
+  background: rgba(52, 64, 84, 0.5);
+  color: rgba(52, 64, 84, 0.68);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.parallel-fast-axis-missing-rail[data-visible="true"] {
+  opacity: 1;
+}
+
+.parallel-fast-axis-overflow-rail {
+  background: rgba(37, 99, 235, 0.78);
+  color: #1d4ed8;
+  opacity: 0;
+  transform: translate(-50%, 50%) scaleX(0.72);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.parallel-fast-axis-overflow-rail[data-visible="true"] {
+  opacity: 1;
+  transform: translate(-50%, 50%) scaleX(1);
+}
+
+.parallel-fast-axis-overflow-rail-below {
+  bottom: var(--parallel-fast-below-viewport-anchor, 6%);
+}
+
+.parallel-fast-axis-overflow-rail-above {
+  top: var(--parallel-fast-above-viewport-anchor, 1%);
+  transform: translate(-50%, -50%) scaleX(0.72);
+}
+
+.parallel-fast-axis-overflow-rail-above[data-visible="true"] {
+  transform: translate(-50%, -50%) scaleX(1);
 }
 
 .parallel-fast-axis-line {
   position: absolute;
-  inset: 0 auto var(--parallel-fast-normal-axis-bottom, 8%) 50%;
+  inset: var(--parallel-fast-normal-axis-top, 4%) auto var(--parallel-fast-normal-axis-bottom, 8%) 50%;
   width: 2px;
   border-radius: 999px;
   background: rgba(52, 64, 84, 0.58);
@@ -1069,7 +1103,7 @@ kbd {
 }
 
 .parallel-fast-axis-value-max {
-  top: -1.45rem;
+  top: calc(var(--parallel-fast-normal-axis-top, 4%) - 1.45rem);
 }
 
 .parallel-fast-axis-value-min {
@@ -1095,9 +1129,27 @@ kbd {
 .parallel-fast-axis-brush {
   position: absolute;
   left: 50%;
-  width: 2.3rem;
+  width: 3.4rem;
   min-height: 0.55rem;
   transform: translateX(-50%);
+}
+
+.parallel-fast-axis-guide-first .parallel-fast-axis-brush {
+  width: 4rem;
+  transform: none;
+}
+
+.parallel-fast-axis-guide-last .parallel-fast-axis-brush {
+  width: 4rem;
+  transform: translateX(-100%);
+}
+
+.parallel-fast-axis-guide-first .parallel-fast-axis-brush-handle {
+  left: 0;
+}
+
+.parallel-fast-axis-guide-last .parallel-fast-axis-brush-handle {
+  left: 100%;
 }
 
 .parallel-fast-axis-brush-band {
@@ -1106,10 +1158,11 @@ kbd {
   display: grid;
   min-height: 0;
   place-items: center;
-  border: 1px solid rgba(15, 118, 110, 0.72);
+  border: 1px solid rgba(202, 138, 4, 0.9);
   border-radius: 4px;
-  background: rgba(15, 118, 110, 0.18);
-  color: #0f5149;
+  background: rgba(250, 204, 21, 0.24);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.12) inset;
+  color: #713f12;
   cursor: grab;
   font-size: 0.58rem;
   font-weight: 800;
@@ -1139,10 +1192,12 @@ kbd {
   width: 1.15rem;
   height: 0.55rem;
   min-height: 0;
-  border: 1px solid #0f766e;
+  border: 1px solid #ca8a04;
   border-radius: 4px;
-  background: #ffffff;
-  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.18);
+  background: #fffbea;
+  box-shadow:
+    0 1px 4px rgba(16, 24, 40, 0.18),
+    0 0 0 1px rgba(250, 204, 21, 0.16);
   cursor: ns-resize;
   padding: 0;
   transform: translate(-50%, -50%);
@@ -1780,7 +1835,6 @@ kbd {
   vector-effect: non-scaling-stroke;
 }
 
-.scatter-fast-render-status,
 .scatter-fast-render-error {
   position: absolute;
   right: 0.85rem;
@@ -1789,13 +1843,9 @@ kbd {
   background: rgba(255, 255, 255, 0.94);
   box-shadow: 0 8px 22px rgba(17, 24, 39, 0.14);
   padding: 0.45rem 0.6rem;
-  color: #344054;
+  color: #b42318;
   font-size: 0.82rem;
   font-weight: 700;
-}
-
-.scatter-fast-render-error {
-  color: #b42318;
 }
 
 .scatter-fast-placeholder-plots {
@@ -3813,13 +3863,22 @@ button.secondary-link:disabled {
   stroke: var(--plot-axis);
 }
 
-:root[data-theme="dark"] .parallel-fast-axis-guide::before {
-  background: rgba(226, 232, 240, 0.56);
+:root[data-theme="dark"] .parallel-fast-axis-special-rail {
   box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.88);
 }
 
-:root[data-theme="dark"] .parallel-fast-axis-guide::after {
-  background: rgba(226, 232, 240, 0.42);
+:root[data-theme="dark"] .parallel-fast-axis-missing-rail {
+  background: rgba(203, 213, 225, 0.58);
+  color: rgba(226, 232, 240, 0.72);
+}
+
+:root[data-theme="dark"] .parallel-fast-axis-overflow-rail {
+  background: rgba(96, 165, 250, 0.86);
+  color: #93c5fd;
+}
+
+:root[data-theme="dark"] .parallel-fast-axis-line {
+  background: rgba(203, 213, 225, 0.58);
 }
 
 :root[data-theme="dark"] .scatter-fast-overlay-x-label,
@@ -4105,14 +4164,6 @@ button.secondary-link:disabled {
   stroke: var(--fast-route-axis);
 }
 
-:root[data-theme="dark"] .parallel-fast-prototype-shell .parallel-fast-axis-guide::before {
-  background: rgba(203, 213, 225, 0.62);
-}
-
-:root[data-theme="dark"] .parallel-fast-prototype-shell .parallel-fast-axis-guide::after {
-  background: rgba(203, 213, 225, 0.46);
-}
-
 :root[data-theme="dark"] .scatter-fast-prototype-shell .scatter-fast-overlay-x-label,
 :root[data-theme="dark"] .scatter-fast-prototype-shell .scatter-fast-overlay-y-label,
 :root[data-theme="dark"] .scatter-fast-prototype-shell .scatter-fast-overlay-axis-title,
@@ -4200,14 +4251,14 @@ button.secondary-link:disabled {
 }
 
 :root[data-theme="dark"] .parallel-fast-prototype-shell .parallel-fast-axis-brush-band {
-  border-color: rgba(255, 143, 123, 0.74);
-  background: rgba(255, 108, 87, 0.18);
+  border-color: rgba(250, 204, 21, 0.86);
+  background: rgba(250, 204, 21, 0.2);
   color: var(--fast-route-title);
 }
 
 :root[data-theme="dark"] .parallel-fast-prototype-shell .parallel-fast-axis-brush-handle {
-  border-color: rgba(255, 143, 123, 0.84);
-  background: rgba(37, 10, 12, 0.96);
+  border-color: rgba(250, 204, 21, 0.9);
+  background: rgba(42, 32, 5, 0.98);
   box-shadow:
     0 6px 16px rgba(0, 0, 0, 0.28),
     0 0 0 1px rgba(255, 203, 191, 0.08) inset;

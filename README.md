@@ -47,6 +47,18 @@ when integrating into another application.
   `aggregationBackend: 'auto' | 'rust-wasm' | 'typescript'` enables direct
   comparison; unsupported raw shapes use the exact TypeScript compatibility
   path.
+- An isolated WebGPU parallel-coordinate backend over the same public parallel
+  contract. Compute shaders bin every adjacent-axis segment, mix arbitrary
+  record colors into continuous density, and render selected/preselected
+  populations separately. Small datasets draw exact lines; large datasets add
+  deterministic exact-style representatives. Single-axis zoom/pan uses
+  lightweight representative feedback and recomputes only the affected
+  adjacent-axis density pairs on release. That same GPU pass compacts
+  viewport-qualified records into a bounded detail layer; once they fit, every
+  qualifying line is rendered with raw-derived, viewport-relative Float32
+  coordinates. Hover first follows that exact detail geometry, then falls back
+  to a coalesced full-population GPU lookup for visible aggregate or overflow
+  segments that have no nearby detail line.
 - Typed-array data contracts for high-volume rendering and selection flows.
 - Framework-neutral `core` and `engine` modules with optional React helpers.
 - Imperative lifecycle: create a plot in a DOM host, call `update(...)`, invoke
@@ -59,7 +71,8 @@ when integrating into another application.
 
 - `m-scatter`, `m-histogram`, and `m-parallel` use WebGL2. They require a
   WebGL2-capable browser and do not support WebGL1-only environments.
-- `m-scatter-webgpu` and `m-histogram-webgpu` use WebGPU. They
+- `m-scatter-webgpu`, `m-histogram-webgpu`, and `m-parallel-webgpu` use
+  WebGPU. They
   require a secure context and a browser/device that can return a WebGPU
   adapter. WebGPU availability and device limits can differ from WebGL2 even in
   the same browser.
@@ -122,6 +135,9 @@ The histogram engine follows the same separation: `m-histogram` remains the
 unchanged WebGL2-compatible entry point, while `m-histogram-webgpu` is its
 export/type superset and swaps in the asynchronous WebGPU renderer plus the
 creation-only aggregation backend selector.
+Parallel follows the same compatibility model: `m-parallel` retains WebGL2,
+while `m-parallel-webgpu` injects asynchronous pairwise density, exact
+selection finalization, rendered-line hover, and axis viewport rendering.
 
 Keep reusable `core` and `engine` modules independent of React, React Router,
 demo routes, generated fixtures, app state, theme modules, local environment
@@ -371,6 +387,11 @@ plot.on('selectionchange', (event) => {
 });
 ```
 
+The WebGPU parallel entry keeps this contract and adds exact packed-page
+streaming for large inputs. In hybrid mode, await `plot.interactive` for the
+representative frame and `plot.ready` for the completed full-population density
+frame; every record still contributes to the settled aggregation.
+
 ## Demo App
 
 Install workspace dependencies, generate local demo data, and run the Vite app:
@@ -391,6 +412,10 @@ The demo routes are:
   switches use a full page refresh to release the previous large CPU/GPU
   resources)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
+- `/m-parallel-webgpu`, `/m-parallel-webgpu?tables=multi`,
+  `/m-parallel-webgpu-fixture`
+  (`?points=1000000|10000000|25000000` selects the shared paged dataset;
+  committed axis ranges use `pf.<axis>.min`/`pf.<axis>.max` and survive reload)
 - `/m-histogram`, `/m-histogram?tables=multi`,
   `/m-histogram?histMode=bar`, `/m-histogram-fixture`
 - `/m-histogram-webgpu`, `/m-histogram-webgpu?tables=multi`,
@@ -410,6 +435,7 @@ packages/m-charts/src/plot-engine-webgpu
 packages/m-charts/src/m-scatter
 packages/m-charts/src/m-scatter-webgpu
 packages/m-charts/src/m-parallel
+packages/m-charts/src/m-parallel-webgpu
 packages/m-charts/src/m-histogram
 packages/m-charts/src/m-histogram-webgpu
 apps/demo/src
@@ -430,6 +456,7 @@ Package notes:
 - [packages/m-charts/HISTOGRAM.md](packages/m-charts/HISTOGRAM.md)
 - [packages/m-charts/HISTOGRAM_WEBGPU.md](packages/m-charts/HISTOGRAM_WEBGPU.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
+- [packages/m-charts/PARALLEL_WEBGPU.md](packages/m-charts/PARALLEL_WEBGPU.md)
 - [packages/m-charts/llms.md](packages/m-charts/llms.md)
 - [docs/adding-visualization-type.md](docs/adding-visualization-type.md)
 
@@ -442,6 +469,7 @@ pnpm benchmark:scatter:custom
 pnpm benchmark:scatter:webgpu
 pnpm benchmark:histogram:custom
 pnpm benchmark:parallel:custom
+pnpm benchmark:parallel:webgpu
 ```
 
 Use benchmark results as evidence for renderer or interaction changes, but keep

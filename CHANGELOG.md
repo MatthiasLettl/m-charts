@@ -4,6 +4,108 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## WebGPU Parallel Coordinates
+
+- Added `m-charts/m-parallel-webgpu` as a public export/type superset of
+  `m-parallel`, retaining buffers, bindings, commands, events, overlays,
+  selection filters, styling, themes, factory aliases, and controlled updates.
+- Added paged record-major WebGPU storage, pairwise adjacent-axis compute
+  binning, continuous random-color aggregation, analytic density alpha,
+  selected/preselected density, direct rendering for small datasets, and an
+  exact-style representative overlay for large data.
+- Made the bounded exact-style overlay representative across axes and source
+  order by retaining categorical values and numeric extrema, adding local
+  block coverage, deduplicating must-keep records, and filling remaining
+  capacity with deterministic pseudo-randomized bucket samples.
+- Added asynchronous readiness, device-loss recovery, diagnostics,
+  creation-only render/bin/LOD options, and compact
+  `createParallelWebgpuBuffers` construction without WebGL expansion.
+- Added exact worker-to-GPU packed-page streaming with prepared-domain buffer
+  construction and fused representative collection. Hybrid `interactive` now
+  resolves for the representative frame while `ready` retains the exact
+  full-population density gate.
+- Reduced exact aggregation overhead by skipping inactive membership/style
+  reads, using a count-only uniform-style path, and combining categorical-pair
+  integer bin updates per workgroup before applying identical global totals.
+- Added scatter-compatible viewport refinement for hybrid parallel plots.
+  Committed density passes now fuse a bounded GPU compaction of records inside
+  every active axis viewport, lower a deterministic detail stride as the view
+  narrows, and render every qualifying line at stride one without a CPU scan or
+  second full-data pass. Preview remains immediate and hover follows the exact
+  currently drawn population.
+- Promoted the bounded viewport-refined detail layer to raw-derived,
+  viewport-relative Float32 coordinates after a bounded GPU source-index
+  readback. Refined rendering, hit testing, and the exact hover overlay now
+  share one geometry at deep zoom, while the full-population density path keeps
+  its compact 16-bit storage and single-pass performance. Inspection pauses
+  during the transient representative preview until matching refined geometry
+  is published.
+- Added two-pass GPU hover reduction and exact hovered-line overlays. Direct
+  and density-only modes search all records; hybrid mode searches its rendered
+  representative population and maps the winner back to the exact public
+  source index, preventing inspection from introducing unseen polylines.
+- Made hybrid hover cover the complete visible rendering model. Exact detail
+  lines retain a bounded fast path; density-only and overflow segments use a
+  coalesced full-population GPU fallback whose winner is checked against raw
+  viewport geometry. Axis-boundary hit tests now search both adjacent pairs,
+  making lines arriving from either side reachable.
+- Added Rust/Wasm multi-axis, multi-interval exact selection for memory-safe
+  datasets with an exact TypeScript fallback for larger inputs.
+- Deferred WebGPU brush membership until pointer release; drag previews now
+  update only the lightweight brush overlay. Commits reuse background density,
+  compute only selected bins and a compact candidate mask, validate exact raw
+  values only for candidates, and avoid redundant streamed aggregation passes.
+- Increased committed parallel-selection contrast by removing selected records
+  from the background density count, mildly desaturating but preserving 62% of
+  unselected density, retaining 42% of exact-color representatives, and drawing
+  dense selected bundles as clean bright-yellow paths while reserving a subtle
+  viewport-aware halo for sparse selected bins. Demo brush styling matches
+  selection, and edge-axis brushes move inward so their values remain readable.
+- Added axis viewport state and commands, single-axis left-drag box zoom,
+  middle-drag pan, middle-click undo, reset, preview/commit events, and
+  viewport-aware density. Pointer zoom/pan now uses lightweight drag feedback
+  and recomputes the viewport and lines only once on pointer release.
+- Aligned zoom and pan calculations and their feedback box with the reserved
+  4%-to-92% normal-axis lane. The box no longer starts above or spans beyond
+  the axis, and small committed drags use the complete visible axis height.
+- Fixed brush creation and editing on zoomed axes so pointer positions are
+  converted through the visible viewport domain, keeping the committed range,
+  selection, and brush overlay aligned with the dragged area.
+- Routed values outside a zoomed axis to fixed above/below overflow rails and
+  kept missing values on a separate neutral rail. Rail positions are always
+  reserved to avoid layout shifts, while labels appear only for active
+  overflow or axes that actually contain missing values.
+- Fixed inspection projection markers on segments connecting overflow or
+  missing-value rails to normal axes by interpolating in rendered display
+  space. The demo now persists committed per-axis zoom/pan ranges in
+  `pf.<axis>.min`/`pf.<axis>.max` URL parameters and restores them on reload.
+- Added `/m-parallel-webgpu` and its fixture with shared IndexedDB-backed
+  1M/10M/25M datasets, single/multiple-table modes, controls, diagnostics,
+  unit/Wasm tests, opt-in Playwright coverage, and a WebGPU benchmark.
+- Reduced large parallel-coordinate startup memory by reusing compatible raw
+  typed columns and packed RGBA styling, deriving normalized values page by
+  page, and replacing large sparse identity arrays with lazy views.
+- Moved paged dataset decoding off the chart thread, retained paged source
+  views without full-column copies, quantized normalized GPU coordinates to
+  16 bits, retained compact RGBA4444 density styles on the GPU, and kept RGBA8
+  only for the bounded representative style layer on large inputs. Viewport
+  commits now avoid per-page repacking/uploads, publish density only after a
+  complete pass, and recompute only pairs adjacent to changed axes.
+- Fixed large-data density color/opacity by decoding the shared dataset's
+  packed RGB565/opacity records before RGBA compaction. Retained 16-bit
+  coordinate precision for the full-population density path; bounded refined
+  detail now uses viewport-relative Float32 coordinates for hover alignment.
+- Aligned the parallel WebGPU dataset sidebar and lifecycle with scatter and
+  histogram: segmented size/table controls use full-document navigation, while
+  local generation, progress, cancellation, reuse, and deletion are explicit.
+- Routed WebGPU device-loss/restoration and renderer metrics through the shared
+  typed engine events and option callback, preserved custom hover dependencies
+  and current diagnostics across renderer replacement, retained command-driven
+  brush/viewport/inspection state across controlled buffer updates, kept
+  asynchronous selection payloads tied to their committed brush snapshot, and
+  added the source-copy migration guide with WebGL2 fallback and compact-buffer
+  compatibility guidance.
+
 ## WebGPU Histogram
 
 - Added `m-charts/m-histogram-webgpu` as a compatibility-superset entry point

@@ -2,6 +2,8 @@ export {
   createParallelFastPlot,
   createParallelFastPlot as createParallelPlot,
 } from './createParallelPlot.js';
+export { createParallelEngine } from './createParallelEngine.js';
+export type { ParallelEngineDependencies } from './createParallelEngine.js';
 export {
   createDefaultParallelBindings,
   createParallelDomBrushHitTest,
@@ -16,6 +18,8 @@ export type {
   ParallelFastInspectionOptions,
 } from './defaultParallelBindings.js';
 export type {
+  ParallelFastAxisViewportCommandOptions,
+  ParallelFastAxisViewportCommandOptions as ParallelAxisViewportCommandOptions,
   ParallelFastBrushCommandOptions,
   ParallelFastInspectionCommandOptions,
   ParallelFastLineOpacityAdjustCommandOptions,
@@ -25,6 +29,8 @@ export type {
   ParallelFastSelectionCommandOptions,
 } from './parallelCommands.js';
 export type {
+  ParallelFastAxisViewportChangeEvent,
+  ParallelFastAxisViewportChangeEvent as ParallelAxisViewportChangeEvent,
   ParallelFastBrushChangeReason,
   ParallelFastBrushEvent,
   ParallelFastBrushPhase,
@@ -82,4 +88,6 @@ export type {
   ParallelFastRendererFactory as ParallelRendererFactory,
   ParallelFastRendererLike,
   ParallelFastRendererLike as ParallelRendererLike,
+  ParallelFastRendererLifecycleHandlers,
+  ParallelFastRendererLifecycleHandlers as ParallelRendererLifecycleHandlers,
 } from './types.js';

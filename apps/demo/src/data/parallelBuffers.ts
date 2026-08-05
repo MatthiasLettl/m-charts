@@ -12,7 +12,20 @@ export interface ParallelAxisDomain {
 }
 
 export type ParallelAxisDomains = Record<ParallelParameter, ParallelAxisDomain>;
-export type ParallelRawValuesByAxis = Record<ParallelParameter, Float64Array>;
+export interface ParallelCompactNumericView {
+  readonly __parallelCompactNumericView: true;
+  readonly [index: number]: number;
+  readonly length: number;
+}
+export type ParallelRawValuesByAxis = Record<
+  ParallelParameter,
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | ParallelCompactNumericView
+>;
 export type ParallelNormalizedValuesByAxis = Record<ParallelParameter, Float32Array>;
 
 export interface ParallelLineSeriesBuffers {
@@ -45,6 +58,8 @@ export interface ParallelBuffers {
   domainsByAxis: ParallelAxisDomains;
   ids: readonly string[];
   lineSeriesBuffers: ParallelLineSeriesBuffers;
+  missingValueCountByAxis?: Readonly<Record<ParallelParameter, number>>;
+  normalizedValuesDerivedFromRaw?: boolean;
   normalizedValuesByAxis: ParallelNormalizedValuesByAxis;
   preselectedCount: number;
   preselectedSourceIndices: Uint32Array;
@@ -124,6 +139,10 @@ export function createParallelBuffers(
     span: 0,
   })) as ParallelAxisDomains;
   const ids = new Array<string>(recordCount);
+  const missingValueCountByAxis = createAxisMap(axisOrder, () => 0) as Record<
+    ParallelParameter,
+    number
+  >;
   const preselectedIndices: number[] = [];
 
   for (let recordIndex = 0; recordIndex < recordCount; recordIndex += 1) {
@@ -135,7 +154,12 @@ export function createParallelBuffers(
 
     for (const parameter of axisOrder) {
       const value = Number(record[parameter]);
-      rawValuesByAxis[parameter][recordIndex] = value;
+      (rawValuesByAxis[parameter] as Float64Array)[recordIndex] = value;
+
+      if (!Number.isFinite(value)) {
+        missingValueCountByAxis[parameter] += 1;
+        continue;
+      }
 
       const domain = domainsByAxis[parameter];
       if (value < domain.min) {
@@ -176,6 +200,7 @@ export function createParallelBuffers(
     domainsByAxis,
     ids,
     lineSeriesBuffers,
+    missingValueCountByAxis,
     normalizedValuesByAxis,
     preselectedCount: preselectedIndices.length,
     preselectedSourceIndices: Uint32Array.from(preselectedIndices),

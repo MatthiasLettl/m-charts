@@ -7,6 +7,7 @@ import type {
   ParallelFastColumns,
   ParallelFastColorArray,
   ParallelFastOpacityArray,
+  ParallelFastRgbaView,
   ParallelFastValueArray,
 } from './types.js';
 
@@ -33,7 +34,21 @@ export interface ParallelAxisDomain {
 }
 
 export type ParallelAxisDomains = Record<ParallelParameter, ParallelAxisDomain>;
-export type ParallelRawValuesByAxis = Record<ParallelParameter, Float64Array>;
+export interface ParallelCompactNumericView {
+  readonly __parallelCompactGetValue?: (index: number) => number;
+  readonly __parallelCompactNumericView: true;
+  readonly [index: number]: number;
+  readonly length: number;
+}
+export type ParallelRawValuesByAxis = Record<
+  ParallelParameter,
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | ParallelCompactNumericView
+>;
 export type ParallelNormalizedValuesByAxis = Record<ParallelParameter, Float32Array>;
 
 export interface ParallelLineSeriesBuffers {
@@ -68,6 +83,9 @@ export interface ParallelBuffers {
   domainsByAxis: ParallelAxisDomains;
   ids: readonly string[];
   lineSeriesBuffers: ParallelLineSeriesBuffers;
+  missingValueCountByAxis?: Readonly<Record<ParallelParameter, number>>;
+  /** True when normalized values should be derived from raw values and domains. */
+  normalizedValuesDerivedFromRaw?: boolean;
   normalizedValuesByAxis: ParallelNormalizedValuesByAxis;
   preselectedCount: number;
   preselectedSourceIndices: Uint32Array;
@@ -75,7 +93,22 @@ export interface ParallelBuffers {
   recordIdentityBySourceIndex?: readonly ParallelSelectedRecord[];
   recordCount: number;
   styleBuffers?: ParallelStyleBuffers;
+  /** Optional GPU-native pages supplied by a streaming decoder. */
+  webgpuPackedData?: ParallelWebgpuPackedData;
   webglSegmentBuffers?: ParallelWebglSegmentBuffers;
+}
+
+export interface ParallelWebgpuPackedPage {
+  count: number;
+  densityStyles: Uint32Array;
+  start: number;
+  values: Uint32Array;
+}
+
+export interface ParallelWebgpuPackedData {
+  createPages(): AsyncIterable<ParallelWebgpuPackedPage>;
+  representativeRecordLimit?: number;
+  representativeSourceIndices?: Promise<Uint32Array>;
 }
 
 export interface ParallelSelectedRecord {
@@ -85,14 +118,40 @@ export interface ParallelSelectedRecord {
 }
 
 export interface ParallelStyleBuffers {
-  color: Uint8Array;
+  color: Uint8Array | ParallelFastRgbaView;
   colorFormat: 'rgba8';
+  /** Empty when alpha is already embedded in `color` by a compact GPU build. */
   opacity: Float32Array;
   styledRecordCount: number;
 }
 
 export interface CreateParallelBuffersOptions {
+  /** Reuses compatible encoded typed columns instead of copying them. */
+  compactTypedColumns?: boolean;
+  /** Reuses RGBA8 input and omits the redundant unit-opacity allocation. */
+  compactStyleBuffers?: boolean;
+  /** Avoids the compatibility line-strip allocation for GPU-native backends. */
+  includeLineSeriesBuffers?: boolean;
+  /** Derives normalized values on demand instead of retaining full columns. */
+  deriveNormalizedValues?: boolean;
   includeWebglSegmentBuffers?: boolean;
+  /** Reuses Float32 columns that already exactly cover a zero-to-one domain. */
+  reuseUnitNormalizedColumns?: boolean;
+  /** Uses half-sized raw columns when the source precision permits it. */
+  rawStorage?: 'float32' | 'float64';
+  /** Trusts already encoded compact typed columns and skips category validation. */
+  trustedEncodedTypedColumns?: boolean;
+  /** Uses caller-supplied exact domains instead of rescanning every column. */
+  preparedDomainsByAxis?: ParallelAxisDomains;
+  /** Uses caller-supplied exact missing counts with prepared domains. */
+  preparedMissingValueCountByAxis?: Readonly<Record<ParallelParameter, number>>;
+}
+
+export interface CreateParallelWebgpuBuffersOptions {
+  packedData?: ParallelWebgpuPackedData;
+  preparedDomainsByAxis?: ParallelAxisDomains;
+  preparedMissingValueCountByAxis?: Readonly<Record<ParallelParameter, number>>;
+  trustedEncodedTypedColumns?: boolean;
 }
 
 export type ParallelBrushIntervalInput =
@@ -103,6 +162,14 @@ export type ParallelBrushIntervalInput =
 
 export type ParallelBrushIntervals = Partial<
   Record<ParallelParameter, ParallelBrushIntervalInput>
+>;
+
+/**
+ * Visible raw-value ranges for parallel axes. Missing axes use their complete
+ * dataset domain. Viewports never change brush membership.
+ */
+export type ParallelAxisViewports = Partial<
+  Record<ParallelParameter, NumericRange | null | undefined>
 >;
 
 export interface ParallelActiveBrushInterval extends NumericRange {
@@ -171,8 +238,13 @@ const NS_PER_MS = 1_000_000n;
 const BYTES_PER_RGBA_COLOR = 4;
 export const PARALLEL_FAST_SMALL_DISCRETE_TICK_LIMIT = 12;
 export const PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y = -0.0625;
+export const PARALLEL_BELOW_VIEWPORT_ROUTE_NORMALIZED_Y = -0.03125;
+export const PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y = 1.0625;
 export const PARALLEL_MISSING_AXIS_DISPLAY_VALUE = 0.04;
+export const PARALLEL_BELOW_VIEWPORT_DISPLAY_VALUE = 0.06;
 export const PARALLEL_AXIS_MIN_DISPLAY_VALUE = 0.08;
+export const PARALLEL_AXIS_MAX_DISPLAY_VALUE = 0.96;
+export const PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE = 0.99;
 
 export function createParallelBuffers(
   dataset: ParallelDataset,
@@ -190,6 +262,10 @@ export function createParallelBuffers(
     span: 0,
   })) as ParallelAxisDomains;
   const ids = new Array<string>(recordCount);
+  const missingValueCountByAxis = createAxisMap(axisOrder, () => 0) as Record<
+    ParallelParameter,
+    number
+  >;
   const preselectedIndices: number[] = [];
 
   for (let recordIndex = 0; recordIndex < recordCount; recordIndex += 1) {
@@ -201,7 +277,12 @@ export function createParallelBuffers(
 
     for (const parameter of axisOrder) {
       const value = Number(record[parameter]);
-      rawValuesByAxis[parameter][recordIndex] = value;
+      (rawValuesByAxis[parameter] as Float64Array)[recordIndex] = value;
+
+      if (!Number.isFinite(value)) {
+        missingValueCountByAxis[parameter] += 1;
+        continue;
+      }
 
       const domain = domainsByAxis[parameter];
       if (value < domain.min) {
@@ -243,6 +324,7 @@ export function createParallelBuffers(
     domainsByAxis,
     ids,
     lineSeriesBuffers,
+    missingValueCountByAxis,
     normalizedValuesByAxis,
     preselectedCount: preselectedIndices.length,
     preselectedSourceIndices: Uint32Array.from(preselectedIndices),
@@ -267,17 +349,20 @@ export function createParallelFastBuffers(
   const axisOrder = [...columns.axisOrder];
   const recordCount = columns.ids.length;
   const axisSpecByKey = new Map((columns.axes ?? []).map((axis) => [axis.key, axis]));
-  const rawValuesByAxis = createAxisMap(axisOrder, () => new Float64Array(recordCount));
+  const rawValuesByAxis = {} as ParallelRawValuesByAxis;
   const domainsByAxis = createAxisMap(axisOrder, () => ({
     max: Number.NEGATIVE_INFINITY,
     min: Number.POSITIVE_INFINITY,
     span: 0,
   })) as ParallelAxisDomains;
   const axisMetadataByAxis: Record<ParallelParameter, ParallelFastAxisMetadata> = {};
+  const missingValueCountByAxis = createAxisMap(axisOrder, () => 0) as Record<
+    ParallelParameter,
+    number
+  >;
 
   for (const parameter of axisOrder) {
     const sourceValues = columns.valuesByAxis[parameter];
-    const rawValues = rawValuesByAxis[parameter];
     const domain = domainsByAxis[parameter];
     const encoder = createParallelAxisEncoder(parameter, axisSpecByKey.get(parameter));
 
@@ -289,17 +374,40 @@ export function createParallelFastBuffers(
         `Parallel-fast axis "${parameter}" has ${sourceValues.length} values for ${recordCount} IDs.`,
       );
     }
+    const preparedDomain = options.preparedDomainsByAxis?.[parameter];
+    const reusableValues = options.compactTypedColumns
+      ? getReusableParallelRawValues(
+          sourceValues,
+          encoder,
+          options.trustedEncodedTypedColumns === true,
+        )
+      : null;
+    const rawValues = reusableValues ?? (
+      options.rawStorage === 'float32'
+        ? new Float32Array(recordCount)
+        : new Float64Array(recordCount)
+    );
+    rawValuesByAxis[parameter] = rawValues;
 
-    for (let recordIndex = 0; recordIndex < recordCount; recordIndex += 1) {
+    if (preparedDomain !== undefined) {
+      domain.min = preparedDomain.min;
+      domain.max = preparedDomain.max;
+      domain.span = preparedDomain.span;
+      missingValueCountByAxis[parameter] =
+        options.preparedMissingValueCountByAxis?.[parameter] ?? 0;
+    } else for (let recordIndex = 0; recordIndex < recordCount; recordIndex += 1) {
       const value = encodeParallelAxisValue(
         encoder,
         sourceValues,
         parameter,
         recordIndex,
       );
-      rawValues[recordIndex] = value;
+      if (reusableValues === null) {
+        (rawValues as Float32Array | Float64Array)[recordIndex] = value;
+      }
 
       if (!Number.isFinite(value)) {
+        missingValueCountByAxis[parameter] += 1;
         continue;
       }
       if (value < domain.min) {
@@ -334,14 +442,23 @@ export function createParallelFastBuffers(
     domainsByAxis,
     axisOrder,
     recordCount,
+    options.reuseUnitNormalizedColumns === true,
+    options.deriveNormalizedValues === true,
   );
-  const lineSeriesBuffers = createParallelLineSeriesBuffers(
-    normalizedValuesByAxis,
-    axisOrder,
-    recordCount,
-  );
+  const lineSeriesBuffers =
+    options.includeLineSeriesBuffers === false
+      ? createEmptyParallelLineSeriesBuffers(axisOrder.length)
+      : createParallelLineSeriesBuffers(
+          normalizedValuesByAxis,
+          axisOrder,
+          recordCount,
+        );
   const preselectedSourceIndices = columns.preselectedSourceIndices ?? new Uint32Array(0);
-  const styleBuffers = createParallelStyleBuffers(columns, recordCount);
+  const styleBuffers = createParallelStyleBuffers(
+    columns,
+    recordCount,
+    options.compactStyleBuffers === true,
+  );
 
   return {
     axisCount: axisOrder.length,
@@ -350,6 +467,10 @@ export function createParallelFastBuffers(
     domainsByAxis,
     ids: columns.ids,
     lineSeriesBuffers,
+    missingValueCountByAxis,
+    ...(options.deriveNormalizedValues
+      ? { normalizedValuesDerivedFromRaw: true }
+      : {}),
     normalizedValuesByAxis,
     preselectedCount: preselectedSourceIndices.length,
     preselectedSourceIndices,
@@ -366,6 +487,41 @@ export function createParallelFastBuffers(
           ),
         }
       : {}),
+  };
+}
+
+/** Builds compact columns for the WebGPU backend without WebGL vertex expansion. */
+export function createParallelWebgpuBuffers(
+  columns: ParallelFastColumns,
+  options: CreateParallelWebgpuBuffersOptions = {},
+): ParallelBuffers {
+  const buffers = createParallelFastBuffers(columns, {
+    compactStyleBuffers: true,
+    compactTypedColumns: true,
+    deriveNormalizedValues: true,
+    includeLineSeriesBuffers: false,
+    includeWebglSegmentBuffers: false,
+    preparedDomainsByAxis: options.preparedDomainsByAxis,
+    preparedMissingValueCountByAxis: options.preparedMissingValueCountByAxis,
+    rawStorage: 'float32',
+    reuseUnitNormalizedColumns: true,
+    trustedEncodedTypedColumns: options.trustedEncodedTypedColumns,
+  });
+  if (options.packedData !== undefined) {
+    buffers.webgpuPackedData = options.packedData;
+  }
+  return buffers;
+}
+
+function createEmptyParallelLineSeriesBuffers(
+  axisCount: number,
+): ParallelLineSeriesBuffers {
+  return {
+    gapCount: 0,
+    pointsPerRecord: axisCount + 1,
+    sampleCount: 0,
+    x: new Float32Array(0),
+    y: new Float32Array(0),
   };
 }
 
@@ -717,8 +873,11 @@ export function findNearestParallelRecordByPoint({
           projectedAxisPosition:
             segment.startAxisIndex +
             (segment.endAxisIndex - segment.startAxisIndex) * projection,
-          projectedNormalizedValue:
-            startNormalized + (endNormalized - startNormalized) * projection,
+          projectedNormalizedValue: interpolateParallelRenderedNormalizedValue(
+            startNormalized,
+            endNormalized,
+            projection,
+          ),
           ...(record === undefined ? {} : { record }),
           recordIndex,
           segmentEndAxis: segment.endAxis,
@@ -766,16 +925,32 @@ function createNormalizedValuesByAxis(
   domainsByAxis: ParallelAxisDomains,
   axisOrder: readonly ParallelParameter[],
   recordCount: number,
+  reuseUnitNormalizedColumns = false,
+  deriveNormalizedValues = false,
 ): ParallelNormalizedValuesByAxis {
-  const normalizedValuesByAxis = createAxisMap(
-    axisOrder,
-    () => new Float32Array(recordCount),
-  ) as ParallelNormalizedValuesByAxis;
+  if (deriveNormalizedValues) {
+    return createAxisMap(
+      axisOrder,
+      () => new Float32Array(0),
+    ) as ParallelNormalizedValuesByAxis;
+  }
+  const normalizedValuesByAxis = {} as ParallelNormalizedValuesByAxis;
 
   for (const parameter of axisOrder) {
     const rawValues = rawValuesByAxis[parameter];
-    const normalizedValues = normalizedValuesByAxis[parameter];
     const domain = domainsByAxis[parameter];
+    const normalizedValues =
+      reuseUnitNormalizedColumns &&
+      rawValues instanceof Float32Array &&
+      domain.min === 0 &&
+      domain.max === 1
+        ? rawValues
+        : new Float32Array(recordCount);
+    normalizedValuesByAxis[parameter] = normalizedValues;
+
+    if (normalizedValues === rawValues) {
+      continue;
+    }
 
     for (let recordIndex = 0; recordIndex < recordCount; recordIndex += 1) {
       normalizedValues[recordIndex] =
@@ -788,6 +963,32 @@ function createNormalizedValuesByAxis(
   }
 
   return normalizedValuesByAxis;
+}
+
+export function readParallelNormalizedValue(
+  buffers: Pick<
+    ParallelBuffers,
+    | 'domainsByAxis'
+    | 'normalizedValuesByAxis'
+    | 'normalizedValuesDerivedFromRaw'
+    | 'rawValuesByAxis'
+  >,
+  parameter: ParallelParameter,
+  recordIndex: number,
+): number {
+  if (buffers.normalizedValuesDerivedFromRaw !== true) {
+    return buffers.normalizedValuesByAxis[parameter]?.[recordIndex] ?? Number.NaN;
+  }
+  const rawValues = buffers.rawValuesByAxis[parameter];
+  const compactGetter = (
+    rawValues as ParallelCompactNumericView | undefined
+  )?.__parallelCompactGetValue;
+  const raw = compactGetter === undefined
+    ? rawValues?.[recordIndex] ?? Number.NaN
+    : compactGetter(recordIndex);
+  const domain = buffers.domainsByAxis[parameter];
+  if (!Number.isFinite(raw) || domain === undefined) return Number.NaN;
+  return domain.span === 0 ? 0.5 : (raw - domain.min) / domain.span;
 }
 
 export function createParallelLineSeriesBuffers(
@@ -947,7 +1148,24 @@ export function projectParallelRenderedNormalizedValue(value: number): number {
     return Number.NaN;
   }
 
-  return clampNumber(value, PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y, 1);
+  return clampNumber(
+    value,
+    PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y,
+    PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y,
+  );
+}
+
+export function projectParallelViewportNormalizedValue(value: number): number {
+  if (!Number.isFinite(value)) {
+    return Number.NaN;
+  }
+  if (value < 0) {
+    return PARALLEL_BELOW_VIEWPORT_ROUTE_NORMALIZED_Y;
+  }
+  if (value > 1) {
+    return PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y;
+  }
+  return value;
 }
 
 export function parallelRenderedNormalizedValueToDisplayValue(value: number): number {
@@ -965,9 +1183,20 @@ export function parallelRenderedNormalizedValueToDisplayValue(value: number): nu
     );
   }
 
+  if (projected <= 1) {
+    return (
+      PARALLEL_AXIS_MIN_DISPLAY_VALUE +
+      projected *
+        (PARALLEL_AXIS_MAX_DISPLAY_VALUE - PARALLEL_AXIS_MIN_DISPLAY_VALUE)
+    );
+  }
+
   return (
-    PARALLEL_AXIS_MIN_DISPLAY_VALUE +
-    projected * (1 - PARALLEL_AXIS_MIN_DISPLAY_VALUE)
+    PARALLEL_AXIS_MAX_DISPLAY_VALUE +
+    ((projected - 1) /
+      (PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y - 1)) *
+      (PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE -
+        PARALLEL_AXIS_MAX_DISPLAY_VALUE)
   );
 }
 
@@ -976,7 +1205,11 @@ export function parallelDisplayValueToRenderedNormalizedValue(value: number): nu
     return Number.NaN;
   }
 
-  const clampedValue = clampNumber(value, PARALLEL_MISSING_AXIS_DISPLAY_VALUE, 1);
+  const clampedValue = clampNumber(
+    value,
+    PARALLEL_MISSING_AXIS_DISPLAY_VALUE,
+    PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE,
+  );
   if (clampedValue <= PARALLEL_AXIS_MIN_DISPLAY_VALUE) {
     return (
       PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y +
@@ -986,8 +1219,39 @@ export function parallelDisplayValueToRenderedNormalizedValue(value: number): nu
     );
   }
 
-  return (clampedValue - PARALLEL_AXIS_MIN_DISPLAY_VALUE) /
-    (1 - PARALLEL_AXIS_MIN_DISPLAY_VALUE);
+  if (clampedValue <= PARALLEL_AXIS_MAX_DISPLAY_VALUE) {
+    return (clampedValue - PARALLEL_AXIS_MIN_DISPLAY_VALUE) /
+      (PARALLEL_AXIS_MAX_DISPLAY_VALUE - PARALLEL_AXIS_MIN_DISPLAY_VALUE);
+  }
+
+  return (
+    1 +
+    ((clampedValue - PARALLEL_AXIS_MAX_DISPLAY_VALUE) /
+      (PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE -
+        PARALLEL_AXIS_MAX_DISPLAY_VALUE)) *
+      (PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y - 1)
+  );
+}
+
+export function interpolateParallelRenderedNormalizedValue(
+  start: number,
+  end: number,
+  amount: number,
+): number {
+  const projectedStart = projectParallelRenderedNormalizedValue(start);
+  const projectedEnd = projectParallelRenderedNormalizedValue(end);
+  if (projectedStart === projectedEnd) return projectedStart;
+  const interpolation = clampNumber(amount, 0, 1);
+  if (interpolation === 0) return projectedStart;
+  if (interpolation === 1) return projectedEnd;
+  const startDisplay = parallelRenderedNormalizedValueToDisplayValue(start);
+  const endDisplay = parallelRenderedNormalizedValueToDisplayValue(end);
+  if (!Number.isFinite(startDisplay) || !Number.isFinite(endDisplay)) {
+    return Number.NaN;
+  }
+  return parallelDisplayValueToRenderedNormalizedValue(
+    startDisplay + (endDisplay - startDisplay) * interpolation,
+  );
 }
 
 function recordMatchesBrushes(
@@ -1262,13 +1526,63 @@ function createParallelAxisEncoder(
   };
 }
 
+function getReusableParallelRawValues(
+  sourceValues: ParallelFastValueArray,
+  encoder: ParallelAxisEncoder,
+  trustedEncoded = false,
+): ParallelRawValuesByAxis[ParallelParameter] | null {
+  if (
+    (sourceValues as Partial<ParallelCompactNumericView>)
+      .__parallelCompactNumericView === true
+  ) {
+    return sourceValues as unknown as ParallelCompactNumericView;
+  }
+  if (
+    !(sourceValues instanceof Float32Array) &&
+    !(sourceValues instanceof Uint8Array) &&
+    !(sourceValues instanceof Uint16Array) &&
+    !(sourceValues instanceof Uint32Array)
+  ) {
+    return null;
+  }
+  if (encoder.kind === 'numeric') {
+    return sourceValues;
+  }
+  if (encoder.kind === 'datetime-ns') {
+    return null;
+  }
+
+  if (trustedEncoded) {
+    return sourceValues;
+  }
+
+  for (let index = 0; index < sourceValues.length; index += 1) {
+    const value = sourceValues[index]!;
+    const category = encoder.categories[value];
+    const categoryValue = encoder.kind === 'boolean'
+      ? value === 0 ? 'false' : value === 1 ? 'true' : ''
+      : String(value);
+    if (category?.encoded !== value || category.value !== categoryValue) {
+      return null;
+    }
+  }
+  return sourceValues;
+}
+
 function encodeParallelAxisValue(
   encoder: ParallelAxisEncoder,
   sourceValues: ParallelFastValueArray,
   parameter: ParallelParameter,
   recordIndex: number,
 ): number {
-  const rawValue = sourceValues[recordIndex];
+  const compactGetter = (
+    sourceValues as ParallelFastValueArray & {
+      __parallelCompactGetValue?: (index: number) => number;
+    }
+  ).__parallelCompactGetValue;
+  const rawValue = compactGetter === undefined
+    ? sourceValues[recordIndex]
+    : compactGetter(recordIndex);
 
   if (rawValue === null || rawValue === undefined) {
     return Number.NaN;
@@ -1398,6 +1712,9 @@ function normalizeCategoryValue(
   booleanAxis: boolean,
 ): string {
   if (booleanAxis) {
+    if (rawValue === 0 || rawValue === 1) {
+      return String(rawValue === 1);
+    }
     if (typeof rawValue !== 'boolean') {
       throw new Error(
         `Parallel-fast axis "${parameter}" at row ${recordIndex} must be boolean or missing.`,
@@ -1535,9 +1852,28 @@ function formatDatetimeNsEpochValue(epochNs: bigint): string {
 function createParallelStyleBuffers(
   columns: ParallelFastColumns,
   recordCount: number,
+  compact = false,
 ): ParallelStyleBuffers | undefined {
   if (columns.color === undefined && columns.opacity === undefined) {
     return undefined;
+  }
+
+  if (
+    compact &&
+    (columns.color instanceof Uint8Array || isParallelFastRgbaView(columns.color)) &&
+    columns.opacity === undefined
+  ) {
+    if (columns.color.length !== recordCount * BYTES_PER_RGBA_COLOR) {
+      throw new Error(
+        `Parallel-fast color style buffer has ${columns.color.length} values for ${recordCount} records.`,
+      );
+    }
+    return {
+      color: columns.color as Uint8Array | ParallelFastRgbaView,
+      colorFormat: 'rgba8',
+      opacity: new Float32Array(0),
+      styledRecordCount: recordCount,
+    };
   }
 
   const color = normalizeParallelColorBuffer(columns.color, recordCount);
@@ -1574,7 +1910,9 @@ function normalizeParallelColorBuffer(
   }
 
   const expectedLength =
-    colors instanceof Uint8Array ? recordCount * BYTES_PER_RGBA_COLOR : recordCount;
+    colors instanceof Uint8Array || isParallelFastRgbaView(colors)
+      ? recordCount * BYTES_PER_RGBA_COLOR
+      : recordCount;
   if (colors.length !== expectedLength) {
     throw new Error(
       `Parallel-fast color style buffer has ${colors.length} values for ${recordCount} records.`,
@@ -1583,6 +1921,13 @@ function normalizeParallelColorBuffer(
 
   if (colors instanceof Uint8Array) {
     rgba.set(colors);
+    return rgba;
+  }
+
+  if (isParallelFastRgbaView(colors)) {
+    for (let index = 0; index < rgba.length; index += 1) {
+      rgba[index] = colors[index] ?? 0;
+    }
     return rgba;
   }
 
@@ -1596,6 +1941,11 @@ function normalizeParallelColorBuffer(
   }
 
   return rgba;
+}
+
+function isParallelFastRgbaView(value: unknown): value is ParallelFastRgbaView {
+  return typeof value === 'object' && value !== null &&
+    (value as Partial<ParallelFastRgbaView>).__parallelCompactRgbaView === true;
 }
 
 function normalizeParallelOpacityBuffer(

@@ -1,6 +1,7 @@
 import type { InputModifiers } from '../../plot-engine/core/index.js';
 import type {
   ParallelBrushIntervals,
+  ParallelAxisViewports,
   ParallelParameter,
   ParallelWebgl2HoverDrawMetrics,
   ParallelWebgl2HoverUpdateMetrics,
@@ -44,6 +45,12 @@ export interface ParallelFastSelectionCommandOptions {
   source?: ParallelFastInteractionSource;
 }
 
+export interface ParallelFastAxisViewportCommandOptions {
+  phase?: 'preview' | 'commit';
+  reason?: 'pan' | 'reset' | 'set' | 'undo' | 'zoom';
+  source?: ParallelFastInteractionSource;
+}
+
 export interface ParallelFastPlotCommands {
   getCanvas(): HTMLCanvasElement;
   getHoverCanvas(): HTMLCanvasElement;
@@ -52,6 +59,8 @@ export interface ParallelFastPlotCommands {
   getRenderSnapshot(): ParallelFastRenderSnapshot;
   getStateSnapshot(): ParallelFastStateSnapshot;
   clearBrushes(options?: ParallelFastBrushCommandOptions): void;
+  resetAxisViewports(options?: ParallelFastAxisViewportCommandOptions): void;
+  undoAxisViewport(options?: ParallelFastAxisViewportCommandOptions): void;
   clearInspection(options?: ParallelFastInspectionCommandOptions): void;
   clearOverlays(kind?: ParallelFastOverlayKind): void;
   commitBrushIntervals(
@@ -74,6 +83,13 @@ export interface ParallelFastPlotCommands {
     axisRangeIndex: number,
     options?: ParallelFastBrushCommandOptions,
   ): void;
+  resolveInspectionAtPoint(query: {
+    axisPosition: number;
+    maxDistancePx: number;
+    normalizedValue: number;
+    plotHeightPx: number;
+    plotWidthPx: number;
+  }): Promise<import('../core/index.js').ParallelNearestRecordResult | null> | null;
   resize(): void;
   setHoverSourceIndex(sourceIndex: number | null): ParallelWebgl2HoverUpdateMetrics | null;
   setHoverState(state: ParallelFastHoverVisualState): ParallelWebgl2HoverUpdateMetrics | null;
@@ -86,6 +102,10 @@ export interface ParallelFastPlotCommands {
     reason?: 'replace' | 'set',
   ): void;
   setPreselectedSourceIndices(sourceIndices: Uint32Array): void;
+  setAxisViewports(
+    axisViewports: ParallelAxisViewports,
+    options?: ParallelFastAxisViewportCommandOptions,
+  ): void;
   setSelectedSourceIndices(
     sourceIndices: Uint32Array,
     options?: ParallelFastSelectionCommandOptions,

@@ -44,6 +44,21 @@ export function OverviewPage() {
     themeMode,
     { preserveKeys: ['tables'] },
   );
+  const mParallelWebgpuTarget = createThemeAwareTo(
+    '/m-parallel-webgpu',
+    appendSearchParam(location.search, 'points', '1000000'),
+    themeMode,
+    { preserveKeys: ['points'] },
+  );
+  const mParallelWebgpuMultiTarget = createThemeAwareTo(
+    '/m-parallel-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      tables: 'multi',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'tables'] },
+  );
   const mHistogramTarget = createThemeAwareTo(
     '/m-histogram',
     location.search,
@@ -192,6 +207,22 @@ export function OverviewPage() {
               <span className="prototype-card-actions">
                 <Link to={mParallelTarget}>One table</Link>
                 <Link to={mParallelMultiTarget}>Multiple tables</Link>
+              </span>
+            </span>
+          </article>
+          <article className="prototype-card">
+            <ParallelPreview variant="fast" />
+            <span className="prototype-card-body">
+              <span className="prototype-card-title">m-parallel WebGPU</span>
+              <span className="prototype-card-copy">
+                Explore up to 25 million rows with WebGL2-compatible
+                interactions. WebGPU computes pairwise density over every
+                record, while Rust/WASM-backed selection stays exact and axis
+                zoom restores raw-detail lines.
+              </span>
+              <span className="prototype-card-actions">
+                <Link to={mParallelWebgpuTarget}>One table</Link>
+                <Link to={mParallelWebgpuMultiTarget}>Multiple tables</Link>
               </span>
             </span>
           </article>

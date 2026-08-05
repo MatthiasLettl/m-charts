@@ -4,6 +4,8 @@ Parallel coordinates is the WebGL2 line-segment engine under
 `packages/m-charts/src/m-parallel`. It supports numeric, categorical, boolean,
 and datetime axes; axis brush intervals; selected and preselected overlays;
 hover inspection; per-record color/opacity; and typed event handoff to the host.
+For the compatible WebGPU/Wasm pairwise-density backend, see
+[PARALLEL_WEBGPU.md](PARALLEL_WEBGPU.md).
 
 This document is the human-facing API guide. Keep
 [llms.md](llms.md#parallel-coordinates-reference) as the detailed reference for
@@ -191,6 +193,10 @@ Important events:
 - `lineopacityadjustrequest`: host handoff for opacity scale policy.
 - `overlaychange`, `metrics`, `renderstatechange`, `contextlost`,
   `contextrestored`, `dispose`.
+- `axisviewportpreview`, `axisviewportchange`: additive per-axis zoom/pan state
+  shared by WebGL-compatible engine integrations and the WebGPU renderer. The
+  default pointer binding commits once on release; previews remain available
+  for controlled/programmatic integrations.
 
 Selection filters are the backend-query handoff. Do not infer query predicates
 from overlay DOM.
@@ -230,3 +236,8 @@ Parallel currently has no dedicated worker source requirement. If a host moves
 buffer building or selection into its own worker, keep the same command/event
 handoff and push finished buffers or selection state back through
 `plot.update(...)` or commands.
+
+The default binding also reserves left drag for axis box zoom and middle drag
+for axis pan. Middle click invokes viewport undo. Programmatic hosts can use
+`setAxisViewports`, `undoAxisViewport`, and `resetAxisViewports`; viewport
+ranges do not change brush selection semantics.

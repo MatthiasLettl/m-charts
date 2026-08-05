@@ -19,6 +19,8 @@ src/vendor/m-charts/m-histogram-webgpu/core
 src/vendor/m-charts/m-histogram-webgpu/engine
 src/vendor/m-charts/m-parallel/core
 src/vendor/m-charts/m-parallel/engine
+src/vendor/m-charts/m-parallel-webgpu/core
+src/vendor/m-charts/m-parallel-webgpu/engine
 ```
 
 Each example imports from `./vendor/m-charts/...` as a placeholder. Rewrite the
@@ -33,6 +35,7 @@ Examples:
 - [Histogram](histogram-source-copy.md)
 - [Migrate histogram from WebGL2 to WebGPU](histogram-webgpu-migration.md)
 - [Parallel coordinates](parallel-source-copy.md)
+- [Migrate parallel coordinates from WebGL2 to WebGPU](parallel-webgpu-migration.md)
 
 ## Validation
 
