@@ -36,13 +36,27 @@ export interface ParallelFastPlotSpec {
   axes: readonly ParallelFastAxisSpec[];
 }
 
-export type ParallelFastNumericArray = Float32Array | Float64Array;
+export type ParallelFastNumericArray =
+  | Float32Array
+  | Float64Array
+  | Uint8Array
+  | Uint16Array
+  | Uint32Array
+  | Int8Array
+  | Int16Array
+  | Int32Array;
 export type ParallelFastValueArray =
   | ParallelFastNumericArray
   | readonly (bigint | boolean | number | string | null | undefined)[];
 export type ParallelFastColorArray =
   | Uint8Array
+  | ParallelFastRgbaView
   | readonly (`#${string}` | string | null | undefined)[];
+export interface ParallelFastRgbaView {
+  readonly __parallelCompactRgbaView: true;
+  readonly [index: number]: number;
+  readonly length: number;
+}
 export type ParallelFastOpacityArray =
   | Float32Array
   | Float64Array

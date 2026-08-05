@@ -52,6 +52,10 @@
       "types": "./dist/m-parallel/index.d.ts",
       "import": "./dist/m-parallel/index.js"
     },
+    "./m-parallel-webgpu": {
+      "types": "./dist/m-parallel-webgpu/index.d.ts",
+      "import": "./dist/m-parallel-webgpu/index.js"
+    },
     "./m-histogram": {
       "types": "./dist/m-histogram/index.d.ts",
       "import": "./dist/m-histogram/index.js"

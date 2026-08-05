@@ -30,7 +30,8 @@ export function applyParallelColorRules(
 
   const color = createParallelRouteColorBuffer(buffers);
   const opacity =
-    buffers.styleBuffers?.opacity === undefined
+    buffers.styleBuffers?.opacity === undefined ||
+    buffers.styleBuffers.opacity.length !== buffers.recordCount
       ? createUnitOpacityBuffer(buffers.recordCount)
       : new Float32Array(buffers.styleBuffers.opacity);
 
@@ -70,7 +71,12 @@ export function applyParallelColorRules(
 
 function createParallelRouteColorBuffer(buffers: ParallelBuffers): Uint8Array {
   if (buffers.styleBuffers?.color !== undefined) {
-    return new Uint8Array(buffers.styleBuffers.color);
+    const source = buffers.styleBuffers.color;
+    const color = new Uint8Array(source.length);
+    for (let index = 0; index < source.length; index += 1) {
+      color[index] = source[index] ?? 0;
+    }
+    return color;
   }
 
   const color = new Uint8Array(buffers.recordCount * BYTES_PER_RGBA_COLOR);

@@ -8,6 +8,7 @@ import type {
 } from '../../plot-engine/core/index.js';
 import type {
   ParallelActiveBrushInterval,
+  ParallelAxisViewports,
   ParallelBrushIntervals,
   ParallelFastAxisKind,
   ParallelFastSelectionSource,
@@ -26,7 +27,9 @@ import type {
   ParallelFastOverlayKind,
 } from './parallelOverlays.js';
 
-export type ParallelFastRendererKind = 'webgl2-segments';
+export type ParallelFastRendererKind =
+  | 'webgl2-segments'
+  | 'webgpu-parallel-density';
 
 export interface ParallelFastRendererMetricsEvent {
   densityBlendMode?: string;
@@ -36,7 +39,10 @@ export interface ParallelFastRendererMetricsEvent {
   hoverResolveMs?: number | null;
   hoverVisualBaseRedrawMs?: number | null;
   hoverVisualGpuUploadMs?: number | null;
-  hoverVisualMode?: 'webgl2-hover-overlay-canvas';
+  aggregationResolution?: number;
+  densityBinCount?: number;
+  directRecordCount?: number;
+  hoverVisualMode?: 'canvas2d-hover-overlay' | 'webgl2-hover-overlay-canvas';
   hoverVisualRedrawMs?: number | null;
   hoverVisualSkipped?: boolean;
   hoverVisualUpdateMs?: number | null;
@@ -60,6 +66,15 @@ export interface ParallelFastRendererMetricsEvent {
   sharedArrayBuffersUsed?: boolean;
   webglSegmentCount?: number;
   webglVertexCount?: number;
+  webgpuResidentBytes?: number;
+  webgpuUploadBytes?: number;
+}
+
+export interface ParallelFastAxisViewportChangeEvent {
+  axisViewports: ParallelAxisViewports;
+  phase: 'preview' | 'commit';
+  reason: 'pan' | 'reset' | 'set' | 'undo' | 'zoom';
+  source: ParallelFastInteractionSource;
 }
 
 export interface ParallelFastRenderStateEvent {
@@ -180,7 +195,8 @@ export interface ParallelFastLineOpacityAdjustRequestEvent {
 }
 
 export interface ParallelFastContextEvent {
-  originalEvent: Event;
+  detail?: string;
+  originalEvent?: Event;
 }
 
 export interface ParallelFastDisposeEvent {
@@ -188,6 +204,8 @@ export interface ParallelFastDisposeEvent {
 }
 
 export interface ParallelFastEngineEvents {
+  axisviewportchange: ParallelFastAxisViewportChangeEvent;
+  axisviewportpreview: ParallelFastAxisViewportChangeEvent;
   contextlost: ParallelFastContextEvent;
   contextrestored: ParallelFastContextEvent;
   dispose: ParallelFastDisposeEvent;

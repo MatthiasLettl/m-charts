@@ -15,6 +15,8 @@ import {
 import {
   findNearestParallelRecordByIndexedPoint,
   findNearestParallelRecordByPoint,
+  PARALLEL_AXIS_MAX_DISPLAY_VALUE,
+  PARALLEL_AXIS_MIN_DISPLAY_VALUE,
   parallelDisplayValueToRenderedNormalizedValue,
   type NumericRange,
   type ParallelBrushIntervals,
@@ -104,7 +106,17 @@ interface ParallelFastBrushClickState {
   timeStamp: number;
 }
 
+interface ParallelFastViewportDragState {
+  axisIndex: number;
+  currentY: number;
+  kind: 'pan' | 'zoom';
+  pointerId: number;
+  startViewports: import('../core/index.js').ParallelAxisViewports;
+  startY: number;
+}
+
 const DOUBLE_CLICK_MAX_DELAY_MS = 500;
+const VIEWPORT_DRAG_MIN_CSS_PX = 4;
 
 export function createDefaultParallelBindings(
   options: DefaultParallelBindingsOptions = {},
@@ -124,10 +136,29 @@ export function createDefaultParallelBindings(
     }
 
     let dragState: ParallelFastBrushDragState | null = null;
+    let viewportDragState: ParallelFastViewportDragState | null = null;
     let currentBrushIntervals = plot.commands.getStateSnapshot().brush.brushIntervals;
     let latestBrushUpdate: PendingParallelBrushUpdate | null = null;
     let latestInspectionActive = plot.commands.getStateSnapshot().inspection !== null;
+    let inspectionRequestSequence = 0;
     let lastBrushClick: ParallelFastBrushClickState | null = null;
+    const viewportOverlay = coordinateTarget.ownerDocument.createElement('div');
+    viewportOverlay.className = 'parallel-fast-axis-viewport-box';
+    Object.assign(viewportOverlay.style, {
+      background: 'rgba(15, 118, 110, 0.18)',
+      border: '1px solid rgba(15, 118, 110, 0.72)',
+      borderRadius: '4px',
+      boxSizing: 'border-box',
+      display: 'none',
+      pointerEvents: 'none',
+      position: 'absolute',
+      transform: 'translateX(-50%)',
+      width: '2.3rem',
+      zIndex: '4',
+    });
+    viewportOverlay.setAttribute('aria-hidden', 'true');
+    plot.commands.getHostElement().append(viewportOverlay);
+    disposables.push(toDisposable(() => viewportOverlay.remove()));
 
     const applyBrushUpdate = (update: PendingParallelBrushUpdate) => {
       currentBrushIntervals = updateAxisBrushInterval(
@@ -154,7 +185,14 @@ export function createDefaultParallelBindings(
     });
     const pendingInspection = createLatestRafScheduler<NormalizedPointerEvent>(
       (event) => {
-        resolveInspection(plot, event, options.inspection);
+        const requestSequence = ++inspectionRequestSequence;
+        resolveInspection(
+          plot,
+          event,
+          options.inspection,
+          requestSequence,
+          () => inspectionRequestSequence,
+        );
         latestInspectionActive =
           plot.commands.getStateSnapshot().inspection !== null;
       },
@@ -209,6 +247,48 @@ export function createDefaultParallelBindings(
       });
       dragState = null;
       latestBrushUpdate = null;
+    };
+    const moveViewportDrag = (event: NormalizedPointerEvent) => {
+      if (
+        viewportDragState === null ||
+        event.pointerId !== viewportDragState.pointerId
+      ) {
+        return;
+      }
+      event.originalEvent.preventDefault();
+      viewportDragState.currentY = event.host.y;
+      updateViewportOverlay(plot, viewportOverlay, viewportDragState);
+    };
+    const finishViewportDrag = (event: NormalizedPointerEvent) => {
+      if (
+        viewportDragState === null ||
+        event.pointerId !== viewportDragState.pointerId
+      ) {
+        return;
+      }
+      const completed = viewportDragState;
+      viewportDragState = null;
+      viewportOverlay.style.display = 'none';
+      if (event.type === 'pointercancel') {
+        return;
+      }
+      completed.currentY = event.host.y;
+      const moved = Math.abs(completed.currentY - completed.startY);
+      if (completed.kind === 'pan' && moved < VIEWPORT_DRAG_MIN_CSS_PX) {
+        plot.commands.undoAxisViewport({ source: 'pointer' });
+        return;
+      }
+      if (completed.kind === 'zoom' && moved < VIEWPORT_DRAG_MIN_CSS_PX) {
+        return;
+      }
+      plot.commands.setAxisViewports(
+        createDraggedAxisViewports(plot, completed),
+        {
+          phase: 'commit',
+          reason: completed.kind,
+          source: 'pointer',
+        },
+      );
     };
     disposables.push(pendingBrush, pendingInspection);
     disposables.push(
@@ -299,6 +379,56 @@ export function createDefaultParallelBindings(
             );
             return;
           }
+          if (
+            (event.button === 0 || event.button === 1) &&
+            !isInteractivePointerTarget(event.originalEvent.target)
+          ) {
+            event.originalEvent.preventDefault();
+            capturePointer(event.originalEvent, event.pointerId);
+            const state = plot.commands.getStateSnapshot();
+            const width = Math.max(
+              1,
+              plot.commands.getHostElement().getBoundingClientRect().width,
+            );
+            const axisIndex = closestParallelAxisIndex(
+              event.host.x,
+              width,
+              state.buffers.axisCount,
+            );
+            viewportDragState = {
+              axisIndex,
+              currentY: event.host.y,
+              kind: event.button === 0 ? 'zoom' : 'pan',
+              pointerId: event.pointerId,
+              startViewports: {
+                ...state.axisViewports,
+              },
+              startY: event.host.y,
+            };
+            viewportOverlay.dataset.axis =
+              state.buffers.axisOrder[axisIndex] ?? '';
+            viewportOverlay.dataset.interaction = viewportDragState.kind;
+            updateViewportOverlay(plot, viewportOverlay, viewportDragState);
+            return;
+          }
+        }
+
+        if (
+          event.type === 'pointermove' &&
+          viewportDragState !== null &&
+          event.pointerId === viewportDragState.pointerId
+        ) {
+          moveViewportDrag(event);
+          return;
+        }
+
+        if (
+          (event.type === 'pointerup' || event.type === 'pointercancel') &&
+          viewportDragState !== null &&
+          event.pointerId === viewportDragState.pointerId
+        ) {
+          finishViewportDrag(event);
+          return;
         }
 
         if (
@@ -327,6 +457,7 @@ export function createDefaultParallelBindings(
             pendingInspection.schedule(event);
           } else if (latestInspectionActive) {
             pendingInspection.cancel();
+            inspectionRequestSequence += 1;
             clearInspection(plot);
             latestInspectionActive = false;
           }
@@ -340,6 +471,7 @@ export function createDefaultParallelBindings(
             return;
           }
           pendingInspection.cancel();
+          inspectionRequestSequence += 1;
           if (latestInspectionActive) {
             clearInspection(plot);
             latestInspectionActive = false;
@@ -380,6 +512,7 @@ export function createDefaultParallelBindings(
     disposables.push(
       addEventListenerDisposable(inputElement, 'pointerleave', () => {
         pendingInspection.cancel();
+        inspectionRequestSequence += 1;
         if (latestInspectionActive) {
           clearInspection(plot);
           latestInspectionActive = false;
@@ -405,19 +538,26 @@ export function createDefaultParallelBindings(
       );
       disposables.push(
         addEventListenerDisposable(inputWindow, 'pointermove', (event) => {
-          if (dragState === null) {
+          if (dragState === null && viewportDragState === null) {
             return;
           }
           if (eventStartedInsideInputTarget(event, inputElement)) {
             return;
           }
-          scheduleBrushDragMove(
-            normalizePointerEvent(coordinateTarget, event, 'pointermove'),
+          const normalized = normalizePointerEvent(
+            coordinateTarget,
+            event,
+            'pointermove',
           );
+          if (viewportDragState !== null) {
+            moveViewportDrag(normalized);
+          } else {
+            scheduleBrushDragMove(normalized);
+          }
         }),
       );
       const handleWindowPointerEnd = (event: PointerEvent | MouseEvent) => {
-        if (dragState === null) {
+        if (dragState === null && viewportDragState === null) {
           return;
         }
         const normalized = normalizePointerEvent(
@@ -425,15 +565,26 @@ export function createDefaultParallelBindings(
           event,
           event.type === 'pointercancel' ? 'pointercancel' : 'pointerup',
         );
-        if (
-          'pointerId' in event &&
-          normalized.pointerId !== dragState.pointerId &&
-          event.type !== 'mouseup'
-        ) {
-          return;
-        }
         normalized.originalEvent.preventDefault();
-        finishBrushDrag(normalized);
+        if (viewportDragState !== null) {
+          if (
+            'pointerId' in event &&
+            normalized.pointerId !== viewportDragState.pointerId &&
+            event.type !== 'mouseup'
+          ) {
+            return;
+          }
+          finishViewportDrag(normalized);
+        } else if (dragState !== null) {
+          if (
+            'pointerId' in event &&
+            normalized.pointerId !== dragState.pointerId &&
+            event.type !== 'mouseup'
+          ) {
+            return;
+          }
+          finishBrushDrag(normalized);
+        }
       };
       disposables.push(
         addEventListenerDisposable(inputWindow, 'pointerup', handleWindowPointerEnd),
@@ -465,6 +616,129 @@ export function createDefaultParallelBindings(
   };
 }
 
+function updateViewportOverlay(
+  plot: ParallelFastPlotInstance,
+  overlay: HTMLDivElement,
+  drag: ParallelFastViewportDragState,
+): void {
+  const state = plot.commands.getStateSnapshot();
+  const rect = plot.commands.getHostElement().getBoundingClientRect();
+  const width = Math.max(1, rect.width);
+  const normalAxis = getParallelNormalAxisGeometry(rect.height);
+  const axisX = parallelAxisPosition(drag.axisIndex, width, state.buffers.axisCount);
+  overlay.style.display = 'block';
+  overlay.style.left = `${axisX}px`;
+  if (drag.kind === 'pan') {
+    const deltaY = drag.currentY - drag.startY;
+    overlay.style.borderStyle = 'dashed';
+    overlay.style.height = `${normalAxis.height}px`;
+    overlay.style.top = `${normalAxis.top + deltaY}px`;
+    return;
+  }
+  const firstY = clampNumber(drag.startY, normalAxis.top, normalAxis.bottom);
+  const secondY = clampNumber(drag.currentY, normalAxis.top, normalAxis.bottom);
+  const top = Math.min(firstY, secondY);
+  overlay.style.borderStyle = 'solid';
+  overlay.style.top = `${top}px`;
+  overlay.style.height = `${Math.abs(secondY - firstY)}px`;
+}
+
+function createDraggedAxisViewports(
+  plot: ParallelFastPlotInstance,
+  drag: ParallelFastViewportDragState,
+): import('../core/index.js').ParallelAxisViewports {
+  const state = plot.commands.getStateSnapshot();
+  const { buffers } = state;
+  const rect = plot.commands.getHostElement().getBoundingClientRect();
+  const normalAxis = getParallelNormalAxisGeometry(rect.height);
+  const startViewports = drag.startViewports;
+  const next = { ...startViewports };
+  const axis = buffers.axisOrder[drag.axisIndex];
+  const domain = axis === undefined ? undefined : buffers.domainsByAxis[axis];
+  if (axis === undefined || domain === undefined || domain.span <= 0) return next;
+  const initial = startViewports[axis] ?? domain;
+  const span = initial.max - initial.min;
+  if (drag.kind === 'zoom') {
+    const first =
+      initial.max -
+      clamp01((drag.startY - normalAxis.top) / normalAxis.height) * span;
+    const second =
+      initial.max -
+      clamp01((drag.currentY - normalAxis.top) / normalAxis.height) * span;
+    const min = Math.min(first, second);
+    const max = Math.max(first, second);
+    if (max > min) next[axis] = { max, min };
+    return next;
+  }
+  const delta = ((drag.currentY - drag.startY) / normalAxis.height) * span;
+  let min = initial.min + delta;
+  let max = initial.max + delta;
+  if (min < domain.min) {
+    max += domain.min - min;
+    min = domain.min;
+  }
+  if (max > domain.max) {
+    min -= max - domain.max;
+    max = domain.max;
+  }
+  next[axis] = { max, min };
+  return next;
+}
+
+function getParallelNormalAxisGeometry(plotHeight: number): {
+  bottom: number;
+  height: number;
+  top: number;
+} {
+  const height = Math.max(1, plotHeight);
+  const top = height * (1 - PARALLEL_AXIS_MAX_DISPLAY_VALUE);
+  const bottom = height * (1 - PARALLEL_AXIS_MIN_DISPLAY_VALUE);
+  return {
+    bottom,
+    height: Math.max(1, bottom - top),
+    top,
+  };
+}
+
+function parallelAxisPosition(
+  axisIndex: number,
+  width: number,
+  axisCount: number,
+): number {
+  if (axisCount <= 1) return width / 2;
+  return (axisIndex / (axisCount - 1)) * width;
+}
+
+function closestParallelAxisIndex(
+  x: number,
+  width: number,
+  axisCount: number,
+): number {
+  if (axisCount <= 1) return 0;
+  return Math.max(
+    0,
+    Math.min(axisCount - 1, Math.round(clamp01(x / width) * (axisCount - 1))),
+  );
+}
+
+function isInteractivePointerTarget(target: EventTarget | null): boolean {
+  if (
+    target === null ||
+    typeof (target as { closest?: unknown }).closest !== 'function'
+  ) {
+    return false;
+  }
+  return (
+    (target as Element).closest(
+      'a,button,input,select,textarea,[contenteditable="true"],[role="button"]',
+    ) !== null
+  );
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
 function startBrushDrag(
   plot: ParallelFastPlotInstance,
   hit: ParallelFastBrushHit,
@@ -492,11 +766,19 @@ function startBrushDrag(
     effectiveAxisRangeIndex >= 0
       ? currentRanges[effectiveAxisRangeIndex] ?? null
       : null;
-  const buffersRef = getBuffersFromPlot(plot);
-  const axisDomainValue = buffersRef.domainsByAxis[hit.axis];
-  if (axisDomainValue === undefined) {
+  const completeDomain = fullState.buffers.domainsByAxis[hit.axis];
+  if (completeDomain === undefined) {
     return;
   }
+  const viewport = fullState.axisViewports[hit.axis];
+  const axisDomainValue =
+    viewport === null || viewport === undefined
+      ? completeDomain
+      : {
+          max: viewport.max,
+          min: viewport.min,
+          span: viewport.max - viewport.min,
+        };
   const startRawValue = rawValueFromClientY(
     event.client.y,
     hit.axisBounds,
@@ -527,6 +809,8 @@ function resolveInspection(
   plot: ParallelFastPlotInstance,
   event: NormalizedPointerEvent,
   options: ParallelFastInspectionOptions | undefined,
+  requestSequence: number,
+  getRequestSequence: () => number,
 ): void {
   const buffers = getBuffersFromPlot(plot);
   const rect = plot.commands.getHostElement().getBoundingClientRect();
@@ -541,6 +825,21 @@ function resolveInspection(
   const hoverIndex = options?.getHoverIndex?.() ?? null;
   const maxDistancePx = options?.maxDistancePx ?? 28;
   const fallbackLimit = options?.smallDatasetFallbackRecordLimit ?? 20_000;
+  const rendererLookup = plot.commands.resolveInspectionAtPoint({
+    axisPosition,
+    maxDistancePx,
+    normalizedValue,
+    plotHeightPx: height,
+    plotWidthPx: width,
+  });
+  if (rendererLookup !== null) {
+    void rendererLookup.then((nearest) => {
+      if (requestSequence !== getRequestSequence()) return;
+      const resolveMs = performance.now() - startedAt;
+      applyResolvedInspection(plot, nearest, resolveMs, 'index');
+    });
+    return;
+  }
   const nearest =
     hoverIndex === null
       ? buffers.recordCount < fallbackLimit
@@ -563,6 +862,24 @@ function resolveInspection(
           plotWidthPx: width,
         });
   const resolveMs = performance.now() - startedAt;
+  applyResolvedInspection(
+    plot,
+    nearest,
+    resolveMs,
+    hoverIndex === null
+      ? buffers.recordCount < fallbackLimit
+        ? 'fallback'
+        : 'none'
+      : 'index',
+  );
+}
+
+function applyResolvedInspection(
+  plot: ParallelFastPlotInstance,
+  nearest: ReturnType<typeof findNearestParallelRecordByPoint>,
+  resolveMs: number,
+  lookupSource: 'fallback' | 'index' | 'none',
+): void {
   plot.commands.setHoverState({
     dimBackground: false,
     sourceIndex: nearest?.recordIndex ?? null,
@@ -570,12 +887,7 @@ function resolveInspection(
   plot.commands.setInspection(
     nearest === null ? null : { ...nearest, source: 'local-nearest-segment' },
     {
-      lookupSource:
-        hoverIndex === null
-          ? buffers.recordCount < fallbackLimit
-            ? 'fallback'
-            : 'none'
-          : 'index',
+      lookupSource,
       resolveMs,
       source: 'pointer',
     },

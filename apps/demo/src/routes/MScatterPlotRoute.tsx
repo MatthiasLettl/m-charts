@@ -6514,12 +6514,14 @@ function PlaceholderChartShell({
   if (plottedDataset !== null && fastViewport !== null) {
     const plotReadyForInteraction =
       engineLayout !== null && engineRenderState.status === 'ready';
+    const plotPreparing =
+      !plotReadyForInteraction && engineRenderState.status !== 'error';
 
     return (
       <div className="scatter-fast-render-shell">
         <div
           aria-label="m-scatter plot interaction surface"
-          aria-busy={plotReadyForInteraction ? undefined : true}
+          aria-busy={plotPreparing ? true : undefined}
           className="fast-plot-interaction-surface"
           data-active-plot={activePlotId ?? 'none'}
           data-interaction-active={
@@ -6607,11 +6609,6 @@ function PlaceholderChartShell({
               widthCssPx={engineLayout.widthCssPx}
             />
           )}
-          {engineRenderState.status === 'rendering' ? (
-            <span className="scatter-fast-render-status" data-testid="scatter-fast-render-status">
-              {engineRenderState.message ?? `Rendering ${rendererBackend === 'webgpu' ? 'WebGPU' : 'WebGL2'} scatter...`}
-            </span>
-          ) : null}
           {engineRenderState.status === 'error' ? (
             <span
               className="scatter-fast-render-error"
@@ -6621,13 +6618,13 @@ function PlaceholderChartShell({
               {engineRenderState.message}
             </span>
           ) : null}
-          {plotReadyForInteraction ? null : (
+          {plotPreparing ? (
             <PlotLoadingOverlay
               detail={engineRenderState.message ?? 'Loading renderer and plot data'}
               label="Preparing scatter plot"
               testId="scatter-fast-plot-loading"
             />
-          )}
+          ) : null}
         </div>
       </div>
     );

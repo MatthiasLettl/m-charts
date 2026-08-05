@@ -25,6 +25,7 @@
       "m-charts/m-scatter": ["../../packages/m-charts/src/m-scatter/index.ts"],
       "m-charts/m-scatter-webgpu": ["../../packages/m-charts/src/m-scatter-webgpu/index.ts"],
       "m-charts/m-parallel": ["../../packages/m-charts/src/m-parallel/index.ts"],
+      "m-charts/m-parallel-webgpu": ["../../packages/m-charts/src/m-parallel-webgpu/index.ts"],
       "m-charts/m-histogram": ["../../packages/m-charts/src/m-histogram/index.ts"],
       "m-charts/m-histogram-webgpu": ["../../packages/m-charts/src/m-histogram-webgpu/index.ts"],
       "m-charts/scatter": ["../../packages/m-charts/src/m-scatter/index.ts"],

@@ -3,7 +3,9 @@
 `packages/m-charts` contains the reusable WebGL2 and WebGPU chart source in this
 repository. WebGL2 powers scatter, parallel-coordinate, and histogram engines;
 the isolated WebGPU scatter backend supports point, bubble, and heat-map modes,
-and the isolated WebGPU histogram backend renders exact aggregated bars. Both
+the isolated WebGPU histogram backend renders exact aggregated bars, and the
+isolated WebGPU parallel backend renders pairwise density plus exact-style LOD.
+All
 reuse their existing public contracts and interaction engines.
 
 The chart engines are framework-neutral rendering islands. A host application
@@ -42,6 +44,8 @@ packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram
 packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
 packages/m-charts/src/m-parallel/core   -> src/vendor/m-charts/m-parallel/core
 packages/m-charts/src/m-parallel/engine -> src/vendor/m-charts/m-parallel/engine
+packages/m-charts/src/m-parallel-webgpu/core -> src/vendor/m-charts/m-parallel-webgpu/core
+packages/m-charts/src/m-parallel-webgpu/engine -> src/vendor/m-charts/m-parallel-webgpu/engine
 ```
 
 Add chart `adapters`, scatter `workers`, or chart `react` folders only when the
@@ -97,6 +101,7 @@ import { createEmitter } from 'm-charts/plot-engine';
 import { createScatterPlot } from 'm-charts/m-scatter';
 import { createScatterPlot as createWebgpuScatterPlot } from 'm-charts/m-scatter-webgpu';
 import { createParallelPlot } from 'm-charts/m-parallel';
+import { createParallelPlot as createWebgpuParallelPlot } from 'm-charts/m-parallel-webgpu';
 import { createHistogramPlot } from 'm-charts/m-histogram';
 import { createHistogramPlot as createWebgpuHistogramPlot } from 'm-charts/m-histogram-webgpu';
 ```
@@ -110,6 +115,7 @@ import {
   MScatter,
   MScatterWebgpu,
   MParallel,
+  MParallelWebgpu,
   MHistogram,
   MHistogramWebgpu,
 } from 'm-charts';
@@ -228,8 +234,8 @@ the plot in the effect cleanup. React helpers live under chart `react` subtrees;
 ## Rendering Backends And Workers
 
 `m-scatter`, `m-histogram`, and `m-parallel` require WebGL2 and report WebGL
-context loss/restoration through typed events and metrics. `m-scatter-webgpu`
-and `m-histogram-webgpu` require a secure WebGPU context and report
+context loss/restoration through typed events and metrics. `m-scatter-webgpu`,
+`m-histogram-webgpu`, and `m-parallel-webgpu` require a secure WebGPU context and report
 asynchronous readiness and device loss through their compatible lifecycles.
 Every engine adds canvases inside the host element; use a host with explicit
 size because a zero-sized host cannot produce a useful render.
@@ -302,6 +308,27 @@ compatible after switching the factory import. See
 [HISTOGRAM_WEBGPU.md](HISTOGRAM_WEBGPU.md) for migration, fallback,
 aggregation, diagnostics, demo, and validation details.
 
+The WebGPU parallel renderer computes pairwise adjacent-axis density over every
+record, aggregates arbitrary colors, and draws separate selected/preselected
+density. Small populations render exact lines; large populations add an
+exact-style representative overlay. For large hybrid plots, `interactive`
+resolves for that overlay and `ready` resolves when the exact full-population
+density is complete. Worker-produced packed pages can stream through the
+additive `createParallelWebgpuBuffers` options without changing quantization or
+aggregation semantics. Left-drag zoom locks to one axis and
+middle-drag pans one axis. Both gestures use lightweight drag feedback and
+recompute only the affected adjacent-axis density pairs on release. The same
+pass compacts viewport-qualified records into a bounded detail layer and drops
+its deterministic stride to one once every qualifying line fits. A bounded
+source-index readback promotes that detail layer to raw-derived,
+viewport-relative Float32 coordinates; hybrid hover uses precisely the same
+geometry for its fast path and falls back to a coalesced full-population GPU
+lookup for density or overflow segments outside the detail population. Exact
+selection uses Rust/Wasm
+when its retained typed copy is memory-safe and the source-column implementation
+for larger inputs. See
+[PARALLEL_WEBGPU.md](PARALLEL_WEBGPU.md).
+
 Finite JSON or server streams can use
 `createFastScatterJsonRecordBatchSource` and
 `createFastScatterWebgpuPlotFromDataSource`. The source declares its count and
@@ -326,6 +353,8 @@ filter preserves exact nearest-point results with lower resident memory.
   WASM aggregation, exact-bar, and large-data contracts.
 - [PARALLEL.md](PARALLEL.md): parallel-coordinate source layout and exported
   names.
+- [PARALLEL_WEBGPU.md](PARALLEL_WEBGPU.md): compatible WebGPU/Wasm density,
+  selection, hover, zoom, demo, and validation contracts.
 - [llms.md](llms.md): detailed integration reference for commands, events,
   overlays, provenance, and performance notes.
 
