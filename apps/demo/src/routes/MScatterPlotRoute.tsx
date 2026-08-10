@@ -53,6 +53,10 @@ import {
   SCATTER_WEBGPU_DEMO_POINT_COUNTS,
 } from '../data/scatterWebgpuDatasetStore.ts';
 import {
+  prepareScatterWebgpuDemoStream,
+  type ScatterWebgpuDemoStreamKind,
+} from '../data/scatterWebgpuStreaming.ts';
+import {
   FAST_SCATTER_HEATMAP_BIN_SIZE_PARAM,
   FAST_SCATTER_VISUALIZATION_PARAM,
   MAX_FAST_SCATTER_HEATMAP_BIN_SIZE_PX,
@@ -117,6 +121,7 @@ import {
   type FastScatterAlphaMode,
   type FastScatterBufferBuildMetrics,
   type FastScatterDatasetSchema,
+  type FastScatterDataDomain,
   type FastScatterDisplayColumns,
   type FastScatterEncodedAxis,
   type FastScatterEncodedSchemaColumns,
@@ -130,6 +135,7 @@ import {
   type FastScatterPlotSpec,
   type FastScatterNavigatorSummary,
   type FastScatterOutOfRangeResult,
+  type FastScatterPointColumns,
   type FastScatterPlotRect,
   type FastScatterRange,
   type FastScatterRenderingMode,
@@ -149,10 +155,14 @@ import {
   type ScatterRenderState,
 } from 'm-charts/m-scatter';
 import {
+  createScatterWebgpuStreamingPlot,
   createScatterWebgpuPlot,
   type FastScatterWebgpuAggregationBackend,
   type FastScatterWebgpuDiagnostics,
   type FastScatterWebgpuPackedStyles,
+  type FastScatterWebgpuLiveStreamProgress,
+  type FastScatterWebgpuStreamingPlotInstance,
+  type FastScatterWebgpuStreamSource,
   type ScatterWebgpuPlotInstance,
   type ScatterWebgpuPlotOptions,
 } from 'm-charts/m-scatter-webgpu';
@@ -252,14 +262,21 @@ type DatasetLoadState =
         | 'json-records'
         | 'legacy-json-records'
         | 'mixed-table-json'
+        | 'http-webgpu-stream'
         | 'indexeddb-webgpu-binary'
+        | 'local-webgpu-stream'
         | 'paged-webgpu-binary';
       sourceUrl: string;
+      streaming?: {
+        kind: ScatterWebgpuDemoStreamKind;
+        source: FastScatterWebgpuStreamSource;
+      };
       tableMetadata?: FastScatterRouteTableMetadata;
     };
 
 interface LoadedFastScatterDataset {
   columns: FastScatterDisplayColumns;
+  domain?: FastScatterDataDomain;
   hoverIndex?: FastScatterHoverIndexSet | null;
   isLegacyViewport: boolean;
   packedStyles?: FastScatterWebgpuPackedStyles;
@@ -510,7 +527,16 @@ export function MScatterPlotRoute({
 }: MScatterPlotRouteProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const { themeMode } = useThemeMode();
-  const xMode = useMemo(() => parseFastScatterXMode(searchParams), [searchParams]);
+  const webgpuStreamKind = useMemo(
+    () => rendererBackend === 'webgpu' ? parseWebgpuStreamKind(searchParams) : null,
+    [rendererBackend, searchParams],
+  );
+  const xMode = useMemo(
+    () => webgpuStreamKind === null
+      ? parseFastScatterXMode(searchParams)
+      : DEFAULT_FAST_SCATTER_X_MODE,
+    [searchParams, webgpuStreamKind],
+  );
   const webgpuAggregationBackend = useMemo(
     () => parseFastScatterWebgpuAggregationBackend(searchParams),
     [searchParams],
@@ -522,6 +548,9 @@ export function MScatterPlotRoute({
   const [datasetState, setDatasetState] = useState<DatasetLoadState>({
     status: 'loading',
   });
+  const [streamProgress, setStreamProgress] =
+    useState<FastScatterWebgpuLiveStreamProgress | null>(null);
+  const lastPublishedStreamCountRef = useRef(0);
   const tableMode = useMemo(() => parseFastRouteTableMode(searchParams), [searchParams]);
   const mixedTableFixtureUrl = useMemo(
     () => resolveFastPlotFixtureUrl(searchParams, MIXED_TABLE_FIXTURE_URL),
@@ -540,7 +569,9 @@ export function MScatterPlotRoute({
     [rendererBackend, searchParams],
   );
   const useHttpWebgpuDataset =
-    rendererBackend === 'webgpu' && searchParams.get(WEBGPU_DATA_SOURCE_PARAM) === 'http';
+    rendererBackend === 'webgpu' && webgpuStreamKind === null &&
+    searchParams.get(WEBGPU_DATA_SOURCE_PARAM) === 'http';
+  const webgpuDatasetMode = webgpuStreamKind === null ? tableMode : 'stream';
   const datasetGenerationAbortRef = useRef<AbortController | null>(null);
   const componentActiveRef = useRef(true);
   const [datasetRefreshVersion, setDatasetRefreshVersion] = useState(0);
@@ -558,7 +589,14 @@ export function MScatterPlotRoute({
     async function loadDataset() {
       try {
         const loadResult =
-          webgpuPointCount !== null
+          webgpuPointCount !== null && webgpuStreamKind !== null
+            ? await loadWebgpuStreamingDataset(
+                startedAt,
+                webgpuPointCount,
+                webgpuStreamKind,
+                abortController.signal,
+              )
+          : webgpuPointCount !== null
             ? await loadWebgpuScatterDataset(
                 startedAt,
                 webgpuPointCount,
@@ -622,6 +660,7 @@ export function MScatterPlotRoute({
     datasetRefreshVersion,
     tableMode,
     useHttpWebgpuDataset,
+    webgpuStreamKind,
     webgpuPointCount,
   ]);
 
@@ -717,8 +756,11 @@ export function MScatterPlotRoute({
   }, [webgpuPointCount]);
 
   const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
-    if (mode === tableMode) return;
+    if (mode === tableMode && webgpuStreamKind === null) return;
     const next = new URL(window.location.href);
+    if (webgpuStreamKind !== null) {
+      next.searchParams.delete(WEBGPU_DATA_SOURCE_PARAM);
+    }
     const value = formatFastRouteTableMode(mode);
     if (value === null) {
       next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
@@ -726,7 +768,50 @@ export function MScatterPlotRoute({
       next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
     }
     window.location.assign(next.href);
-  }, [tableMode]);
+  }, [tableMode, webgpuStreamKind]);
+
+  const selectWebgpuStreamKind = useCallback((kind: ScatterWebgpuDemoStreamKind) => {
+    if (kind === webgpuStreamKind) return;
+    const next = new URL(window.location.href);
+    next.searchParams.set(WEBGPU_DATA_SOURCE_PARAM, `stream-${kind}`);
+    next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
+    next.searchParams.delete(FAST_SCATTER_X_AXIS_PARAM);
+    next.searchParams.set(FAST_SCATTER_X_MODE_PARAM, DEFAULT_FAST_SCATTER_X_MODE);
+    clearFastScatterViewportSearchParams(next.searchParams);
+    window.location.assign(next.href);
+  }, [webgpuStreamKind]);
+
+  const handleWebgpuStreamProgress = useCallback((
+    progress: FastScatterWebgpuLiveStreamProgress,
+    columns?: FastScatterPointColumns,
+  ) => {
+    setStreamProgress((current) => {
+      const updateInterval = (progress.expectedCount ?? 0) >= 1_000_000
+        ? 1_000_000
+        : 1;
+      return progress.complete || current === null ||
+          progress.loadedCount - current.loadedCount >= updateInterval
+        ? progress
+        : current;
+    });
+    if (columns === undefined || !progress.complete) return;
+    if (progress.loadedCount === lastPublishedStreamCountRef.current) return;
+    lastPublishedStreamCountRef.current = progress.loadedCount;
+    setDatasetState((current) => {
+      if (current.status !== 'loaded' || current.streaming === undefined) return current;
+      return {
+        ...current,
+        adaptedDataset: {
+          ...current.adaptedDataset,
+          columns: columns as FastScatterDisplayColumns,
+        },
+        bufferBuildMetrics: {
+          ...current.bufferBuildMetrics,
+          recordCount: columns.x.length,
+        },
+      };
+    });
+  }, []);
 
   const xAxisKey = useMemo(
     () =>
@@ -759,7 +844,8 @@ export function MScatterPlotRoute({
       return null;
     }
 
-    return calculateFastScatterDomain(plottedDataset.columns, plottedDataset.spec);
+    return plottedDataset.domain ??
+      calculateFastScatterDomain(plottedDataset.columns, plottedDataset.spec);
   }, [plottedDataset]);
 
   const defaultViewport = useMemo<ViewportState | null>(() => {
@@ -1572,6 +1658,7 @@ export function MScatterPlotRoute({
   const updateXMode = useCallback(
     (nextMode: FastScatterXMode) => {
       if (
+        webgpuStreamKind !== null ||
         nextMode === xModeRef.current ||
         datasetState.status !== 'loaded' ||
         plottedDataset === null ||
@@ -1648,13 +1735,14 @@ export function MScatterPlotRoute({
       renderedFastViewport,
       rendererBackend,
       setSearchParams,
+      webgpuStreamKind,
       xAxisKey,
     ],
   );
 
   const updateXAxisKey = useCallback(
     (key: string) => {
-      if (datasetState.status !== 'loaded') {
+      if (datasetState.status !== 'loaded' || webgpuStreamKind !== null) {
         return;
       }
 
@@ -1694,7 +1782,7 @@ export function MScatterPlotRoute({
         viewport: nextViewport,
       });
     },
-    [datasetState, rendererBackend, setSearchParams, xAxisKey],
+    [datasetState, rendererBackend, setSearchParams, webgpuStreamKind, xAxisKey],
   );
 
   useEffect(() => {
@@ -1967,6 +2055,13 @@ export function MScatterPlotRoute({
                 theme={fastScatterTheme}
                 visualizationMode={visualizationMode}
                 webgpuAggregationBackend={webgpuAggregationBackend}
+                webgpuStreamingSource={
+                  datasetState.status === 'loaded'
+                    ? datasetState.streaming?.source
+                    : undefined
+                }
+                webgpuStreamingComplete={streamProgress?.complete === true}
+                onWebgpuStreamProgress={handleWebgpuStreamProgress}
               />
             )}
           </section>
@@ -1974,6 +2069,13 @@ export function MScatterPlotRoute({
             className="control-panel"
             aria-label="m-scatter diagnostics"
             data-table-mode={tableMode}
+            data-webgpu-dataset-mode={webgpuDatasetMode}
+            data-webgpu-stream-kind={webgpuStreamKind ?? 'none'}
+            data-webgpu-stream-status={
+              streamProgress === null
+                ? 'inactive'
+                : streamProgress.complete ? 'complete' : 'streaming'
+            }
             data-table-count={datasetState.status === 'loaded' ? (datasetState.tableMetadata?.tableCount ?? 0) : 0}
             data-table-record-counts={
               datasetState.status === 'loaded'
@@ -2115,7 +2217,8 @@ export function MScatterPlotRoute({
               renderMetrics?.visiblePointCount,
             )}
             data-dataset-record-count={
-              plottedDataset === null ? 'pending' : String(plottedDataset.columns.x.length)
+              streamProgress?.loadedCount ??
+                (plottedDataset === null ? 'pending' : String(plottedDataset.columns.x.length))
             }
             data-dataset-fetch-ms={formatDiagnosticNumber(
               datasetState.status === 'loaded' ? datasetState.fetchMs : undefined,
@@ -2158,9 +2261,10 @@ export function MScatterPlotRoute({
                 : undefined,
             )}
             data-buffer-record-count={formatDiagnosticInteger(
-              datasetState.status === 'loaded'
-                ? datasetState.bufferBuildMetrics.recordCount
-                : undefined,
+              streamProgress?.loadedCount ??
+                (datasetState.status === 'loaded'
+                  ? datasetState.bufferBuildMetrics.recordCount
+                  : undefined),
             )}
             data-buffer-y-key-count={formatDiagnosticInteger(
               datasetState.status === 'loaded'
@@ -2399,40 +2503,72 @@ export function MScatterPlotRoute({
               {rendererBackend === 'webgpu' ? (
                 <div className="scatter-webgpu-dataset-controls">
                   <div
-                    aria-label="WebGPU dataset size"
-                    className="segmented-control"
-                    data-testid="scatter-webgpu-dataset-size"
-                  >
-                    {SCATTER_WEBGPU_DEMO_POINT_COUNTS.map((pointCount) => (
-                      <button
-                        className={webgpuPointCount === pointCount ? 'is-active' : undefined}
-                        disabled={datasetState.status === 'generating'}
-                        key={pointCount}
-                        onClick={() => selectWebgpuPointCount(pointCount)}
-                        type="button"
-                      >
-                        {formatCompactPointCount(pointCount)}
-                      </button>
-                    ))}
-                  </div>
-                  <div
-                    aria-label="WebGPU table mode"
+                    aria-label="WebGPU dataset mode"
                     className="segmented-control scatter-webgpu-table-mode-control"
                     data-testid="scatter-webgpu-table-mode"
                   >
-                    {(['single', 'multi'] as const).map((mode) => (
+                    {(['single', 'multi', 'stream'] as const).map((mode) => (
                       <button
-                        aria-pressed={tableMode === mode}
-                        className={tableMode === mode ? 'is-active' : undefined}
+                        aria-pressed={webgpuDatasetMode === mode}
+                        className={webgpuDatasetMode === mode ? 'is-active' : undefined}
                         disabled={datasetState.status === 'generating'}
                         key={mode}
-                        onClick={() => selectWebgpuTableMode(mode)}
+                        onClick={() => mode === 'stream'
+                          ? selectWebgpuStreamKind('local')
+                          : selectWebgpuTableMode(mode)}
                         type="button"
                       >
-                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
+                        {mode === 'single'
+                          ? 'Single table'
+                          : mode === 'multi' ? 'Multiple tables' : 'Streaming'}
                       </button>
                     ))}
                   </div>
+                  {webgpuStreamKind === 'http' ? (
+                    <p className="compact-note" data-testid="scatter-webgpu-http-stream-size">
+                      The HTTP demonstration uses a small server-provisioned sample
+                      ({formatCount(datasetState.status === 'loaded'
+                        ? datasetState.tableMetadata?.tableRecordCounts['benchmark-primary'] ?? 0
+                        : 0)} points).
+                    </p>
+                  ) : (
+                    <div
+                      aria-label="WebGPU dataset size"
+                      className="segmented-control"
+                      data-testid="scatter-webgpu-dataset-size"
+                    >
+                      {SCATTER_WEBGPU_DEMO_POINT_COUNTS.map((pointCount) => (
+                        <button
+                          className={webgpuPointCount === pointCount ? 'is-active' : undefined}
+                          disabled={datasetState.status === 'generating'}
+                          key={pointCount}
+                          onClick={() => selectWebgpuPointCount(pointCount)}
+                          type="button"
+                        >
+                          {formatCompactPointCount(pointCount)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {webgpuStreamKind !== null ? (
+                    <div
+                      aria-label="WebGPU streaming source"
+                      className="segmented-control scatter-webgpu-stream-source-control"
+                      data-testid="scatter-webgpu-stream-source"
+                    >
+                      {(['local', 'http'] as const).map((kind) => (
+                        <button
+                          aria-pressed={webgpuStreamKind === kind}
+                          className={webgpuStreamKind === kind ? 'is-active' : undefined}
+                          key={kind}
+                          onClick={() => selectWebgpuStreamKind(kind)}
+                          type="button"
+                        >
+                          {kind === 'local' ? 'Local worker' : 'HTTP pages'}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <details
                     className="control-disclosure scatter-webgpu-dataset-details"
                     data-testid="scatter-webgpu-dataset-details"
@@ -2440,9 +2576,9 @@ export function MScatterPlotRoute({
                     <summary>Dataset details</summary>
                     <div className="control-disclosure-body">
                       <p className="compact-note">
-                        Primary table size. The multiple-table demo adds a fixed
-                        1,000-record secondary table with shared and secondary-only
-                        columns.
+                        {webgpuStreamKind === null
+                          ? 'Primary table size. The multiple-table demo adds a fixed 1,000-record secondary table with shared and secondary-only columns.'
+                          : 'Streaming uses the same renderer, axes, interaction bindings, and display modes. Local batches come from a worker; HTTP batches arrive from small binary pages.'}
                       </p>
                       <p className="compact-note">
                         Settled point views draw every visible record through one million
@@ -2452,7 +2588,24 @@ export function MScatterPlotRoute({
                       </p>
                     </div>
                   </details>
-                  {!useHttpWebgpuDataset && datasetState.status === 'loaded' ? (
+                  {streamProgress !== null ? (
+                    <dl
+                      className="metrics-grid"
+                      data-loaded-count={streamProgress.loadedCount}
+                      data-testid="scatter-webgpu-stream-progress"
+                    >
+                      <div>
+                        <dt>Streamed</dt>
+                        <dd>{formatCount(streamProgress.loadedCount)}</dd>
+                      </div>
+                      <div>
+                        <dt>Capacity</dt>
+                        <dd>{formatCount(streamProgress.capacity)}</dd>
+                      </div>
+                    </dl>
+                  ) : null}
+                  {webgpuStreamKind === null && !useHttpWebgpuDataset &&
+                      datasetState.status === 'loaded' ? (
                     <button
                       className="secondary-link"
                       data-testid="scatter-webgpu-delete-dataset"
@@ -2469,7 +2622,9 @@ export function MScatterPlotRoute({
                   <dt>Records</dt>
                   <dd>
                     {datasetState.status === 'loaded'
-                      ? formatCount(plottedDataset?.columns.x.length ?? 0)
+                      ? formatCount(
+                          streamProgress?.loadedCount ?? plottedDataset?.columns.x.length ?? 0,
+                        )
                       : 'loading'}
                   </dd>
                 </div>
@@ -2650,7 +2805,10 @@ export function MScatterPlotRoute({
                   <select
                     aria-label="m-scatter x axis"
                     data-testid="scatter-fast-x-axis"
-                    disabled={plottedDataset === null || xAxisOptions.length <= 1}
+                    disabled={
+                      plottedDataset === null || xAxisOptions.length <= 1 ||
+                      webgpuStreamKind !== null
+                    }
                     onChange={(event) => updateXAxisKey(event.currentTarget.value)}
                     value={xAxisKey ?? xAxisOptions[0]?.key ?? ''}
                   >
@@ -2670,7 +2828,7 @@ export function MScatterPlotRoute({
                     <button
                       aria-label={option === 'value' ? 'X values' : 'X index'}
                       className={xMode === option ? 'is-active' : ''}
-                      disabled={plottedDataset === null}
+                      disabled={plottedDataset === null || webgpuStreamKind !== null}
                       key={option}
                       onClick={() => updateXMode(option)}
                       type="button"
@@ -3260,7 +3418,9 @@ export function MScatterPlotRoute({
                   <dt>Records</dt>
                   <dd data-testid="scatter-fast-dataset-record-count">
                     {datasetState.status === 'loaded'
-                      ? formatCount(plottedDataset?.columns.x.length ?? 0)
+                      ? formatCount(
+                          streamProgress?.loadedCount ?? plottedDataset?.columns.x.length ?? 0,
+                        )
                       : 'pending'}
                   </dd>
                 </div>
@@ -3401,6 +3561,56 @@ async function loadWebgpuScatterDataset(
     secondaryFixtureUrl,
   );
   return appendSecondaryTableToWebgpuDataset(primary, secondary);
+}
+
+async function loadWebgpuStreamingDataset(
+  startedAt: number,
+  requestedPointCount: number,
+  kind: ScatterWebgpuDemoStreamKind,
+  signal: AbortSignal,
+): Promise<Omit<LoadedDatasetState, 'status'>> {
+  const fetchStartedAt = performance.now();
+  if (kind === 'local') await assertWebgpuPointCapacity(requestedPointCount);
+  const prepared = await prepareScatterWebgpuDemoStream({
+    kind,
+    pointCount: requestedPointCount,
+    signal,
+  });
+  const columns = prepared.firstBatch.columns as FastScatterDisplayColumns;
+  const packedStyleBytes = prepared.firstBatch.packedStyles?.byteLength ?? 0;
+  const byteLength = columns.x.byteLength + Object.values(columns.y).reduce(
+    (total, values) => total + values.byteLength,
+    0,
+  ) + packedStyleBytes;
+  return {
+    adaptedDataset: {
+      columns,
+      domain: prepared.source.domain,
+      hoverIndex: null,
+      isLegacyViewport: false,
+      spec: prepared.source.spec,
+    },
+    bufferBuildMetrics: {
+      buildMs: 0,
+      byteLength,
+      recordCount: columns.x.length,
+      yKeyCount: prepared.source.spec.plots.length,
+    },
+    columnarBytes: kind === 'http' ? byteLength : 0,
+    columnarDecodeMs: 0,
+    dataset: createSchemaMetadataScatterDataset({
+      columns: columns as FastScatterEncodedSchemaColumns,
+      spec: prepared.source.spec,
+    }),
+    fetchMs: performance.now() - fetchStartedAt,
+    loadTimeMs: performance.now() - startedAt,
+    parseMs: 0,
+    schemaEncodeMs: 0,
+    sourceFormat: kind === 'http' ? 'http-webgpu-stream' : 'local-webgpu-stream',
+    sourceUrl: prepared.sourceUrl,
+    streaming: { kind, source: prepared.source },
+    tableMetadata: createSingleTableMetadata(prepared.pointCount),
+  };
 }
 
 function parseRenderMetricDetail(
@@ -5784,6 +5994,15 @@ function parseWebgpuPointCount(searchParams: URLSearchParams): number {
     : DEFAULT_WEBGPU_POINT_COUNT;
 }
 
+function parseWebgpuStreamKind(
+  searchParams: URLSearchParams,
+): ScatterWebgpuDemoStreamKind | null {
+  const value = searchParams.get(WEBGPU_DATA_SOURCE_PARAM);
+  if (value === 'stream-local') return 'local';
+  if (value === 'stream-http') return 'http';
+  return null;
+}
+
 function calculateFastScatterHoverIndexBytes(
   index: FastScatterHoverIndexSet,
   columns?: Pick<FastScatterDisplayColumns, 'y'>,
@@ -5876,6 +6095,9 @@ function PlaceholderChartShell({
   opacityScale,
   visualizationMode,
   webgpuAggregationBackend,
+  webgpuStreamingSource,
+  webgpuStreamingComplete = false,
+  onWebgpuStreamProgress,
 }: {
   rendererBackend: 'webgl2' | 'webgpu';
   datasetState: Exclude<DatasetLoadState, { status: 'error' }>;
@@ -5917,6 +6139,12 @@ function PlaceholderChartShell({
   opacityScale: number;
   visualizationMode: FastScatterVisualizationMode;
   webgpuAggregationBackend: FastScatterWebgpuAggregationBackend;
+  webgpuStreamingSource?: FastScatterWebgpuStreamSource;
+  webgpuStreamingComplete?: boolean;
+  onWebgpuStreamProgress: (
+    progress: FastScatterWebgpuLiveStreamProgress,
+    columns?: FastScatterPointColumns,
+  ) => void;
 }) {
   useEffect(() => {
     if (
@@ -6099,6 +6327,7 @@ function PlaceholderChartShell({
     visualizationMode,
   ]);
   const latestEngineOptionsRef = useRef<ScatterPlotOptions | null>(null);
+  const plotCreationDataset = webgpuStreamingSource === undefined ? plottedDataset : null;
   const latestEngineHandlersRef = useRef({
     onActivePlotChange,
     onHeatmapBinSizeWheelAdjust,
@@ -6189,19 +6418,13 @@ function PlaceholderChartShell({
     if (host === null || initialOptions === null) {
       return;
     }
-
-    const plot =
-      rendererBackend === 'webgpu'
-        ? createScatterWebgpuPlot(
-            host,
-            toWebgpuPlotOptions(
-              initialOptions,
-              plottedDataset?.packedStyles,
-              webgpuAggregationBackend,
-            ),
-          )
-        : createScatterPlot(host, initialOptions);
-
+    let disposed = false;
+    let cleanupPlot = () => {};
+    const attachPlot = (plot: ScatterPlotInstance) => {
+      if (disposed) {
+        plot.dispose();
+        return;
+      }
     plotRef.current = plot;
     plot.canvas.dataset.testid =
       rendererBackend === 'webgpu'
@@ -6334,7 +6557,7 @@ function PlaceholderChartShell({
       latestEngineHandlersRef.current.onRenderStateChange('rendering', message);
     }
 
-    return () => {
+    cleanupPlot = () => {
       if (previewViewportClearFrameRef.current !== 0) {
         window.cancelAnimationFrame(previewViewportClearFrameRef.current);
         previewViewportClearFrameRef.current = 0;
@@ -6350,12 +6573,91 @@ function PlaceholderChartShell({
       }
       plot.dispose();
     };
+    };
+
+    const createPlot = async () => {
+      if (rendererBackend === 'webgpu' && webgpuStreamingSource !== undefined) {
+        const webgpuOptions = toWebgpuPlotOptions(
+          initialOptions,
+          undefined,
+          webgpuAggregationBackend,
+        );
+        const {
+          columns: _columns,
+          dataDomain: _dataDomain,
+          pointCapacity: _pointCapacity,
+          spec: _spec,
+          viewport,
+          ...streamOptions
+        } = webgpuOptions;
+        void _columns;
+        void _dataDomain;
+        void _pointCapacity;
+        void _spec;
+        let streamingPlot: FastScatterWebgpuStreamingPlotInstance | null = null;
+        streamingPlot = await createScatterWebgpuStreamingPlot(host, {
+          ...streamOptions,
+          dataSource: webgpuStreamingSource,
+          onStreamProgress: (progress) => {
+            onWebgpuStreamProgress(
+              progress,
+              progress.complete
+                ? streamingPlot?.streaming.getColumns()
+                : undefined,
+            );
+          },
+          viewport,
+          viewportPolicy: 'preserve',
+        });
+        onWebgpuStreamProgress(
+          streamingPlot.streaming.getProgress(),
+          streamingPlot.streaming.getProgress().complete
+            ? streamingPlot.streaming.getColumns()
+            : undefined,
+        );
+        void streamingPlot.streaming.done.catch((error: unknown) => {
+          if (disposed) return;
+          const message = error instanceof Error
+            ? error.message
+            : 'Unknown streaming error.';
+          setEngineRenderState({ message, status: 'error' });
+          latestEngineHandlersRef.current.onRenderStateChange('error', message);
+        });
+        attachPlot(streamingPlot);
+        return;
+      }
+      attachPlot(
+        rendererBackend === 'webgpu'
+          ? createScatterWebgpuPlot(
+              host,
+              toWebgpuPlotOptions(
+                initialOptions,
+                plotCreationDataset?.packedStyles,
+                webgpuAggregationBackend,
+              ),
+            )
+          : createScatterPlot(host, initialOptions),
+      );
+    };
+    void createPlot().catch((error: unknown) => {
+      if (disposed) return;
+      const message = error instanceof Error ? error.message : 'Unknown plot startup error.';
+      setEngineRenderState({ message, status: 'error' });
+      latestEngineHandlersRef.current.onRenderStateChange('error', message);
+    });
+
+    return () => {
+      disposed = true;
+      cleanupPlot();
+    };
   }, [
     hasFastViewport,
-    plottedDataset,
+    onWebgpuStreamProgress,
+    plotCreationDataset,
     plotRef,
     rendererBackend,
     webgpuAggregationBackend,
+    webgpuStreamingSource,
   ]);
 
   useEffect(() => {
@@ -6370,21 +6672,23 @@ function PlaceholderChartShell({
 
     const updateOptions: Partial<ScatterPlotOptions> = {
       axisMode: urlState?.axis ?? 'xy',
-      columns: plottedDataset.columns,
       focusedPlotId,
       heatmapBinSizePx,
       heatmapPalette,
-      hoverIndex: plottedDataset.hoverIndex,
       mode: effectiveMode,
       opacityScale,
       pointSizeScale,
       renderingMode,
       selectedSourceIndices,
-      spec: plottedDataset.spec,
       theme,
       viewport: fastViewport,
       visualizationMode,
     };
+    if (webgpuStreamingSource === undefined) {
+      updateOptions.columns = plottedDataset.columns;
+      updateOptions.hoverIndex = plottedDataset.hoverIndex;
+      updateOptions.spec = plottedDataset.spec;
+    }
     if (
       areFastScatterViewportsEqual(
         plot.commands.getStateSnapshot().viewport,
@@ -6409,6 +6713,7 @@ function PlaceholderChartShell({
     theme,
     urlState?.axis,
     visualizationMode,
+    webgpuStreamingSource,
   ]);
 
   const engineLayout = useMemo(() => {
@@ -6429,46 +6734,91 @@ function PlaceholderChartShell({
   }, [engineHostSize.height, engineHostSize.width, focusedPlotId, plottedDataset]);
 
   useEffect(() => {
-    if (plottedDataset === null || engineLayout === null) {
+    if (
+      plottedDataset === null || engineLayout === null ||
+      (webgpuStreamingSource !== undefined && !webgpuStreamingComplete)
+    ) {
       return;
     }
 
     const binCount = Math.max(48, Math.min(260, Math.floor(engineLayout.widthCssPx / 4)));
-    return scheduleAfterFirstPaint(() => {
+    let cancelled = false;
+    const cancelScheduledWork = scheduleAfterFirstPaint(() => {
       const startedAt = performance.now();
-      const summary = createFastScatterNavigatorSummary({
-        binCount,
-        domain: calculateFastScatterDomain(plottedDataset.columns, plottedDataset.spec).x,
-        x: plottedDataset.columns.x,
-      });
-      setNavigatorSummary(summary);
-      onRendererMetrics((previous) =>
-        updateRendererMetrics(previous, {
-          at: performance.now(),
-          detail: JSON.stringify({
-            binCount: summary.bins.length,
-            operation: 'navigator-summary',
+      const domain = plottedDataset.domain?.x ??
+        calculateFastScatterDomain(plottedDataset.columns, plottedDataset.spec).x;
+      const summaryPromise = webgpuStreamingSource === undefined
+        ? Promise.resolve(createFastScatterNavigatorSummary({
+            binCount,
+            domain,
+            x: plottedDataset.columns.x,
+          }))
+        : createFastScatterNavigatorSummaryCooperatively({
+            binCount,
+            domain,
+            isCancelled: () => cancelled,
+            x: plottedDataset.columns.x,
+          });
+      void summaryPromise.then((summary) => {
+        if (cancelled || summary === null) return;
+        setNavigatorSummary(summary);
+        onRendererMetrics((previous) =>
+          updateRendererMetrics(previous, {
+            at: performance.now(),
+            detail: JSON.stringify({
+              binCount: summary.bins.length,
+              operation: 'navigator-summary',
+            }),
+            durationMs: performance.now() - startedAt,
+            phase: 'interaction',
+            pointCount: plottedDataset.columns.x.length,
           }),
-          durationMs: performance.now() - startedAt,
-          phase: 'interaction',
-          pointCount: plottedDataset.columns.x.length,
-        }),
-      );
+        );
+      });
     });
-  }, [engineLayout, onRendererMetrics, plottedDataset]);
+    return () => {
+      cancelled = true;
+      cancelScheduledWork();
+    };
+  }, [
+    engineLayout,
+    onRendererMetrics,
+    plottedDataset,
+    webgpuStreamingComplete,
+    webgpuStreamingSource,
+  ]);
 
   useEffect(() => {
-    if (plottedDataset === null || engineLayout === null || fastViewport === null) {
+    if (
+      plottedDataset === null || engineLayout === null || fastViewport === null ||
+      (webgpuStreamingSource !== undefined && !webgpuStreamingComplete)
+    ) {
       return;
     }
 
     return scheduleAfterFirstPaint(() => {
+      const dataDomain = plottedDataset.domain;
+      if (
+        dataDomain !== undefined &&
+        doesFastScatterViewportCoverDomain(fastViewport, dataDomain, plottedDataset.spec)
+      ) {
+        setOutOfRangeResult({
+          candidateCount: 0,
+          durationMs: 0,
+          markerCount: 0,
+          markers: [],
+        });
+        return;
+      }
       const result = computeFastScatterOutOfRangeMarkers({
         columns: plottedDataset.columns,
         plotRects: engineLayout.plotRects,
         sampleStride: Math.max(
           1,
-          Math.ceil(plottedDataset.columns.x.length / 1_000_000),
+          Math.ceil(
+            plottedDataset.columns.x.length /
+              (webgpuStreamingSource === undefined ? 1_000_000 : 100_000),
+          ),
         ),
         spec: plottedDataset.spec,
         viewport: fastViewport,
@@ -6487,7 +6837,14 @@ function PlaceholderChartShell({
         }),
       );
     });
-  }, [engineLayout, fastViewport, onRendererMetrics, plottedDataset]);
+  }, [
+    engineLayout,
+    fastViewport,
+    onRendererMetrics,
+    plottedDataset,
+    webgpuStreamingComplete,
+    webgpuStreamingSource,
+  ]);
 
   const routeEngineOverlays = useMemo<readonly ScatterOverlayDescriptor[]>(() => {
     if (
@@ -7914,6 +8271,90 @@ function formatRange(range: { min: number; max: number } | undefined): string {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(3);
+}
+
+async function createFastScatterNavigatorSummaryCooperatively({
+  binCount,
+  domain,
+  isCancelled,
+  x,
+}: {
+  binCount: number;
+  domain: FastScatterRange;
+  isCancelled: () => boolean;
+  x: FastScatterDisplayColumns['x'];
+}): Promise<FastScatterNavigatorSummary | null> {
+  const normalizedDomain = normalizeDemoNavigatorDomain(domain);
+  const count = Math.max(1, Math.floor(binCount));
+  const span = Math.max(1e-9, normalizedDomain.max - normalizedDomain.min);
+  const bins = Array.from({ length: count }, (_, index) => {
+    const minX = normalizedDomain.min + (index / count) * span;
+    const maxX = normalizedDomain.min + ((index + 1) / count) * span;
+    return {
+      count: 0,
+      maxY: 0,
+      minX,
+      x: (minX + maxX) / 2,
+    };
+  });
+  let maxCount = 0;
+  let sliceStartedAt = performance.now();
+
+  for (let index = 0; index < x.length; index += 1) {
+    const value = x[index];
+    if (Number.isFinite(value)) {
+      const binIndex = Math.min(
+        count - 1,
+        Math.max(0, Math.floor(((value! - normalizedDomain.min) / span) * count)),
+      );
+      const bin = bins[binIndex]!;
+      bin.count += 1;
+      maxCount = Math.max(maxCount, bin.count);
+    }
+    if (
+      index > 0 && index % 4_096 === 0 &&
+      performance.now() - sliceStartedAt >= 4
+    ) {
+      await yieldToAnimationFrame();
+      if (isCancelled()) return null;
+      sliceStartedAt = performance.now();
+    }
+  }
+
+  if (maxCount > 0) {
+    for (const bin of bins) bin.maxY = bin.count / maxCount;
+  }
+  return { bins, domain: normalizedDomain, maxCount };
+}
+
+function normalizeDemoNavigatorDomain(domain: FastScatterRange): FastScatterRange {
+  if (
+    !Number.isFinite(domain.min) || !Number.isFinite(domain.max) ||
+    domain.min > domain.max
+  ) {
+    return { min: 0, max: 1 };
+  }
+  return domain.min === domain.max
+    ? { min: domain.min - 0.5, max: domain.max + 0.5 }
+    : domain;
+}
+
+function yieldToAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+function doesFastScatterViewportCoverDomain(
+  viewport: FastScatterViewport,
+  domain: FastScatterDataDomain,
+  spec: FastScatterPlotSpec,
+): boolean {
+  if (viewport.x.min > domain.x.min || viewport.x.max < domain.x.max) return false;
+  return spec.plots.every((plot) => {
+    const viewportRange = viewport.yByPlot[plot.id];
+    const domainRange = domain.yByPlot[plot.id];
+    return viewportRange !== undefined && domainRange !== undefined &&
+      viewportRange.min <= domainRange.min && viewportRange.max >= domainRange.max;
+  });
 }
 
 function scheduleAfterFirstPaint(callback: () => void): () => void {

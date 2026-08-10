@@ -88,6 +88,18 @@ keep the WebGL2 factory as a host-controlled fallback where WebGPU is not a hard
 requirement. The complete copy/fallback recipe is in
 [docs/source-copy-integration.md](../../docs/source-copy-integration.md#migrating-an-existing-webgl2-scatter).
 
+For live data, import `createFastScatterWebgpuStreamingPlot` from
+`m-charts/m-scatter-webgpu` and pass a transport-neutral `AsyncIterable` of
+typed-column batches. The first batch creates the plot; subsequent batches are
+appended to persistent GPU buffers. Final count is optional, while
+`expectedCount` and `initialCapacity` are allocation hints. Completion and
+cancellation are exposed through `plot.streaming`; `getColumns()` exposes the
+currently loaded prefix for application overlays. High-volume producers may
+supply one compact `packedStyles` word per point and a source-level `idAt`
+resolver to avoid retaining expanded style arrays and ID strings. During
+ingestion the renderer uses bounded previews; it schedules the static-equivalent
+exact/LOD frame only after the source signals completion.
+
 See [docs/source-copy-integration.md](../../docs/source-copy-integration.md) for
 copy matrices, worker setup, CSS/overlay responsibilities, and validation steps.
 

@@ -34,6 +34,7 @@ import type {
   FastScatterRendererLike,
   FastScatterRendererViewportUpdateContext,
 } from '../../m-scatter/engine/index.js';
+import type { FastScatterRendererAppendOptions } from '../../m-scatter/engine/types.js';
 import {
   createWebgpuContext,
   WebgpuTimestampProfiler,
@@ -46,6 +47,7 @@ import {
 } from './shaders.js';
 import {
   encodeFastScatterWebgpuRange,
+  encodeFastScatterWebgpuValue,
   packFastScatterWebgpuStyle,
 } from './packing.js';
 import { buildFastScatterWebgpuBubbleAggregation } from './aggregation.js';
@@ -108,6 +110,7 @@ interface GpuResources {
   maxPointSize: number;
   pipelines: readonly [GPURenderPipeline, GPURenderPipeline, GPURenderPipeline];
   plots: PlotResources[];
+  pointCapacity: number;
   rotationBuffer: GPUBuffer;
   selectedBuffer: GPUBuffer;
   selectedCapacity: number;
@@ -181,6 +184,8 @@ const MAX_UPLOAD_STAGING_BYTES =
 const INVALID_POINT_INDEX = 0xffff_ffff;
 const INTERACTION_CACHE_OVERSCAN = 1.5;
 export const FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT = 1_000_000;
+const STREAMING_PREVIEW_POINTS_PER_SUBPLOT = 25_000;
+const STREAMING_PREVIEW_INTERVAL_MS = 50;
 const OVERVIEW_REPRESENTATIVE_BLOCK_SIZE = 4_096;
 const PLOT_UNIFORM_SCRATCH = new ArrayBuffer(UNIFORM_BYTES);
 const COMPOSITE_UNIFORM_SCRATCH = new Float32Array(
@@ -190,13 +195,14 @@ const COMPOSITE_UNIFORM_SCRATCH = new Float32Array(
 function calculateWebgpuBufferRequirements(
   columns: FastScatterPointColumns,
   hasPackedStyles: boolean,
+  pointCapacity = columns.x.length,
 ): { requiredBufferSize: number; requiredStorageBufferBindingSize: number } {
   const hasPerPointStyles = hasPackedStyles || columns.color !== undefined ||
     columns.opacity !== undefined || columns.rotation !== undefined ||
     columns.shape !== undefined || columns.size !== undefined;
-  const coordinateBytes = Float32Array.BYTES_PER_ELEMENT * columns.x.length;
+  const coordinateBytes = Float32Array.BYTES_PER_ELEMENT * pointCapacity;
   const styleBytes = hasPerPointStyles
-    ? STYLE_STRIDE_BYTES * columns.x.length
+    ? STYLE_STRIDE_BYTES * pointCapacity
     : STYLE_STRIDE_BYTES;
   const styleAllocationBytes = styleBytes > 128 * 1024 * 1024
     ? Math.ceil(styleBytes / (STYLE_STRIDE_BYTES * 2)) * STYLE_STRIDE_BYTES
@@ -238,6 +244,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   private firstFrameResolved = false;
   private firstInteractiveFrame: Promise<void>;
   private interactiveFrameResolved = false;
+  private inFlightCachedFrameCount = 0;
   private inFlightExactFrameCount = 0;
   private gpu: GpuResources | null = null;
   private gpuTimer: WebgpuTimestampProfiler | null = null;
@@ -251,11 +258,16 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   private lastVisiblePointCount = 0;
   private options: FastScatterControllerOptions;
   private pendingDraw = false;
+  private pointCapacity: number;
   private sampleReady = false;
   private rebuildVersion = 0;
   private coalescedFrameCount = 0;
   private submittedFrameCount = 0;
   private settledFrameCount = 0;
+  private streamingAppendPending = false;
+  private streamingQueuedUploadBytes = 0;
+  private streamingPreviewTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private nextStreamingPreviewAt = 0;
   private widthCssPx = 0;
   private resolveFirstFrame!: () => void;
   private resolveInteractiveFrame!: () => void;
@@ -267,6 +279,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       indexedStyle: _indexedStyle,
       lifecycle: _lifecycle,
       packedStyles: _packedStyles,
+      pointCapacity: _pointCapacity,
       requestTimestampQuery: _requestTimestampQuery,
       ...options
     } = rendererOptions;
@@ -275,6 +288,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     void _indexedStyle;
     void _lifecycle;
     void _packedStyles;
+    this.pointCapacity = normalizePointCapacity(_pointCapacity, options.columns.x.length);
     void _requestTimestampQuery;
     this.options = options;
     this.firstFrameComplete = new Promise<void>((resolve) => {
@@ -346,6 +360,167 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       this.exactRequested = true;
       this.scheduleDraw();
     }
+  }
+
+  async appendData({
+    capacity,
+    columns,
+    maxPointSize,
+    packedStyles,
+    startPoint,
+  }: FastScatterRendererAppendOptions): Promise<void> {
+    if (this.disposed) return;
+    const previousCount = this.options.columns.x.length;
+    if (startPoint !== previousCount || columns.x.length < startPoint) {
+      throw new Error(
+        `Streamed scatter append starts at ${startPoint}; expected ${previousCount}.`,
+      );
+    }
+    validatePointColumns(columns, this.options.spec);
+    const nextPointCapacity = normalizePointCapacity(capacity, columns.x.length);
+    const context = this.context;
+    const gpu = this.gpu;
+    if (context === null || gpu === null) {
+      this.options = { ...this.options, columns };
+      this.pointCapacity = nextPointCapacity;
+      return;
+    }
+
+    if (nextPointCapacity > gpu.pointCapacity) {
+      growGpuPointResources(
+        context.device,
+        gpu,
+        nextPointCapacity,
+        startPoint,
+      );
+      if (this.disposed || this.gpu !== gpu) return;
+    }
+    const indexedXRangeCompatible = isIndexedXRangeCompatible(
+      columns.x,
+      startPoint,
+      gpu.xIndexedMode,
+    );
+    if (!indexedXRangeCompatible) {
+      throw new Error(
+        'Streamed scatter x values changed an indexed x layout detected in the first batch.',
+      );
+    }
+    // Queue growth before publishing the larger logical count. Later writes and
+    // draws execute after the GPU-to-GPU prefix copies on the same queue.
+    this.options = { ...this.options, columns };
+    this.pointCapacity = nextPointCapacity;
+
+    const startedAt = performance.now();
+    let uploadBytes = 0;
+    if (gpu.xIndexedMode === 0) {
+      uploadBytes += uploadEncodedColumnRange(
+        context.device.queue,
+        gpu.x,
+        columns.x,
+        startPoint,
+        columns.x.length,
+      );
+    }
+    const uploadedY = new Set<GPUBuffer>();
+    for (const plot of gpu.plots) {
+      if (uploadedY.has(plot.y.buffer)) continue;
+      const values = columns.y[plot.yKey];
+      if (values === undefined) continue;
+      uploadedY.add(plot.y.buffer);
+      uploadBytes += uploadEncodedColumnRange(
+        context.device.queue,
+        plot.y,
+        values,
+        startPoint,
+        columns.x.length,
+      );
+    }
+    if (gpu.styleMode === 0) {
+      const appendedPointCount = columns.x.length - startPoint;
+      if (packedStyles !== undefined && packedStyles.length !== appendedPointCount) {
+        throw new Error(
+          `Streamed scatter append supplied ${packedStyles.length} packed styles for ${appendedPointCount} points.`,
+        );
+      }
+      const packed = packedStyles ?? new Uint32Array(appendedPointCount);
+      const theme = this.options.theme ?? DEFAULT_THEME;
+      if (packedStyles === undefined) {
+        for (let index = startPoint; index < columns.x.length; index += 1) {
+          const style = packFastScatterWebgpuStyle(
+            columns,
+            index,
+            theme.defaultPointColor,
+          );
+          packed[index - startPoint] = compactStyleWords(style.color, style.meta);
+          gpu.maxPointSize = Math.max(gpu.maxPointSize, style.size);
+        }
+      } else if (maxPointSize === undefined) {
+        for (const word of packed) {
+          gpu.maxPointSize = Math.max(gpu.maxPointSize, ((word >>> 29) & 0x7) + 1);
+        }
+      } else {
+        gpu.maxPointSize = Math.max(gpu.maxPointSize, maxPointSize);
+      }
+      writeStyleQueueData(
+        context.device.queue,
+        gpu,
+        startPoint * STYLE_STRIDE_BYTES,
+        packed,
+      );
+      uploadBytes += packed.byteLength;
+    }
+
+    gpu.xSorted = gpu.xSorted && (
+      gpu.xIndexedMode !== 0 || isNondecreasingRange(columns.x, startPoint)
+    );
+    gpu.uploadBytes += uploadBytes;
+    this.streamingQueuedUploadBytes += uploadBytes;
+    this.aggregationWasm = null;
+    this.aggregationWasmAttempted = false;
+    this.aggregateDirty = true;
+    this.aggregateVisualDirty = true;
+    // Appending points makes the cached frame incomplete, but it does not make
+    // it unsafe to transform. Keep the last completed frame available for
+    // interaction while the next exact frame is queued. This is especially
+    // important when a large stream appends faster than the GPU can render:
+    // discarding the cache here would stall every zoom/pan behind the in-flight
+    // point draw even though a usable frame is already resident.
+    this.sampleReady = false;
+    this.exactRequested = true;
+    this.streamingAppendPending = true;
+    this.emitMetrics({
+      durationMs: performance.now() - startedAt,
+      phase: 'buffer-upload',
+      pointCount: columns.x.length,
+      uploadBytes,
+      detail: JSON.stringify({
+        backend: 'webgpu',
+        capacity: gpu.pointCapacity,
+        operation: 'stream-append',
+        startPoint,
+        uploadBytes,
+      }),
+    });
+    this.scheduleStreamingPreview();
+    if (this.streamingQueuedUploadBytes >= MAX_UPLOAD_STAGING_BYTES) {
+      // Bound implementation-owned writeBuffer staging. Awaiting the queue
+      // yields the event loop, so cached pointer interaction remains live while
+      // the producer applies backpressure instead of forcing a synchronous
+      // driver-side allocation on a later batch.
+      this.streamingQueuedUploadBytes = 0;
+      await context.device.queue.onSubmittedWorkDone();
+    }
+  }
+
+  finishDataAppend(): void {
+    if (this.disposed) return;
+    if (this.streamingPreviewTimer !== null) {
+      globalThis.clearTimeout(this.streamingPreviewTimer);
+      this.streamingPreviewTimer = null;
+    }
+    this.streamingAppendPending = false;
+    this.exactRequested = true;
+    this.scheduleDraw();
   }
 
   updateViewport(
@@ -449,6 +624,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const requirements = calculateWebgpuBufferRequirements(
       this.options.columns,
       this.rendererOptions.packedStyles !== undefined,
+      this.pointCapacity,
     );
     const visualizationMode = normalizeFastScatterVisualizationMode(
       this.options.visualizationMode,
@@ -477,6 +653,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       aggregationWasm: wasmDiagnostics,
       backend: 'webgpu',
       pointCount: this.options.columns.x.length,
+      pointCapacity: this.pointCapacity,
       ready: this.context !== null && this.gpu !== null,
       selectedPointCount: this.gpu?.selectedCount ?? 0,
       selectedStorageBytes: (this.gpu?.selectedCapacity ?? 1) * Uint32Array.BYTES_PER_ELEMENT,
@@ -544,6 +721,10 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       globalThis.cancelAnimationFrame(this.animationFrame);
       this.animationFrame = 0;
     }
+    if (this.streamingPreviewTimer !== null) {
+      globalThis.clearTimeout(this.streamingPreviewTimer);
+      this.streamingPreviewTimer = null;
+    }
     this.destroyResources();
     this.gpuTimer?.dispose();
     this.gpuTimer = null;
@@ -561,7 +742,11 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         columns.color !== undefined || columns.opacity !== undefined ||
         columns.rotation !== undefined || columns.shape !== undefined ||
         columns.size !== undefined;
-      const requirements = calculateWebgpuBufferRequirements(columns, hasPerPointStyles);
+      const requirements = calculateWebgpuBufferRequirements(
+        columns,
+        hasPerPointStyles,
+        this.pointCapacity,
+      );
       const context = await createWebgpuContext({
         canvas: this.rendererOptions.canvas,
         onDeviceLost: (info) => this.handleDeviceLost(info),
@@ -629,6 +814,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       this.rendererOptions.indexedStyle === true,
       this.rendererOptions.packedStyles,
       this.options.hoverIndex,
+      this.pointCapacity,
     );
     if (this.disposed || version !== this.rebuildVersion) {
       destroyGpuResources(next);
@@ -742,7 +928,11 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const cachedFrame = !this.exactRequested && this.cacheReady && this.cacheSnapshot !== null;
     if (!cachedFrame && this.inFlightExactFrameCount >= 1) {
       this.coalescedFrameCount += 1;
-      this.pendingDraw = true;
+      // A preview requested while another streaming preview is still running
+      // is already stale. Drop it instead of turning `pendingDraw` into a
+      // continuous GPU loop. `finishDataAppend` clears the streaming flag, so
+      // the final static-equivalent frame is still guaranteed to run next.
+      if (!this.streamingAppendPending) this.pendingDraw = true;
       return;
     }
     if (cachedFrame) {
@@ -846,11 +1036,14 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       ),
       0,
     );
-    const lodPointBudget = visibleCount <= FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT
-      ? FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT
+    const maximumRenderedPoints = this.streamingAppendPending
+      ? STREAMING_PREVIEW_POINTS_PER_SUBPLOT
+      : FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT;
+    const lodPointBudget = visibleCount <= maximumRenderedPoints
+      ? maximumRenderedPoints
       : Math.max(
           1,
-          FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT - maxVisibleOverviewCount,
+          maximumRenderedPoints - maxVisibleOverviewCount,
         );
     const lodRange = calculateFastScatterWebgpuLodRange(
       visibleRange.start,
@@ -1203,6 +1396,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         lodPointCount,
         lodPointBudget,
         lodStride,
+        streamingPreview: this.streamingAppendPending,
         settledExact: lodStride === 1,
         settledPointCoverage: visibleCount === 0 ? 1 : lodPointCount / visibleCount,
         progressiveExact: false,
@@ -1520,6 +1714,11 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       this.disposed || context === null || gpu === null || snapshot === null ||
       canvas.width <= 0 || canvas.height <= 0
     ) return;
+    if (this.inFlightCachedFrameCount >= 1) {
+      this.coalescedFrameCount += 1;
+      this.pendingDraw = true;
+      return;
+    }
     this.ensureCacheTexture(context.device, context.format, gpu, canvas.width, canvas.height);
     if (!this.cacheReady) {
       this.exactRequested = true;
@@ -1699,11 +1898,14 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     timingFrame?.submitted();
     this.submittedFrameCount += 1;
     if (frameKind === 'exact') this.inFlightExactFrameCount += 1;
+    else this.inFlightCachedFrameCount += 1;
     void context.device.queue.onSubmittedWorkDone().catch(() => undefined).then(() => {
       if (this.disposed) return;
       if (frameKind === 'exact') {
         this.inFlightExactFrameCount = Math.max(0, this.inFlightExactFrameCount - 1);
         this.settledFrameCount += 1;
+      } else {
+        this.inFlightCachedFrameCount = Math.max(0, this.inFlightCachedFrameCount - 1);
       }
       if (resolvesInteractiveFrame && !this.interactiveFrameResolved) {
         this.interactiveFrameResolved = true;
@@ -1718,6 +1920,25 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         this.scheduleDraw();
       }
     });
+  }
+
+  private scheduleStreamingPreview(): void {
+    if (this.streamingPreviewTimer !== null || this.disposed) return;
+    const now = performance.now();
+    const delayMs = Math.max(0, this.nextStreamingPreviewAt - now);
+    if (delayMs === 0) {
+      this.nextStreamingPreviewAt = now + STREAMING_PREVIEW_INTERVAL_MS;
+      this.exactRequested = true;
+      this.scheduleDraw();
+      return;
+    }
+    this.streamingPreviewTimer = globalThis.setTimeout(() => {
+      this.streamingPreviewTimer = null;
+      if (this.disposed || !this.streamingAppendPending) return;
+      this.nextStreamingPreviewAt = performance.now() + STREAMING_PREVIEW_INTERVAL_MS;
+      this.exactRequested = true;
+      this.scheduleDraw();
+    }, delayMs);
   }
 
   private handleDeviceLost(info: GPUDeviceLostInfo): void {
@@ -2098,23 +2319,30 @@ async function createGpuResources(
   indexedStyle: boolean,
   packedStyles: FastScatterWebgpuPackedStyles | undefined,
   hoverIndex: FastScatterControllerOptions['hoverIndex'],
+  requestedPointCapacity = columns.x.length,
 ): Promise<GpuResources> {
   const { device } = context;
   const theme = requestedTheme ?? DEFAULT_THEME;
+  const pointCapacity = normalizePointCapacity(requestedPointCapacity, columns.x.length);
   const yKeys = [...new Set(spec.plots.map((plot) => plot.yKey))];
   const indexedXMode = await resolveIndexedXMode(columns.x);
   const [x, styles, sourceMapping, encodedYColumns] = await Promise.all([
     indexedXMode !== 0
       ? createIdentityEncodedColumn(device, 'm-scatter-webgpu/x-identity')
-      : createEncodedColumn(device, columns.x, 'm-scatter-webgpu/x'),
-    createStyleBuffer(device, columns, theme, packedStyles),
+      : createEncodedColumn(device, columns.x, 'm-scatter-webgpu/x', pointCapacity),
+    createStyleBuffer(device, columns, theme, packedStyles, pointCapacity),
     createSourceMapping(columns),
     Promise.all(yKeys.map(async (yKey) => {
       const values = columns.y[yKey];
       if (values === undefined) throw new Error(`Fast scatter y column "${yKey}" is missing.`);
       return [
         yKey,
-        await createEncodedColumn(device, values, `m-scatter-webgpu/y/${yKey}`),
+        await createEncodedColumn(
+          device,
+          values,
+          `m-scatter-webgpu/y/${yKey}`,
+          pointCapacity,
+        ),
       ] as const;
     })),
   ]);
@@ -2412,6 +2640,7 @@ async function createGpuResources(
     maxPointSize: indexedStyle && styles.constant ? 5 : styles.maxPointSize,
     pipelines: [pointPipeline, pointPipeline, pointPipeline],
     plots,
+    pointCapacity,
     rotationBuffer,
     selectedBuffer,
     selectedCapacity: 1,
@@ -2438,8 +2667,10 @@ async function createEncodedColumn(
   device: GPUDevice,
   values: ArrayLike<number>,
   label: string,
+  requestedCapacity = values.length,
 ): Promise<EncodedColumn> {
   const pointCount = values.length;
+  const pointCapacity = normalizePointCapacity(requestedCapacity, pointCount);
   const compactUint8 = values instanceof Uint8Array;
   const compactUint16 = values instanceof Uint16Array;
   const compactInteger = compactUint8 || compactUint16;
@@ -2447,8 +2678,8 @@ async function createEncodedColumn(
   const byteLength = Math.max(
     EMPTY_BUFFER_BYTES,
     compactInteger
-      ? Math.ceil(pointCount / (compactUint8 ? 4 : 2)) * Uint32Array.BYTES_PER_ELEMENT
-      : pointCount * Float32Array.BYTES_PER_ELEMENT,
+      ? Math.ceil(pointCapacity / (compactUint8 ? 4 : 2)) * Uint32Array.BYTES_PER_ELEMENT
+      : pointCapacity * Float32Array.BYTES_PER_ELEMENT,
   );
   if (byteLength > device.limits.maxStorageBufferBindingSize) {
     throw new Error(
@@ -2477,7 +2708,7 @@ async function createEncodedColumn(
     label,
     mappedAtCreation: true,
     size: byteLength,
-    usage: GPUBufferUsage.STORAGE,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE,
   });
   const mapped = buffer.getMappedRange();
   if (compactUint8) {
@@ -2503,6 +2734,224 @@ async function createEncodedColumn(
     encoding: { offset, scale },
     storageMode: compactUint8 ? 1 : compactUint16 ? 2 : 0,
   };
+}
+
+function growGpuPointResources(
+  device: GPUDevice,
+  gpu: GpuResources,
+  requestedCapacity: number,
+  pointCount: number,
+): void {
+  const capacity = normalizePointCapacity(requestedCapacity, pointCount);
+  if (capacity <= gpu.pointCapacity) return;
+  const encoder = device.createCommandEncoder({
+    label: 'm-scatter-webgpu/stream-capacity-growth',
+  });
+  const replacements = new Map<GPUBuffer, GPUBuffer>();
+  const replaceEncoded = (column: EncodedColumn, label: string) => {
+    const size = encodedColumnAllocationBytes(column.storageMode, capacity);
+    if (
+      size > device.limits.maxBufferSize ||
+      size > device.limits.maxStorageBufferBindingSize
+    ) {
+      throw new Error(
+        `Streamed scatter capacity ${capacity} requires a ${size}-byte ${label} buffer, exceeding this device's limits.`,
+      );
+    }
+    const next = device.createBuffer({
+      label,
+      size,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE,
+    });
+    encoder.copyBufferToBuffer(column.buffer, 0, next, 0, column.byteLength);
+    replacements.set(column.buffer, next);
+  };
+
+  if (gpu.xIndexedMode === 0) replaceEncoded(gpu.x, 'm-scatter-webgpu/x-stream-grown');
+  const uniqueY = new Set<EncodedColumn>();
+  for (const plot of gpu.plots) uniqueY.add(plot.y);
+  for (const column of uniqueY) {
+    replaceEncoded(column, 'm-scatter-webgpu/y-stream-grown');
+  }
+
+  let nextStyles: StyleGpuBuffers | null = null;
+  if (gpu.styleMode === 0) {
+    const nextStyleBytes = Math.max(STYLE_STRIDE_BYTES, capacity * STYLE_STRIDE_BYTES);
+    nextStyles = createStyleGpuBuffers(device, nextStyleBytes);
+    encodeStyleBufferCopies(
+      encoder,
+      gpu.styleBuffer,
+      gpu.styleBufferHigh,
+      gpu.styleSplitBytes,
+      nextStyles,
+      pointCount * STYLE_STRIDE_BYTES,
+    );
+  }
+
+  device.queue.submit([encoder.finish()]);
+
+  const oldBuffers = [...replacements.keys()];
+  if (gpu.xIndexedMode === 0) gpu.x.buffer = replacements.get(gpu.x.buffer)!;
+  for (const column of uniqueY) column.buffer = replacements.get(column.buffer)!;
+  if (nextStyles !== null) {
+    const oldLow = gpu.styleBuffer;
+    const oldHigh = gpu.styleBufferHigh;
+    gpu.styleBuffer = nextStyles.buffer;
+    gpu.styleBufferHigh = nextStyles.bufferHigh;
+    gpu.styleSplitBytes = nextStyles.splitBytes;
+    gpu.styleByteLength = Math.max(STYLE_STRIDE_BYTES, capacity * STYLE_STRIDE_BYTES);
+    oldLow.destroy();
+    oldHigh.destroy();
+  }
+  gpu.pointCapacity = capacity;
+  recreatePlotBindGroups(device, gpu);
+  for (const buffer of oldBuffers) buffer.destroy();
+}
+
+function encodedColumnAllocationBytes(storageMode: 0 | 1 | 2, capacity: number): number {
+  return Math.max(
+    EMPTY_BUFFER_BYTES,
+    storageMode === 1
+      ? Math.ceil(capacity / 4) * Uint32Array.BYTES_PER_ELEMENT
+      : storageMode === 2
+        ? Math.ceil(capacity / 2) * Uint32Array.BYTES_PER_ELEMENT
+        : capacity * Float32Array.BYTES_PER_ELEMENT,
+  );
+}
+
+function uploadEncodedColumnRange(
+  queue: GPUQueue,
+  column: EncodedColumn,
+  values: FastScatterPointColumns['x'],
+  startPoint: number,
+  endPoint: number,
+): number {
+  if (endPoint <= startPoint) return 0;
+  const pointsPerWord = column.storageMode === 1 ? 4 : column.storageMode === 2 ? 2 : 1;
+  const alignedStart = Math.floor(startPoint / pointsPerWord) * pointsPerWord;
+  const alignedEnd = Math.ceil(endPoint / pointsPerWord) * pointsPerWord;
+  let upload: ArrayBufferView;
+  if (column.storageMode === 1) {
+    if (alignedStart === startPoint && alignedEnd === endPoint) {
+      upload = (values as Uint8Array).subarray(alignedStart, endPoint);
+    } else {
+      const bytes = new Uint8Array(alignedEnd - alignedStart);
+      bytes.set((values as Uint8Array).subarray(alignedStart, endPoint));
+      upload = bytes;
+    }
+  } else if (column.storageMode === 2) {
+    if (alignedStart === startPoint && alignedEnd === endPoint) {
+      upload = (values as Uint16Array).subarray(alignedStart, endPoint);
+    } else {
+      const words = new Uint16Array(alignedEnd - alignedStart);
+      words.set((values as Uint16Array).subarray(alignedStart, endPoint));
+      upload = words;
+    }
+  } else if (
+    values instanceof Float32Array &&
+    column.encoding.offset === 0 && column.encoding.scale === 1
+  ) {
+    upload = values.subarray(alignedStart, endPoint);
+  } else {
+    const encoded = new Float32Array(endPoint - alignedStart);
+    for (let index = alignedStart; index < endPoint; index += 1) {
+      encoded[index - alignedStart] = encodeFastScatterWebgpuValue(
+        values[index] ?? Number.NaN,
+        column.encoding,
+      );
+    }
+    upload = encoded;
+  }
+  const destinationOffset = encodedColumnByteOffset(column.storageMode, alignedStart);
+  queue.writeBuffer(
+    column.buffer,
+    destinationOffset,
+    upload.buffer,
+    upload.byteOffset,
+    upload.byteLength,
+  );
+  column.byteLength = encodedColumnAllocationBytes(column.storageMode, endPoint);
+  return upload.byteLength;
+}
+
+function encodedColumnByteOffset(storageMode: 0 | 1 | 2, pointIndex: number): number {
+  return storageMode === 1
+    ? Math.floor(pointIndex / 4) * Uint32Array.BYTES_PER_ELEMENT
+    : storageMode === 2
+      ? Math.floor(pointIndex / 2) * Uint32Array.BYTES_PER_ELEMENT
+      : pointIndex * Float32Array.BYTES_PER_ELEMENT;
+}
+
+function encodeStyleBufferCopies(
+  encoder: GPUCommandEncoder,
+  sourceLow: GPUBuffer,
+  sourceHigh: GPUBuffer,
+  sourceSplitBytes: number,
+  destination: StyleGpuBuffers,
+  byteLength: number,
+): void {
+  let offset = 0;
+  while (offset < byteLength) {
+    const sourceBoundary = sourceSplitBytes === 0 ? byteLength : sourceSplitBytes;
+    const destinationBoundary = destination.splitBytes === 0
+      ? byteLength
+      : destination.splitBytes;
+    const sourceBuffer = sourceSplitBytes !== 0 && offset >= sourceSplitBytes
+      ? sourceHigh
+      : sourceLow;
+    const destinationBuffer = destination.splitBytes !== 0 && offset >= destination.splitBytes
+      ? destination.bufferHigh
+      : destination.buffer;
+    const sourceOffset = sourceBuffer === sourceHigh ? offset - sourceSplitBytes : offset;
+    const destinationOffset = destinationBuffer === destination.bufferHigh
+      ? offset - destination.splitBytes
+      : offset;
+    const nextBoundary = Math.min(
+      byteLength,
+      sourceBuffer === sourceHigh ? byteLength : sourceBoundary,
+      destinationBuffer === destination.bufferHigh ? byteLength : destinationBoundary,
+    );
+    const count = nextBoundary - offset;
+    encoder.copyBufferToBuffer(
+      sourceBuffer,
+      sourceOffset,
+      destinationBuffer,
+      destinationOffset,
+      count,
+    );
+    offset = nextBoundary;
+  }
+}
+
+function writeStyleQueueData(
+  queue: GPUQueue,
+  gpu: Pick<GpuResources, 'styleBuffer' | 'styleBufferHigh' | 'styleSplitBytes'>,
+  destinationOffset: number,
+  data: Uint32Array,
+): void {
+  const queueData: Uint32Array<ArrayBuffer> = data.buffer instanceof ArrayBuffer
+    ? new Uint32Array(data.buffer, data.byteOffset, data.length)
+    : new Uint32Array(data);
+  const split = gpu.styleSplitBytes;
+  if (split === 0 || destinationOffset + queueData.byteLength <= split) {
+    queue.writeBuffer(gpu.styleBuffer, destinationOffset, queueData);
+    return;
+  }
+  if (destinationOffset >= split) {
+    queue.writeBuffer(gpu.styleBufferHigh, destinationOffset - split, queueData);
+    return;
+  }
+  const lowWords = (split - destinationOffset) / Uint32Array.BYTES_PER_ELEMENT;
+  queue.writeBuffer(gpu.styleBuffer, destinationOffset, queueData.subarray(0, lowWords));
+  queue.writeBuffer(gpu.styleBufferHigh, 0, queueData.subarray(lowWords));
+}
+
+function isNondecreasingRange(values: ArrayLike<number>, startPoint: number): boolean {
+  const start = Math.max(1, startPoint);
+  for (let index = start; index < values.length; index += 1) {
+    if ((values[index] ?? Number.NaN) < (values[index - 1] ?? Number.NaN)) return false;
+  }
+  return true;
 }
 
 function createIdentityEncodedColumn(device: GPUDevice, label: string): EncodedColumn {
@@ -2547,6 +2996,7 @@ async function createStyleBuffer(
   columns: FastScatterPointColumns,
   theme: FastScatterTheme,
   packedStyles?: FastScatterWebgpuPackedStyles,
+  requestedCapacity = columns.x.length,
 ): Promise<{
   buffer: GPUBuffer;
   bufferHigh: GPUBuffer;
@@ -2557,6 +3007,7 @@ async function createStyleBuffer(
   splitBytes: number;
 }> {
   const pointCount = columns.x.length;
+  const pointCapacity = normalizePointCapacity(requestedCapacity, pointCount);
   const overviewIndices: number[] = [];
   let overviewBlock = -1;
   let overviewMaxSize = -1;
@@ -2599,7 +3050,7 @@ async function createStyleBuffer(
         `Streamed WebGPU styles contain ${packedStyles.pointCount} points; expected ${pointCount}.`,
       );
     }
-    const byteLength = pointCount * STYLE_STRIDE_BYTES;
+    const byteLength = Math.max(STYLE_STRIDE_BYTES, pointCapacity * STYLE_STRIDE_BYTES);
     const buffers = createStyleGpuBuffers(device, byteLength, true);
     const mapped = mapStyleBuffers(buffers);
     if ('data' in packedStyles) {
@@ -2664,7 +3115,7 @@ async function createStyleBuffer(
   const constant =
     columns.color === undefined && columns.opacity === undefined &&
     columns.rotation === undefined && columns.shape === undefined && columns.size === undefined;
-  const styleCount = constant ? 1 : pointCount;
+  const styleCount = constant ? 1 : pointCapacity;
   const byteLength = Math.max(STYLE_STRIDE_BYTES, styleCount * STYLE_STRIDE_BYTES);
   const buffers = createStyleGpuBuffers(device, byteLength, true);
   const mapped = mapStyleBuffers(buffers);
@@ -2672,8 +3123,9 @@ async function createStyleBuffer(
   const chunk = new ArrayBuffer(chunkPointCount * STYLE_STRIDE_BYTES);
   const words = new Uint32Array(chunk);
   let maxPointSize = 0;
-  for (let start = 0; start < styleCount; start += chunkPointCount) {
-    const count = Math.min(chunkPointCount, styleCount - start);
+  const populatedStyleCount = constant ? 1 : pointCount;
+  for (let start = 0; start < populatedStyleCount; start += chunkPointCount) {
+    const count = Math.min(chunkPointCount, populatedStyleCount - start);
     for (let index = 0; index < count; index += 1) {
       const style = packFastScatterWebgpuStyle(columns, start + index, theme.defaultPointColor);
       words[index] = compactStyleWords(style.color, style.meta);
@@ -2722,7 +3174,7 @@ function createStyleGpuBuffers(
       `Packed styles require ${byteLength} bytes, exceeding the two-buffer storage capacity on this device.`,
     );
   }
-  const usage = GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE;
+  const usage = GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE;
   return {
     buffer: device.createBuffer({
       label: 'm-scatter-webgpu/styles-low',
@@ -3373,6 +3825,29 @@ function isNondecreasing(values: ArrayLike<number>): boolean {
   return true;
 }
 
+function isIndexedXRangeCompatible(
+  values: ArrayLike<number>,
+  startPoint: number,
+  indexedMode: 0 | 1 | 2,
+): boolean {
+  if (indexedMode === 0) return true;
+  for (let index = startPoint; index < values.length; index += 1) {
+    if (indexedMode === 1) {
+      if (values[index] !== index) return false;
+      continue;
+    }
+    const blockStart = Math.floor(index / 24) * 24;
+    const offset = index - blockStart;
+    const expected = offset >= 2 && offset < 5
+      ? blockStart + 2
+      : offset >= 14 && offset < 16
+        ? blockStart + 14
+        : index;
+    if (values[index] !== expected) return false;
+  }
+  return true;
+}
+
 function destroyGpuResources(gpu: GpuResources): void {
   const destroyedY = new Set<GPUBuffer>();
   const destroyedOverview = new Set<GPUBuffer>();
@@ -3402,7 +3877,30 @@ function destroyGpuResources(gpu: GpuResources): void {
 
 function calculateGpuResidentBytes(gpu: GpuResources): number {
   const uniformBytes = gpu.plots.length * UNIFORM_BYTES * 5;
-  return gpu.uploadBytes + gpu.cacheWidth * gpu.cacheHeight * 8 +
+  const coordinateBytes = gpu.xIndexedMode === 0
+    ? encodedColumnAllocationBytes(gpu.x.storageMode, gpu.pointCapacity)
+    : EMPTY_BUFFER_BYTES;
+  const uniqueY = new Set(gpu.plots.map((plot) => plot.y));
+  const yBytes = [...uniqueY].reduce(
+    (total, column) => total + encodedColumnAllocationBytes(
+      column.storageMode,
+      gpu.pointCapacity,
+    ),
+    0,
+  );
+  const overviewBuffers = new Map<GPUBuffer, number>();
+  for (const plot of gpu.plots) {
+    overviewBuffers.set(
+      plot.overviewBuffer,
+      Math.max(EMPTY_BUFFER_BYTES, plot.overviewCount * Uint32Array.BYTES_PER_ELEMENT),
+    );
+  }
+  const overviewBytes = [...overviewBuffers.values()].reduce(
+    (total, bytes) => total + bytes,
+    0,
+  );
+  return coordinateBytes + yBytes + gpu.styleByteLength + overviewBytes +
+    gpu.cacheWidth * gpu.cacheHeight * 8 +
     gpu.selectedCapacity * Uint32Array.BYTES_PER_ELEMENT + uniformBytes +
     ROTATION_LUT_BYTES;
 }
@@ -3507,6 +4005,12 @@ function nextPowerOfTwo(value: number): number {
 
 function normalizeDevicePixelRatio(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.min(4, value) : 1;
+}
+
+function normalizePointCapacity(value: number | undefined, pointCount: number): number {
+  const minimum = Math.max(1, pointCount);
+  if (value === undefined || !Number.isSafeInteger(value) || value < minimum) return minimum;
+  return value;
 }
 
 function clamp(value: number, min: number, max: number): number {

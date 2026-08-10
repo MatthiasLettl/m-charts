@@ -16,6 +16,8 @@ export interface FastScatterWebgpuRendererOptions
   indexedStyle?: boolean;
   lifecycle?: FastScatterWebgpuRendererLifecycle;
   packedStyles?: FastScatterWebgpuPackedStyles;
+  /** Optional initial allocation capacity for progressive append sources. */
+  pointCapacity?: number;
   requestTimestampQuery?: boolean;
 }
 
@@ -70,6 +72,7 @@ export interface FastScatterWebgpuDiagnostics {
   lodStride: number;
   overviewRepresentativeCount: number;
   pointCount: number;
+  pointCapacity: number;
   ready: boolean;
   residentBytes: number;
   requiredBufferSize: number;

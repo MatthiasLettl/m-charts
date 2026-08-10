@@ -16,6 +16,8 @@ export interface FastScatterWebgpuPlotOptions
   indexedStyle?: boolean;
   /** Supplies prepacked WebGPU style storage. Creation-only. */
   packedStyles?: FastScatterWebgpuPackedStyles;
+  /** Optional initial GPU point capacity. Creation-only. */
+  pointCapacity?: number;
   /** Requests optional GPU timestamp-query support. Creation-only. */
   requestTimestampQuery?: boolean;
 }
@@ -23,6 +25,7 @@ export interface FastScatterWebgpuPlotOptions
 export type FastScatterWebgpuPlotUpdateOptions = Partial<Omit<
   FastScatterWebgpuPlotOptions,
   'aggregationBackend' | 'indexedStyle' | 'packedStyles' | 'requestTimestampQuery'
+  | 'pointCapacity'
 >>;
 
 export interface FastScatterWebgpuPlotInstance extends FastScatterPlotInstance {

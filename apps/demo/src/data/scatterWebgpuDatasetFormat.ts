@@ -52,6 +52,7 @@ export interface ScatterWebgpuGeneratedPage {
   manifest: ScatterWebgpuPagedManifestPage;
   pageIndex: number;
   styleBuffer: ArrayBuffer;
+  timestampOriginNs: string;
 }
 
 export const SCATTER_WEBGPU_SCHEMA: FastScatterDatasetSchema = {
@@ -117,9 +118,10 @@ interface ScatterFastRecord {
   shape: ScatterShape;
   signalValue: number;
   size: number;
-  timestampNs: string;
+  timestampOffsetNs: number;
 }
 
+const TIMESTAMP_ORIGIN_NS = 1_717_200_000_000_000_000n;
 const X_SCALE_MS = 250;
 const SIGNAL_SCALE = 0.0025;
 const OVERLAP_BLOCK_SIZE = 24;
@@ -170,7 +172,7 @@ export function createScatterWebgpuDatasetGenerator(options: {
       for (let localIndex = 0; localIndex < pagePointCount; localIndex += 1) {
         const index = startIndex + localIndex;
         const record = createScatterFastRecord(index, count, random);
-        timestampOriginNs ??= BigInt(record.timestampNs);
+        timestampOriginNs ??= TIMESTAMP_ORIGIN_NS + BigInt(record.timestampOffsetNs);
         phase[localIndex] = phaseToCode(record.phase);
         accepted[localIndex] = record.accepted ? 1 : 0;
         signalValue[localIndex] = Math.round(record.signalValue / SIGNAL_SCALE);
@@ -211,7 +213,13 @@ export function createScatterWebgpuDatasetGenerator(options: {
         styleByteLength: styleBuffer.byteLength,
       };
       pages.push(manifestPage);
-      return { coordinateBuffer, manifest: manifestPage, pageIndex, styleBuffer };
+      return {
+        coordinateBuffer,
+        manifest: manifestPage,
+        pageIndex,
+        styleBuffer,
+        timestampOriginNs: (timestampOriginNs ?? 0n).toString(),
+      };
     },
     createManifest(): ScatterWebgpuPagedManifest {
       if (pages.length !== pageCount) {
@@ -267,14 +275,14 @@ function createScatterFastRecord(
   const wave = Math.sin(progress * Math.PI * 18);
   const signalValue = 42 + progress * 28 + wave * 9 + (accepted ? -4 : 18) +
     (random() - 0.5) * 8;
-  const jitterNs = BigInt(Math.floor(random() * 40_000_000));
+  const jitterNs = Math.floor(random() * 40_000_000);
   const overlapProfile = createOverlapProfile(index, count);
   const phase = overlapProfile?.phase ?? basePhase;
   const phaseIndex = { cooldown: 3, idle: 0, ramp: 1, steady: 2 }[phase];
   const finalAccepted = overlapProfile?.accepted ?? accepted;
   const finalSignalValue = overlapProfile?.signalValue ?? round(clamp(signalValue, 1, 160), 3);
-  const timestampNs = overlapProfile?.timestampNs ??
-    (1_717_200_000_000_000_000n + BigInt(index) * 250_000_000n + jitterNs).toString();
+  const timestampOffsetNs = overlapProfile?.timestampOffsetNs ??
+    index * 250_000_000 + jitterNs;
   const phaseColor = {
     cooldown: '#7C3AED',
     idle: '#64748B',
@@ -297,13 +305,13 @@ function createScatterFastRecord(
     shape,
     signalValue: finalSignalValue,
     size: rangeSample?.size ?? round(clamp(size, 3, 6.5), 2),
-    timestampNs,
+    timestampOffsetNs,
   };
 }
 
 function createOverlapProfile(index: number, count: number): Pick<
   ScatterFastRecord,
-  'accepted' | 'phase' | 'signalValue' | 'timestampNs'
+  'accepted' | 'phase' | 'signalValue' | 'timestampOffsetNs'
 > | null {
   const anchor = getOverlapAnchorIndex(index, count);
   if (anchor === null) return null;
@@ -326,10 +334,8 @@ function createOverlapProfile(index: number, count: number): Pick<
       clamp(42 + progress * 28 + wave * 9 + (accepted ? -4 : 18) + modulation, 1, 160),
       3,
     ),
-    timestampNs: (
-      1_717_200_000_000_000_000n + BigInt(anchor) * 250_000_000n +
-      BigInt((anchor * 17 + count * 29) % 40_000_000)
-    ).toString(),
+    timestampOffsetNs: anchor * 250_000_000 +
+      ((anchor * 17 + count * 29) % 40_000_000),
   };
 }
 
@@ -381,7 +387,7 @@ function packStyle(record: ScatterFastRecord): number {
     ((rotation + Math.PI) / fullTurn) * 63,
   )));
   const encodedSize = Math.max(0, Math.min(7, Math.round(record.size - 1)));
-  const color = Number.parseInt(record.color.replace('#', ''), 16);
+  const color = COLOR_VALUES[record.color];
   const red = (color >>> 16) & 0xff;
   const green = (color >>> 8) & 0xff;
   const blue = color & 0xff;
@@ -396,6 +402,15 @@ function packStyle(record: ScatterFastRecord): number {
     (encodedSize << 29)
   ) >>> 0;
 }
+
+const COLOR_VALUES: Record<string, number> = {
+  '#059669': 0x059669,
+  '#2563EB': 0x2563eb,
+  '#64748B': 0x64748b,
+  '#7C3AED': 0x7c3aed,
+  '#DC2626': 0xdc2626,
+  '#EA580C': 0xea580c,
+};
 
 function createRandom(seed: number): () => number {
   let state = seed >>> 0;

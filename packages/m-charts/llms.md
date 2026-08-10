@@ -90,8 +90,8 @@ For the supported external source-copy path:
 
 1. Keep `plot-engine`, `m-scatter/core`, and `m-scatter/engine`.
 2. Add `plot-engine-webgpu`, `m-scatter-webgpu/core`, and
-   `m-scatter-webgpu/engine`; add `m-scatter-webgpu/adapters` only for
-   known-count record streams.
+  `m-scatter-webgpu/engine`; add `m-scatter-webgpu/adapters` for known-count
+  record streams or unknown-count live typed-batch streams.
 3. Keep data/core imports from `m-scatter/core` and change the factory import
    from `m-scatter/engine/index.js` to
    `m-scatter-webgpu/engine/index.js`.
@@ -310,11 +310,16 @@ of every unvisited eligible block is greater than the exact best 2D distance,
 so categorical hover remains exact without scanning the full pixel-radius
 window. Point-size changes bypass cached image morphology and render the bounded
 settled pass directly; route URL writes are idle-debounced.
-The optional `m-scatter-webgpu/adapters` layer converts known-count JSON
-streams or application `AsyncIterable` record batches into preallocated typed
-columns. It incrementally parses the top-level `records` array and preserves
-datetime origins across batch boundaries; callers must pass the stream rather
-than an already materialized JSON object.
+The optional `m-scatter-webgpu/adapters` layer provides live append through
+`createFastScatterWebgpuStreamingPlot`. It creates the plot after the first
+typed-column batch, writes later ranges into persistent GPU buffers, and grows
+CPU and GPU capacity geometrically when the final count is unknown. Known
+`expectedCount` streams preallocate both stores unless `initialCapacity`
+explicitly requests a smaller GPU allocation. `expectedCount` is an optional
+allocation hint, not a correctness requirement.
+`createFastScatterWebgpuStreamSourceFromRecordBatches`
+bridges existing incremental JSON/application record sources; the older
+known-count materializing loader remains compatible.
 
 The WebGPU demo route accepts the same `tables=multi` URL mode as the WebGL2
 scatter route. Its `points` parameter changes only the primary table; a fixed

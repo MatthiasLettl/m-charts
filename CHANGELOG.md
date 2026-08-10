@@ -4,6 +4,28 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## WebGPU Scatter Streaming
+
+- Added non-breaking live typed-batch ingestion for WebGPU scatter plots. The
+  first batch creates an interactive plot and later batches append to persistent
+  coordinate/style buffers while draws remain animation-frame coalesced.
+- Made final stream size optional. Known counts preallocate typed CPU and GPU
+  storage; unknown streams grow both stores geometrically with GPU-to-GPU copies
+  of the loaded prefix.
+- Added progress, completion, abort, prepared-domain/viewport policies, an HTTP
+  JSON record-batch bridge, compact packed-style batches, and lazy global IDs.
+- Integrated local-worker and small paged-HTTP streaming samples into the
+  regular `/m-scatter-webgpu` demo route so they share its axes, interactions,
+  display modes, and sidebar. The former standalone URL now redirects there.
+- Kept the last completed GPU frame interactive during appends, bounded
+  in-progress stream previews to representative point draws, and deferred the
+  exact full-population frame until explicit stream completion. Streaming now
+  retains lazy IDs and batch-only packed styles, coalesces cached submissions,
+  drops superseded in-flight previews, periodically drains bounded upload
+  staging, and avoids redundant sortedness scans and compact upload copies. Demo
+  worker generation, progress state, navigator, and overflow bookkeeping no
+  longer perform large unused work on the interaction thread.
+
 ## WebGPU Parallel Coordinates
 
 - Added `m-charts/m-parallel-webgpu` as a public export/type superset of

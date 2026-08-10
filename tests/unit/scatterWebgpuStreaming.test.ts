@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 
 import {
   createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
   loadFastScatterRecordBatchSource,
   streamFastScatterJsonRecordBatches,
   type FastScatterDatasetSchema,
+  type FastScatterWebgpuStreamSource,
 } from '../../packages/m-charts/src/m-scatter-webgpu/index.ts';
 
 const schema: FastScatterDatasetSchema = {
@@ -73,6 +75,35 @@ assert.equal(compact.columns.ids[2], 'three');
 assert.equal(compact.columns.rotationDegrees, undefined);
 assert.equal(compact.columns.rotation, compact.columns.rotationRadians);
 
+const liveSource = createFastScatterWebgpuStreamSourceFromRecordBatches({
+  batches: (async function* () {
+    yield records.slice(0, 1);
+    yield records.slice(1);
+  })(),
+  count: records.length,
+  idAt: (index) => `live-${index}`,
+  schema,
+});
+assert.equal(liveSource.expectedCount, records.length);
+const liveBatches = [];
+for await (const batch of liveSource.batches) liveBatches.push(batch.columns);
+assert.deepEqual(liveBatches.map((columns) => columns.x.length), [1, 2]);
+assert.deepEqual(liveBatches.flatMap((columns) => [...columns.ids]), [
+  'live-0',
+  'live-1',
+  'live-2',
+]);
+assert.deepEqual(Array.from(liveBatches[1]!.sourceIndex ?? []), [1, 2]);
+assert.equal(liveBatches[0]!.y.value instanceof Float32Array, true);
+
+const unknownCountSource: FastScatterWebgpuStreamSource = {
+  batches: (async function* () {
+    yield { columns: liveBatches[0]! };
+  })(),
+  spec: liveSource.spec,
+};
+assert.equal(unknownCountSource.expectedCount, undefined);
+
 const datetimeSchema: FastScatterDatasetSchema = {
   version: 1,
   columns: [
@@ -103,6 +134,21 @@ const datetimeAxis = (
   }
 ).axisByColumn.timestampNs;
 assert.equal(datetimeAxis?.epochNsValues[2], datetimeRecords[2]!.timestampNs);
+
+const liveDatetimeSource = createFastScatterWebgpuStreamSourceFromRecordBatches({
+  batches: (async function* () {
+    yield datetimeRecords.slice(0, 2);
+    yield datetimeRecords.slice(2);
+  })(),
+  count: datetimeRecords.length,
+  schema: datetimeSchema,
+});
+const liveDatetimeBatches = [];
+for await (const batch of liveDatetimeSource.batches) {
+  liveDatetimeBatches.push(batch.columns);
+}
+assert.deepEqual(Array.from(liveDatetimeBatches[0]!.x), [0, 1000]);
+assert.deepEqual(Array.from(liveDatetimeBatches[1]!.x), [2000]);
 
 await assert.rejects(
   loadFastScatterRecordBatchSource(

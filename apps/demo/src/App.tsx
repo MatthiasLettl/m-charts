@@ -4,6 +4,7 @@ import { MParallelPlotRoute } from './routes/MParallelPlotRoute.tsx';
 import { MParallelPackageFixture } from './routes/MParallelPackageFixture.tsx';
 import { MScatterPackageFixture } from './routes/MScatterPackageFixture.tsx';
 import { MScatterPlotRoute } from './routes/MScatterPlotRoute.tsx';
+import { MScatterStreamingRoute } from './routes/MScatterStreamingRoute.tsx';
 import { MHistogramPackageFixture } from './routes/MHistogramPackageFixture.tsx';
 import { MHistogramPlotRoute } from './routes/MHistogramPlotRoute.tsx';
 
@@ -21,6 +22,7 @@ export default function App() {
         path="/m-scatter-webgpu-fixture"
         element={<MScatterPackageFixture rendererBackend="webgpu" />}
       />
+      <Route path="/m-scatter-webgpu-streaming" element={<MScatterStreamingRoute />} />
       <Route path="/m-parallel" element={<MParallelPlotRoute />} />
       <Route path="/m-parallel-fixture" element={<MParallelPackageFixture />} />
       <Route

@@ -39,6 +39,20 @@ test.beforeAll(() => {
     '--schema-out',
     `${dataDir}/scatter-fast-schema.json`,
   ]);
+  ensureData('scatter-webgpu-stream.json', [
+    '--kind',
+    'scatter-webgpu',
+    '--count',
+    '10000',
+    '--page-size',
+    '2500',
+    '--seed',
+    '1',
+    '--out',
+    `${dataDir}/scatter-webgpu-stream.json`,
+    '--schema-out',
+    `${dataDir}/scatter-fast-schema.json`,
+  ]);
   ensureData('mixed-table-e2e.secondary.json', [
     '--kind',
     'mixed-tables',
@@ -140,6 +154,10 @@ test('overview links only custom plot routes and preserves theme', async ({ page
     'href',
     '/m-scatter-webgpu?points=1000000&tables=multi&theme=dark',
   );
+  await expect(webgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
+    'href',
+    '/m-scatter-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
+  );
   const histogramWebgpuCard = page
     .locator('.prototype-card')
     .filter({ hasText: 'm-histogram WebGPU' });
@@ -208,7 +226,7 @@ test('m-histogram WebGPU route preserves the histogram surface and reports avail
 test('m-histogram WebGPU opt-in renders the exact million-row WASM aggregation', async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   test.skip(
     process.env.M_CHARTS_ENABLE_WEBGPU_E2E !== '1',
     'Set M_CHARTS_ENABLE_WEBGPU_E2E=1 on a WebGPU-capable machine.',
@@ -392,6 +410,183 @@ test('m-scatter WebGPU route exposes the dedicated backend or a useful availabil
     await expect(page.locator('[data-testid="scatter-fast-webgpu-canvas"]')).toHaveCount(1);
   }
 });
+
+test('m-scatter WebGPU streaming is integrated and preserves its viewport', async ({
+  page,
+}) => {
+  const localPointCount = Number(process.env.M_CHARTS_STREAM_E2E_POINTS ?? 1_000_000);
+  const validatePartialLargeStream = localPointCount >= 10_000_000 &&
+    process.env.M_CHARTS_STREAM_E2E_FULL !== '1';
+  test.setTimeout(localPointCount > 1_000_000 ? 600_000 : 120_000);
+  await page.goto('/m-scatter-webgpu-streaming?points=1000');
+  await expect(page).toHaveURL(/\/m-scatter-webgpu\?.*webgpuData=stream-local/u);
+
+  await page.goto(
+    '/m-scatter-webgpu-streaming?webgpuData=stream-http&xMin=100&xMax=500',
+  );
+  await expect(page).toHaveURL(/\/m-scatter-webgpu\?/u);
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  const diagnostics = page.getByTestId('scatter-fast-route-diagnostics');
+  await expect(chart).toBeVisible();
+  await expect(diagnostics).toHaveAttribute('data-webgpu-dataset-mode', 'stream');
+  await expect(diagnostics).toHaveAttribute('data-webgpu-stream-kind', 'http');
+  await expect(page.getByTestId('scatter-webgpu-table-mode')).toContainText('Streaming');
+  await expect(page.getByTestId('scatter-webgpu-stream-source')).toContainText('HTTP pages');
+  await expect(page.getByTestId('scatter-fast-hit-region')).toHaveCount(3);
+  const httpStreamCount = await page.evaluate(async () => {
+    const response = await fetch('/data/scatter-webgpu-stream.json');
+    return ((await response.json()) as { count: number }).count;
+  });
+  await expect
+    .poll(async () => chart.getAttribute('data-render-state'), { timeout: 30_000 })
+    .toMatch(/^(ready|error)$/u);
+
+  const status = await chart.getAttribute('data-render-state');
+  if (process.env.M_CHARTS_ENABLE_WEBGPU_E2E === '1') {
+    expect(status).toBe('ready');
+  }
+  if (status === 'ready') {
+    await expect(diagnostics).toHaveAttribute('data-webgpu-stream-status', 'complete', {
+      timeout: 30_000,
+    });
+    await expect(chart).toHaveAttribute('data-record-count', String(httpStreamCount));
+    expect(new URL(page.url()).searchParams.get('xMin')).toBe('100');
+    expect(new URL(page.url()).searchParams.get('xMax')).toBe('500');
+
+    await page.addInitScript(() => {
+      const state = {
+        lastFrameAt: 0,
+        maxFrameGapMs: 0,
+        maxLongTaskMs: 0,
+      };
+      (globalThis as typeof globalThis & {
+        __scatterStreamResponsiveness?: typeof state;
+      }).__scatterStreamResponsiveness = state;
+      const measureFrame = (at: number) => {
+        if (state.lastFrameAt > 0) {
+          state.maxFrameGapMs = Math.max(state.maxFrameGapMs, at - state.lastFrameAt);
+        }
+        state.lastFrameAt = at;
+        requestAnimationFrame(measureFrame);
+      };
+      requestAnimationFrame(measureFrame);
+      new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          state.maxLongTaskMs = Math.max(state.maxLongTaskMs, entry.duration);
+        }
+      }).observe({ entryTypes: ['longtask'] });
+    });
+    await page.goto(
+      `/m-scatter-webgpu?webgpuData=stream-local&points=${localPointCount}&__e2eScatterFastRouteStateHook=1`,
+    );
+    const localChart = page.getByTestId('scatter-fast-chart-shell');
+    const localDiagnostics = page.getByTestId('scatter-fast-route-diagnostics');
+    await expect(localDiagnostics).toHaveAttribute('data-webgpu-stream-kind', 'local');
+    await expect(localChart).toHaveAttribute('data-render-state', 'ready', { timeout: 120_000 });
+    await page.evaluate(() => {
+      const state = (globalThis as typeof globalThis & {
+        __scatterStreamResponsiveness?: {
+          lastFrameAt: number;
+          maxFrameGapMs: number;
+          maxLongTaskMs: number;
+        };
+      }).__scatterStreamResponsiveness;
+      if (state !== undefined) {
+        state.lastFrameAt = performance.now();
+        state.maxFrameGapMs = 0;
+        state.maxLongTaskMs = 0;
+      }
+    });
+    if (localPointCount >= 10_000_000) {
+      await expect.poll(async () => Number(
+        await page.getByTestId('scatter-webgpu-stream-progress').getAttribute('data-loaded-count'),
+      ), { timeout: 120_000 }).toBeGreaterThanOrEqual(1_000_000);
+      const streamingXSpan = await getScatterFastViewportXSpan(page);
+      const streamingHitRegion = page.getByTestId('scatter-fast-hit-region').last();
+      const streamingHitBox = await streamingHitRegion.boundingBox();
+      if (streamingHitBox === null) {
+        throw new Error('Streaming WebGPU hit region is unavailable during ingestion.');
+      }
+      await page.mouse.move(
+        streamingHitBox.x + streamingHitBox.width / 2,
+        streamingHitBox.y + streamingHitBox.height / 2,
+      );
+      await page.keyboard.down('Alt');
+      await page.mouse.wheel(0, -400);
+      await page.keyboard.up('Alt');
+      await expect.poll(() => getScatterFastViewportXSpan(page), { timeout: 2_000 })
+        .toBeLessThan(streamingXSpan);
+      await page.getByRole('button', { name: 'Reset viewport' }).click();
+      await expect.poll(async () => Number(
+        await page.getByTestId('scatter-webgpu-stream-progress').getAttribute('data-loaded-count'),
+      ), { timeout: 120_000 }).toBeGreaterThanOrEqual(2_000_000);
+      const responsiveness = await getScatterStreamResponsiveness(page);
+      expect(responsiveness.maxLongTaskMs).toBeLessThan(250);
+      expect(responsiveness.maxFrameGapMs).toBeLessThan(500);
+      if (validatePartialLargeStream) {
+        await page.goto('/');
+        return;
+      }
+    }
+    await expect(localDiagnostics).toHaveAttribute('data-webgpu-stream-status', 'complete', {
+      timeout: localPointCount > 1_000_000 ? 480_000 : 120_000,
+    });
+    await expect(localChart).toHaveAttribute('data-record-count', String(localPointCount));
+    await expect.poll(() => page.evaluate(() => {
+      const hook = (globalThis as typeof globalThis & {
+        __scatterFastRouteStateTestHook?: {
+          getWebgpuDiagnostics(): { cacheReady: boolean } | null;
+        };
+      }).__scatterFastRouteStateTestHook;
+      return hook?.getWebgpuDiagnostics()?.cacheReady ?? false;
+    })).toBe(true);
+
+    const initialXSpan = await getScatterFastViewportXSpan(page);
+    const hitRegion = page.getByTestId('scatter-fast-hit-region').last();
+    const hitBox = await hitRegion.boundingBox();
+    if (hitBox === null) throw new Error('Streaming WebGPU hit region is unavailable.');
+    await page.mouse.move(hitBox.x + hitBox.width / 2, hitBox.y + hitBox.height / 2);
+    await page.keyboard.down('Alt');
+    await page.mouse.wheel(0, -400);
+    await page.keyboard.up('Alt');
+    await expect.poll(() => getScatterFastViewportXSpan(page), { timeout: 2_000 })
+      .toBeLessThan(initialXSpan);
+  } else {
+    await expect(page.getByTestId('scatter-fast-render-error')).toContainText(/WebGPU|GPU adapter/u);
+  }
+});
+
+async function getScatterStreamResponsiveness(page: Page): Promise<{
+  maxFrameGapMs: number;
+  maxLongTaskMs: number;
+}> {
+  const responsiveness = await page.evaluate(() =>
+    (globalThis as typeof globalThis & {
+      __scatterStreamResponsiveness?: {
+        maxFrameGapMs: number;
+        maxLongTaskMs: number;
+      };
+    }).__scatterStreamResponsiveness ?? null,
+  );
+  if (responsiveness === null) {
+    throw new Error('Streaming responsiveness instrumentation is unavailable.');
+  }
+  return responsiveness;
+}
+
+async function getScatterFastViewportXSpan(page: Page): Promise<number> {
+  const span = await page.evaluate(() => {
+    const hook = (globalThis as typeof globalThis & {
+      __scatterFastRouteStateTestHook?: {
+        getFastViewport(): { x: { max: number; min: number } } | null;
+      };
+    }).__scatterFastRouteStateTestHook;
+    const x = hook?.getFastViewport()?.x;
+    return x === undefined ? null : x.max - x.min;
+  });
+  if (span === null) throw new Error('Fast scatter viewport is unavailable.');
+  return span;
+}
 
 test('m-scatter WebGPU combines its selected primary size with the fixed secondary table', async ({
   page,

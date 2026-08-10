@@ -373,6 +373,18 @@ assert.match(rendererSource, /calculateFastScatterWebgpuLodRange/u);
 assert.doesNotMatch(rendererSource, /TARGET_EXACT_CHUNK_GPU_MS/u);
 assert.match(rendererSource, /workTexture/u);
 assert.match(rendererSource, /createRenderPipelineAsync/u);
+const appendDataSource = rendererSource.slice(
+  rendererSource.indexOf('async appendData('),
+  rendererSource.indexOf('\n  updateViewport(', rendererSource.indexOf('async appendData(')),
+);
+assert.doesNotMatch(appendDataSource, /this\.cacheReady = false/u);
+assert.doesNotMatch(appendDataSource, /this\.cacheSnapshot = null/u);
+assert.match(appendDataSource, /this\.scheduleStreamingPreview\(\)/u);
+assert.match(rendererSource, /STREAMING_PREVIEW_POINTS_PER_SUBPLOT = 25_000/u);
+assert.match(rendererSource, /STREAMING_PREVIEW_INTERVAL_MS = 50/u);
+assert.match(rendererSource, /finishDataAppend\(\): void/u);
+assert.match(rendererSource, /if \(!this\.streamingAppendPending\) this\.pendingDraw = true/u);
+assert.match(rendererSource, /streamingQueuedUploadBytes >= MAX_UPLOAD_STAGING_BYTES/u);
 
 function listSourceFiles(directory: string): string[] {
   const files: string[] = [];

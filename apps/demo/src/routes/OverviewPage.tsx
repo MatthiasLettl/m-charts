@@ -33,6 +33,15 @@ export function OverviewPage() {
     themeMode,
     { preserveKeys: ['points', 'tables'] },
   );
+  const mScatterWebgpuStreamingTarget = createThemeAwareTo(
+    '/m-scatter-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      webgpuData: 'stream-local',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'webgpuData'] },
+  );
   const mParallelTarget = createThemeAwareTo(
     '/m-parallel',
     location.search,
@@ -157,6 +166,7 @@ export function OverviewPage() {
               <span className="prototype-card-actions">
                 <Link to={mScatterWebgpuTarget}>One table</Link>
                 <Link to={mScatterWebgpuMultiTarget}>Multiple tables</Link>
+                <Link to={mScatterWebgpuStreamingTarget}>Streaming</Link>
               </span>
             </span>
           </article>

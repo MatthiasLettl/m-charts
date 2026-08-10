@@ -15,6 +15,7 @@ export function createFastScatterWebgpuPlot(
     forceWebglUnavailable: _forceWebglUnavailable,
     indexedStyle,
     packedStyles,
+    pointCapacity,
     preserveDrawingBuffer: _preserveDrawingBuffer,
     requestTimestampQuery,
     rendererFactory: _rendererFactory,
@@ -48,6 +49,7 @@ export function createFastScatterWebgpuPlot(
           onError: (error) => lifecycle.onError(error),
         },
         packedStyles,
+        pointCapacity,
         requestTimestampQuery,
       });
       renderer = nextRenderer;

@@ -407,10 +407,14 @@ The demo routes are:
 - `/`: overview
 - `/m-scatter`, `/m-scatter?tables=multi`, `/m-scatter-fixture`
 - `/m-scatter-webgpu`, `/m-scatter-webgpu?tables=multi`,
-  `/m-scatter-webgpu-fixture` (`?points=1000000|10000000|25000000` selects
+  `/m-scatter-webgpu-fixture`, `/m-scatter-webgpu-streaming`
+  (`?points=1000000|10000000|25000000` selects
   the primary-table size; WebGPU dataset size, table mode, and X-axis/mode
   switches use a full page refresh to release the previous large CPU/GPU
-  resources)
+  resources; `?webgpuData=stream-local` generates the selected size in a worker,
+  while `?webgpuData=stream-http` fetches a small paged binary sample and
+  exercises unknown-count geometric buffer growth. The standalone streaming URL
+  is retained as a compatibility redirect.)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-parallel-webgpu`, `/m-parallel-webgpu?tables=multi`,
   `/m-parallel-webgpu-fixture`
