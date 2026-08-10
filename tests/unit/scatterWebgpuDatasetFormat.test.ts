@@ -4,6 +4,7 @@ import {
   createScatterWebgpuDatasetGenerator,
   SCATTER_WEBGPU_DATASET_FORMAT_VERSION,
 } from '../../apps/demo/src/data/scatterWebgpuDatasetFormat.ts';
+import { createScatterWebgpuLocalStreamDomain } from '../../apps/demo/src/data/scatterWebgpuStreaming.ts';
 
 function generate(count: number, pageSize: number) {
   const generator = createScatterWebgpuDatasetGenerator({ count, pageSize, seed: 1 });
@@ -39,6 +40,11 @@ for (let index = 0; index < first.pages.length; index += 1) {
 }
 
 assert.equal(first.manifest.domains.timestampNs?.max, 26);
+const streamingDomain = createScatterWebgpuLocalStreamDomain(101);
+assert.deepEqual(streamingDomain.x, { min: -4.9, max: 102.9 });
+assert.deepEqual(streamingDomain.yByPlot.phase, { min: -0.5, max: 3.5 });
+assert.deepEqual(streamingDomain.yByPlot.accepted, { min: -0.5, max: 1.5 });
+assert.deepEqual(streamingDomain.yByPlot.signal, { min: 6_200, max: 45_800 });
 assert.throws(
   () => createScatterWebgpuDatasetGenerator({ count: 10, pageSize: 4 }).createManifest(),
   /before all 3 pages/u,

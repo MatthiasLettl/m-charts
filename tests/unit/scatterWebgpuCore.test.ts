@@ -381,8 +381,9 @@ assert.doesNotMatch(appendDataSource, /this\.cacheReady = false/u);
 assert.doesNotMatch(appendDataSource, /this\.cacheSnapshot = null/u);
 assert.match(appendDataSource, /this\.scheduleStreamingPreview\(\)/u);
 assert.match(rendererSource, /STREAMING_PREVIEW_POINTS_PER_SUBPLOT = 25_000/u);
-assert.match(rendererSource, /STREAMING_PREVIEW_INTERVAL_MS = 50/u);
-assert.match(rendererSource, /finishDataAppend\(\): void/u);
+assert.match(rendererSource, /STREAMING_PREVIEW_INTERVAL_MS = 100/u);
+assert.match(rendererSource, /async finishDataAppend\(\): Promise<void>/u);
+assert.match(rendererSource, /await context\.device\.queue\.onSubmittedWorkDone\(\)/u);
 assert.match(rendererSource, /if \(!this\.streamingAppendPending\) this\.pendingDraw = true/u);
 assert.match(rendererSource, /streamingQueuedUploadBytes >= MAX_UPLOAD_STAGING_BYTES/u);
 

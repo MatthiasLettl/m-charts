@@ -4,6 +4,7 @@ import type {
   FastScatterPlotSpec,
   FastScatterPointColumns,
 } from 'm-charts/m-scatter';
+import { createPaddedFastScatterDomainRange } from 'm-charts/m-scatter';
 import type {
   FastScatterWebgpuStreamBatch,
   FastScatterWebgpuStreamSource,
@@ -21,7 +22,11 @@ export const SCATTER_WEBGPU_HTTP_STREAM_MANIFEST_URL =
 
 const X_SCALE_MS = 250;
 const SIGNAL_SCALE = 0.0025;
-const LOCAL_STREAM_BATCH_SIZE = 250_000;
+// Keep worker deliveries below a frame-sized main-thread copy/upload slice. The
+// stored dataset uses larger pages for throughput, but live streaming benefits
+// from smaller batches because each delivery is copied into the resident CPU
+// columns and queued into several GPU buffers before control returns to input.
+const LOCAL_STREAM_BATCH_SIZE = 65_536;
 
 export type ScatterWebgpuDemoStreamKind = 'http' | 'local';
 
@@ -42,27 +47,29 @@ export async function prepareScatterWebgpuDemoStream(options: {
     : createLocalStream(options.pointCount, options.signal);
   const iterator = prepared.source.batches[Symbol.asyncIterator]();
   const first = await iterator.next();
-  await iterator.return?.();
   if (first.done || first.value.columns.x.length === 0) {
+    await iterator.return?.();
     throw new Error('The WebGPU demo stream did not produce an initial batch.');
   }
   const firstBatch = first.value;
+  let claimed = false;
   const source: FastScatterWebgpuStreamSource = {
     ...prepared.source,
     batches: {
       async *[Symbol.asyncIterator]() {
-        yield firstBatch;
-        const fresh = prepared.source.batches[Symbol.asyncIterator]();
+        if (claimed) {
+          throw new Error('The prepared WebGPU demo stream was already consumed.');
+        }
+        claimed = true;
         try {
-          const duplicateFirst = await fresh.next();
-          if (duplicateFirst.done) return;
+          yield firstBatch;
           while (true) {
-            const next = await fresh.next();
+            const next = await iterator.next();
             if (next.done) return;
             yield next.value;
           }
         } finally {
-          await fresh.return?.();
+          await iterator.return?.();
         }
       },
     },
@@ -80,14 +87,14 @@ function createLocalStream(
   signal: AbortSignal,
 ): Omit<PreparedScatterWebgpuDemoStream, 'firstBatch'> {
   const idWidth = Math.max(6, String(Math.max(0, pointCount - 1)).length);
-  const domain = createStreamDomain(pointCount);
+  const rawDomain = createStreamRawDomain(pointCount);
   return {
     pointCount,
     source: {
       batches: {
         [Symbol.asyncIterator]: () => streamWorkerPages(pointCount, signal),
       },
-      domain,
+      domain: createPaddedStreamDomain(rawDomain),
       expectedCount: pointCount,
       idAt: (sourceIndex) => formatId('sf-', idWidth, sourceIndex),
       maxPointSize: 8,
@@ -108,13 +115,14 @@ async function createHttpStream(
   }
   const manifest = await response.json() as ScatterWebgpuPagedManifest;
   validateManifest(manifest);
+  const rawDomain = createManifestRawDomain(manifest);
   return {
     pointCount: manifest.count,
     source: {
       batches: {
         [Symbol.asyncIterator]: () => streamHttpPages(manifest, response.url, signal),
       },
-      domain: createManifestDomain(manifest),
+      domain: createPaddedStreamDomain(rawDomain),
       idAt: (sourceIndex) => formatId(manifest.idPrefix, manifest.idWidth, sourceIndex),
       initialCapacity: manifest.pages[0]?.count ?? 1,
       maxPointSize: manifest.maxPointSize,
@@ -148,7 +156,7 @@ async function* streamWorkerPages(
         message.page.manifest,
         message.page.coordinateBuffer,
         message.page.styleBuffer,
-        createStreamDomain(pointCount),
+        createStreamRawDomain(pointCount),
         'sf-',
         Math.max(6, String(Math.max(0, pointCount - 1)).length),
         BigInt(message.page.timestampOriginNs),
@@ -168,7 +176,7 @@ async function* streamHttpPages(
   manifestUrl: string,
   signal: AbortSignal,
 ): AsyncGenerator<FastScatterWebgpuStreamBatch> {
-  const domain = createManifestDomain(manifest);
+  const domain = createManifestRawDomain(manifest);
   for (const page of manifest.pages) {
     if (signal.aborted) throw signal.reason;
     const [coordinateResponse, styleResponse] = await Promise.all([
@@ -325,7 +333,13 @@ function createAxisMap(
   };
 }
 
-function createStreamDomain(pointCount: number): FastScatterDataDomain {
+export function createScatterWebgpuLocalStreamDomain(
+  pointCount: number,
+): FastScatterDataDomain {
+  return createPaddedStreamDomain(createStreamRawDomain(pointCount));
+}
+
+function createStreamRawDomain(pointCount: number): FastScatterDataDomain {
   return {
     x: {
       min: 0,
@@ -342,9 +356,9 @@ function createStreamDomain(pointCount: number): FastScatterDataDomain {
   };
 }
 
-function createManifestDomain(manifest: ScatterWebgpuPagedManifest): FastScatterDataDomain {
+function createManifestRawDomain(manifest: ScatterWebgpuPagedManifest): FastScatterDataDomain {
   return {
-    x: manifest.domains.timestampNs ?? createStreamDomain(manifest.count).x,
+    x: manifest.domains.timestampNs ?? createStreamRawDomain(manifest.count).x,
     yByPlot: {
       accepted: manifest.domains.accepted ?? { min: 0, max: 1 },
       phase: manifest.domains.phase ?? { min: -0.5, max: 3.5 },
@@ -352,6 +366,24 @@ function createManifestDomain(manifest: ScatterWebgpuPagedManifest): FastScatter
         min: Math.round(1 / SIGNAL_SCALE),
         max: Math.round(160 / SIGNAL_SCALE),
       },
+    },
+  };
+}
+
+function createPaddedStreamDomain(domain: FastScatterDataDomain): FastScatterDataDomain {
+  const axes = createAxisMap(domain, new Uint32Array(0), 0n, X_SCALE_MS);
+  return {
+    x: createPaddedFastScatterDomainRange(domain.x, axes.timestampNs),
+    yByPlot: {
+      accepted: createPaddedFastScatterDomainRange(
+        domain.yByPlot.accepted!,
+        axes.accepted,
+      ),
+      phase: createPaddedFastScatterDomainRange(domain.yByPlot.phase!, axes.phase),
+      signal: createPaddedFastScatterDomainRange(
+        domain.yByPlot.signal!,
+        axes.signalValue,
+      ),
     },
   };
 }

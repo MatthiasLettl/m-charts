@@ -185,7 +185,10 @@ const INVALID_POINT_INDEX = 0xffff_ffff;
 const INTERACTION_CACHE_OVERSCAN = 1.5;
 export const FAST_SCATTER_WEBGPU_MAX_RENDERED_POINTS_PER_SUBPLOT = 1_000_000;
 const STREAMING_PREVIEW_POINTS_PER_SUBPLOT = 25_000;
-const STREAMING_PREVIEW_INTERVAL_MS = 50;
+// Ten representative previews per second leave ample GPU time for cached
+// pointer interaction and buffer uploads while still making stream growth
+// visibly continuous. Interaction frames remain animation-frame driven.
+const STREAMING_PREVIEW_INTERVAL_MS = 100;
 const OVERVIEW_REPRESENTATIVE_BLOCK_SIZE = 4_096;
 const PLOT_UNIFORM_SCRATCH = new ArrayBuffer(UNIFORM_BYTES);
 const COMPOSITE_UNIFORM_SCRATCH = new Float32Array(
@@ -512,13 +515,22 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     }
   }
 
-  finishDataAppend(): void {
+  async finishDataAppend(): Promise<void> {
     if (this.disposed) return;
     if (this.streamingPreviewTimer !== null) {
       globalThis.clearTimeout(this.streamingPreviewTimer);
       this.streamingPreviewTimer = null;
     }
     this.streamingAppendPending = false;
+    const context = this.context;
+    const gpu = this.gpu;
+    if (context !== null && gpu !== null) {
+      // Do not overlap retained writeBuffer staging and preview work with the
+      // largest settled draw at the stream's peak resident size.
+      this.streamingQueuedUploadBytes = 0;
+      await context.device.queue.onSubmittedWorkDone();
+      if (this.disposed || this.context !== context || this.gpu !== gpu) return;
+    }
     this.exactRequested = true;
     this.scheduleDraw();
   }

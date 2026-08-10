@@ -550,7 +550,9 @@ export function MScatterPlotRoute({
   });
   const [streamProgress, setStreamProgress] =
     useState<FastScatterWebgpuLiveStreamProgress | null>(null);
-  const lastPublishedStreamCountRef = useRef(0);
+  const streamedColumnsRef = useRef<FastScatterPointColumns | null>(null);
+  const [streamedDisplayColumns, setStreamedDisplayColumns] =
+    useState<FastScatterDisplayColumns | null>(null);
   const tableMode = useMemo(() => parseFastRouteTableMode(searchParams), [searchParams]);
   const mixedTableFixtureUrl = useMemo(
     () => resolveFastPlotFixtureUrl(searchParams, MIXED_TABLE_FIXTURE_URL),
@@ -785,6 +787,12 @@ export function MScatterPlotRoute({
     progress: FastScatterWebgpuLiveStreamProgress,
     columns?: FastScatterPointColumns,
   ) => {
+    if (columns !== undefined && progress.complete) {
+      streamedColumnsRef.current = columns;
+      setStreamedDisplayColumns(
+        createStreamingRouteDisplayColumns(columns as FastScatterDisplayColumns),
+      );
+    }
     setStreamProgress((current) => {
       const updateInterval = (progress.expectedCount ?? 0) >= 1_000_000
         ? 1_000_000
@@ -793,23 +801,6 @@ export function MScatterPlotRoute({
           progress.loadedCount - current.loadedCount >= updateInterval
         ? progress
         : current;
-    });
-    if (columns === undefined || !progress.complete) return;
-    if (progress.loadedCount === lastPublishedStreamCountRef.current) return;
-    lastPublishedStreamCountRef.current = progress.loadedCount;
-    setDatasetState((current) => {
-      if (current.status !== 'loaded' || current.streaming === undefined) return current;
-      return {
-        ...current,
-        adaptedDataset: {
-          ...current.adaptedDataset,
-          columns: columns as FastScatterDisplayColumns,
-        },
-        bufferBuildMetrics: {
-          ...current.bufferBuildMetrics,
-          recordCount: columns.x.length,
-        },
-      };
     });
   }, []);
 
@@ -970,11 +961,11 @@ export function MScatterPlotRoute({
     }
 
     return createFastScatterSelectionState(
-      plottedDataset.columns,
+      streamedDisplayColumns ?? plottedDataset.columns,
       selectedSourceIndices,
       { sampleSize: SELECTION_SAMPLE_SIZE },
     );
-  }, [plottedDataset, selectedSourceIndices]);
+  }, [plottedDataset, selectedSourceIndices, streamedDisplayColumns]);
   const selectionCallbackPreview = useMemo(
     () => serializeFastScatterSelectionCallbackPreview(latestSelectionEvent),
     [latestSelectionEvent],
@@ -1437,7 +1428,7 @@ export function MScatterPlotRoute({
 
       const startedAt = performance.now();
       const text = serializeFastScatterSelectedRecordsForExport(
-        datasetState.adaptedDataset.columns,
+        streamedColumnsRef.current ?? datasetState.adaptedDataset.columns,
         selectedSourceIndices,
       );
       const durationMs = performance.now() - startedAt;
@@ -2061,6 +2052,9 @@ export function MScatterPlotRoute({
                     : undefined
                 }
                 webgpuStreamingComplete={streamProgress?.complete === true}
+                webgpuStreamingColumnsRef={streamedColumnsRef}
+                webgpuStreamingDisplayColumns={streamedDisplayColumns}
+                webgpuStreamingLoadedCount={streamProgress?.loadedCount}
                 onWebgpuStreamProgress={handleWebgpuStreamProgress}
               />
             )}
@@ -4097,6 +4091,41 @@ function normalizeFastScatterRouteMode(
     : mode;
 }
 
+function createStreamingRouteDisplayColumns(
+  columns: FastScatterDisplayColumns,
+): FastScatterDisplayColumns {
+  return {
+    ...columns,
+    x: createStreamingRouteNumericView(columns.x),
+    y: Object.fromEntries(
+      Object.entries(columns.y).map(([key, values]) => [
+        key,
+        createStreamingRouteNumericView(values),
+      ]),
+    ),
+  } as FastScatterDisplayColumns;
+}
+
+function createStreamingRouteNumericView<T extends ArrayLike<number>>(values: T): T {
+  return new Proxy({ length: values.length }, {
+    get(target, property) {
+      if (property === 'length') return target.length;
+      if (property === Symbol.iterator) {
+        return function* () {
+          for (let index = 0; index < target.length; index += 1) {
+            yield values[index];
+          }
+        };
+      }
+      if (typeof property === 'string' && /^(0|[1-9]\d*)$/u.test(property)) {
+        const index = Number(property);
+        return index < target.length ? values[index] : undefined;
+      }
+      return undefined;
+    },
+  }) as T;
+}
+
 function createFastScatterRouteDatasetForXMode(
   dataset: LoadedFastScatterDataset,
   xMode: FastScatterXMode,
@@ -6097,6 +6126,9 @@ function PlaceholderChartShell({
   webgpuAggregationBackend,
   webgpuStreamingSource,
   webgpuStreamingComplete = false,
+  webgpuStreamingColumnsRef,
+  webgpuStreamingDisplayColumns,
+  webgpuStreamingLoadedCount,
   onWebgpuStreamProgress,
 }: {
   rendererBackend: 'webgl2' | 'webgpu';
@@ -6141,6 +6173,9 @@ function PlaceholderChartShell({
   webgpuAggregationBackend: FastScatterWebgpuAggregationBackend;
   webgpuStreamingSource?: FastScatterWebgpuStreamSource;
   webgpuStreamingComplete?: boolean;
+  webgpuStreamingColumnsRef?: RefObject<FastScatterPointColumns | null>;
+  webgpuStreamingDisplayColumns?: FastScatterDisplayColumns | null;
+  webgpuStreamingLoadedCount?: number;
   onWebgpuStreamProgress: (
     progress: FastScatterWebgpuLiveStreamProgress,
     columns?: FastScatterPointColumns,
@@ -6158,7 +6193,7 @@ function PlaceholderChartShell({
       return;
     }
 
-    const columns = datasetState.adaptedDataset.columns;
+    const columns = webgpuStreamingDisplayColumns ?? datasetState.adaptedDataset.columns;
     window.__scatterFastSelectionTestHook = {
       exportSelectedIds: () =>
         materializeFastScatterSelectedIds(columns, selectedSourceIndices),
@@ -6176,7 +6211,7 @@ function PlaceholderChartShell({
     return () => {
       delete window.__scatterFastSelectionTestHook;
     };
-  }, [datasetState, selectedSourceIndices]);
+  }, [datasetState, selectedSourceIndices, webgpuStreamingDisplayColumns]);
 
   useEffect(() => {
     if (
@@ -6206,7 +6241,7 @@ function PlaceholderChartShell({
         const nextSourceIndex =
           Number.isSafeInteger(normalized) &&
           normalized >= 0 &&
-          normalized < plottedDataset.columns.x.length
+          normalized < (webgpuStreamingLoadedCount ?? plottedDataset.columns.x.length)
             ? normalized
             : null;
         plotRef.current?.commands.setHoverSourceIndex(nextSourceIndex);
@@ -6221,6 +6256,7 @@ function PlaceholderChartShell({
     hoverSourceIndex,
     plottedDataset,
     plotRef,
+    webgpuStreamingLoadedCount,
   ]);
 
   useEffect(() => {
@@ -6745,19 +6781,20 @@ function PlaceholderChartShell({
     let cancelled = false;
     const cancelScheduledWork = scheduleAfterFirstPaint(() => {
       const startedAt = performance.now();
+      const columns = webgpuStreamingColumnsRef?.current ?? plottedDataset.columns;
       const domain = plottedDataset.domain?.x ??
-        calculateFastScatterDomain(plottedDataset.columns, plottedDataset.spec).x;
+        calculateFastScatterDomain(columns, plottedDataset.spec).x;
       const summaryPromise = webgpuStreamingSource === undefined
         ? Promise.resolve(createFastScatterNavigatorSummary({
             binCount,
             domain,
-            x: plottedDataset.columns.x,
+            x: columns.x,
           }))
         : createFastScatterNavigatorSummaryCooperatively({
             binCount,
             domain,
             isCancelled: () => cancelled,
-            x: plottedDataset.columns.x,
+            x: columns.x,
           });
       void summaryPromise.then((summary) => {
         if (cancelled || summary === null) return;
@@ -6771,7 +6808,7 @@ function PlaceholderChartShell({
             }),
             durationMs: performance.now() - startedAt,
             phase: 'interaction',
-            pointCount: plottedDataset.columns.x.length,
+            pointCount: columns.x.length,
           }),
         );
       });
@@ -6785,6 +6822,7 @@ function PlaceholderChartShell({
     onRendererMetrics,
     plottedDataset,
     webgpuStreamingComplete,
+    webgpuStreamingColumnsRef,
     webgpuStreamingSource,
   ]);
 
@@ -6797,6 +6835,7 @@ function PlaceholderChartShell({
     }
 
     return scheduleAfterFirstPaint(() => {
+      const columns = webgpuStreamingColumnsRef?.current ?? plottedDataset.columns;
       const dataDomain = plottedDataset.domain;
       if (
         dataDomain !== undefined &&
@@ -6811,12 +6850,12 @@ function PlaceholderChartShell({
         return;
       }
       const result = computeFastScatterOutOfRangeMarkers({
-        columns: plottedDataset.columns,
+        columns,
         plotRects: engineLayout.plotRects,
         sampleStride: Math.max(
           1,
           Math.ceil(
-            plottedDataset.columns.x.length /
+            columns.x.length /
               (webgpuStreamingSource === undefined ? 1_000_000 : 100_000),
           ),
         ),
@@ -6843,6 +6882,7 @@ function PlaceholderChartShell({
     onRendererMetrics,
     plottedDataset,
     webgpuStreamingComplete,
+    webgpuStreamingColumnsRef,
     webgpuStreamingSource,
   ]);
 
@@ -6921,7 +6961,9 @@ function PlaceholderChartShell({
             data-cursor={engineCursor}
             data-focused-plot={focusedPlotId ?? 'all'}
             data-mode={effectiveMode}
-            data-record-count={plottedDataset.columns.x.length}
+            data-record-count={
+              webgpuStreamingLoadedCount ?? plottedDataset.columns.x.length
+            }
             data-render-policy="metrics-reported"
             data-render-state={engineRenderState.status}
             data-renderer={`${rendererBackend}-points`}
@@ -6954,7 +6996,11 @@ function PlaceholderChartShell({
           )}
           {engineLayout === null ? null : (
             <MScatterEngineOverlayLayer
-              columns={plottedDataset.columns}
+              columns={
+                hoverInspection !== null || measurementInspection !== null
+                  ? (webgpuStreamingDisplayColumns ?? plottedDataset.columns)
+                  : plottedDataset.columns
+              }
               heightCssPx={engineLayout.heightCssPx}
               hover={immediateHoverInspection}
               measurement={immediateMeasurementInspection}

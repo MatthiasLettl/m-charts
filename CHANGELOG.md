@@ -24,7 +24,14 @@ should remain unchanged.
   drops superseded in-flight previews, periodically drains bounded upload
   staging, and avoids redundant sortedness scans and compact upload copies. Demo
   worker generation, progress state, navigator, and overflow bookkeeping no
-  longer perform large unused work on the interaction thread.
+  longer perform large unused work on the interaction thread. Local worker
+  deliveries now stay within short interaction-friendly slices, prepared
+  streams reuse their first worker/page instead of regenerating it, and stream
+  completion drains staged GPU work before the settled draw. The demo retains
+  completed columns behind a ref instead of republishing the full typed-column
+  graph through React state.
+- Matched local-worker and HTTP stream viewports to static scatter datasets by
+  applying the shared axis-aware domain padding before the first streamed frame.
 
 ## WebGPU Parallel Coordinates
 

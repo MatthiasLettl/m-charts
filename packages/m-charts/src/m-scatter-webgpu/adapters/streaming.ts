@@ -285,6 +285,11 @@ export async function createFastScatterWebgpuStreamingPlot(
         loadedCount,
       };
       onStreamProgress?.(progress);
+      // A source can resolve its next batch entirely through microtasks (for
+      // example, decoded local pages). Explicitly yield once per append so
+      // pointer, wheel, paint, and React progress work are never starved by a
+      // long run of otherwise back-to-back CPU copies and GPU queue writes.
+      await yieldToBrowser();
     }
     if (abortController.signal.aborted) {
       throw abortController.signal.reason ??
