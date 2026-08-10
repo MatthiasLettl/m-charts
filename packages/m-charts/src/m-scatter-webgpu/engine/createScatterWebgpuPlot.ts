@@ -36,6 +36,7 @@ export function createFastScatterWebgpuPlot(
       const nextRenderer = new FastScatterWebgpuRenderer({
         ...rendererOptions,
         aggregationBackend,
+        dataDomain: _plotOptions.dataDomain,
         indexedStyle,
         lifecycle: {
           onContextLost: (info) => lifecycle.onContextLost(JSON.stringify({

@@ -24,10 +24,16 @@ import type {
 
 export interface FastScatterRecordBatchSource {
   readonly batches: AsyncIterable<readonly Readonly<Record<string, unknown>>[]>;
-  readonly count: number;
+  /** Optional final count. The legacy materializing loader requires it. */
+  readonly count?: number;
   readonly idAt?: (sourceIndex: number) => string;
   readonly numericStorage?: 'float32' | 'float64';
   readonly schema: FastScatterDatasetSchema;
+}
+
+export interface FastScatterKnownCountRecordBatchSource
+  extends FastScatterRecordBatchSource {
+  readonly count: number;
 }
 
 export interface FastScatterStreamProgress {
@@ -97,34 +103,44 @@ export interface LoadedFastScatterRecordBatchSource {
 
 export interface FastScatterJsonRecordBatchSourceOptions {
   readonly batchSize?: number;
-  readonly count: number;
+  readonly count?: number;
   readonly idAt?: (sourceIndex: number) => string;
   readonly numericStorage?: 'float32' | 'float64';
   readonly schema: FastScatterDatasetSchema;
 }
 
+export interface FastScatterKnownCountJsonRecordBatchSourceOptions
+  extends FastScatterJsonRecordBatchSourceOptions {
+  readonly count: number;
+}
+
 export interface FastScatterWebgpuDataSourcePlotOptions
   extends Omit<FastScatterWebgpuPlotOptions, 'columns' | 'spec' | 'viewport'> {
-  readonly dataSource: FastScatterRecordBatchSource;
+  readonly dataSource: FastScatterKnownCountRecordBatchSource;
   readonly onStreamProgress?: (progress: FastScatterStreamProgress) => void;
   readonly signal?: AbortSignal;
 }
 
 /**
  * Encodes application or streamed-JSON record batches one batch at a time for
- * the live WebGPU append API. The declared count is used only as a capacity
- * hint by the resulting source.
+ * the live WebGPU append API. A declared count becomes a capacity hint and
+ * validates the final number of records; it is optional for live loading.
  */
 export function createFastScatterWebgpuStreamSourceFromRecordBatches(
   source: FastScatterRecordBatchSource,
 ): FastScatterWebgpuStreamSource {
-  if (!Number.isSafeInteger(source.count) || source.count < 0) {
+  if (
+    source.count !== undefined &&
+    (!Number.isSafeInteger(source.count) || source.count < 0)
+  ) {
     throw new Error('A streamed scatter record source requires a non-negative record count.');
   }
   const empty = encodeFastScatterSchemaRows([], source.schema);
   return {
     batches: encodeLiveRecordBatches(source),
-    ...(source.count === 0 ? {} : { expectedCount: source.count }),
+    ...(source.count === undefined || source.count === 0
+      ? {}
+      : { expectedCount: source.count }),
     spec: empty.spec,
   };
 }
@@ -172,9 +188,21 @@ export async function createFastScatterWebgpuStreamingPlot(
   validateStreamCountHint(dataSource.initialCapacity, 'initialCapacity');
   throwIfAborted(signal);
 
+  const abortController = new AbortController();
+  const abortFromCaller = () => abortController.abort(signal?.reason);
+  signal?.addEventListener('abort', abortFromCaller, { once: true });
   const iterator = dataSource.batches[Symbol.asyncIterator]();
-  const first = await readNextNonEmptyBatch(iterator, signal);
+  let first: FastScatterWebgpuStreamBatch | null;
+  try {
+    first = await readNextNonEmptyBatch(iterator, abortController.signal);
+  } catch (error) {
+    signal?.removeEventListener('abort', abortFromCaller);
+    closeStreamIterator(iterator);
+    throw error;
+  }
   if (first === null) {
+    signal?.removeEventListener('abort', abortFromCaller);
+    closeStreamIterator(iterator);
     throw new Error('A streamed scatter source ended before supplying a non-empty batch.');
   }
   const firstCount = validateStreamBatch(first, dataSource.spec, 0);
@@ -207,108 +235,130 @@ export async function createFastScatterWebgpuStreamingPlot(
       : { expectedCount: dataSource.expectedCount }),
     loadedCount,
   };
-  onStreamProgress?.(progress);
-
-  const plot = createFastScatterWebgpuPlot(hostElement, {
-    ...plotOptions,
-    columns: createVisibleStreamColumns(storage, loadedCount),
-    dataDomain,
-    pointCapacity,
-    ...(first.packedStyles === undefined
-      ? {}
-      : {
-          packedStyles: {
-            data: first.packedStyles,
-            maxPointSize: dataSource.maxPointSize ?? getPackedStyleMaxPointSize(
-              first.packedStyles,
-              0,
-              loadedCount,
-            ),
-            styleStrideBytes: 4 as const,
-          },
-        }),
-    spec: dataSource.spec,
-    viewport: requestedViewport ?? createDefaultFastScatterViewport(dataDomain),
-  });
-  const abortController = new AbortController();
-  const abortFromCaller = () => abortController.abort(signal?.reason);
-  signal?.addEventListener('abort', abortFromCaller, { once: true });
+  let plot: FastScatterWebgpuPlotInstance;
+  try {
+    onStreamProgress?.(progress);
+    plot = createFastScatterWebgpuPlot(hostElement, {
+      ...plotOptions,
+      columns: createVisibleStreamColumns(storage, loadedCount),
+      dataDomain,
+      pointCapacity,
+      ...(first.packedStyles === undefined
+        ? {}
+        : {
+            packedStyles: {
+              data: first.packedStyles,
+              maxPointSize: dataSource.maxPointSize ?? getPackedStyleMaxPointSize(
+                first.packedStyles,
+                0,
+                loadedCount,
+              ),
+              styleStrideBytes: 4 as const,
+            },
+          }),
+      spec: dataSource.spec,
+      viewport: requestedViewport ?? createDefaultFastScatterViewport(dataDomain),
+    });
+  } catch (error) {
+    signal?.removeEventListener('abort', abortFromCaller);
+    if (!abortController.signal.aborted) abortController.abort(error);
+    closeStreamIterator(iterator);
+    throw error;
+  }
   let disposed = false;
+  let followGrowingViewport = viewportPolicy === 'expand';
+  const stopFollowingUserViewport = plot.on('viewportchange', () => {
+    followGrowingViewport = false;
+  });
 
   const done = (async () => {
-    await plot.interactive;
-    while (!abortController.signal.aborted) {
-      throwIfAborted(signal);
-      const result = await readStreamIteratorNext(iterator, abortController.signal);
-      if (result.done) break;
-      const batch = result.value;
-      const batchCount = validateStreamBatch(batch, dataSource.spec, loadedCount);
-      if (batchCount === 0) continue;
-      ensureStreamColumnCapacity(storage, loadedCount + batchCount);
-      appendStreamColumns(storage, batch, loadedCount);
-      const startPoint = loadedCount;
-      loadedCount += batchCount;
-      pointCapacity = growStreamPointCapacity(
-        pointCapacity,
-        loadedCount,
-        dataSource.expectedCount,
-      );
-      if (dataSource.domain === undefined) {
-        dataDomain = mergeStreamDomains(
-          dataDomain,
-          calculateFastScatterDomain(batch.columns, dataSource.spec),
+    let finishedAppend = false;
+    try {
+      await plot.interactive;
+      while (!abortController.signal.aborted) {
+        throwIfAborted(signal);
+        const result = await readStreamIteratorNext(iterator, abortController.signal);
+        if (result.done) break;
+        const batch = result.value;
+        const batchCount = validateStreamBatch(batch, dataSource.spec, loadedCount);
+        if (batchCount === 0) continue;
+        ensureStreamColumnCapacity(storage, loadedCount + batchCount);
+        appendStreamColumns(storage, batch, loadedCount);
+        const startPoint = loadedCount;
+        loadedCount += batchCount;
+        pointCapacity = growStreamPointCapacity(
+          pointCapacity,
+          loadedCount,
+          dataSource.expectedCount,
         );
+        if (dataSource.domain === undefined) {
+          dataDomain = mergeStreamDomains(
+            dataDomain,
+            calculateFastScatterDomain(batch.columns, dataSource.spec),
+          );
+        }
+        updateStreamAxisDomains(storage, dataDomain, dataSource.spec);
+        const columns = createVisibleStreamColumns(storage, loadedCount);
+        await appendFastScatterEngineData(plot, {
+          capacity: pointCapacity,
+          columns,
+          dataDomain,
+          ...(batch.packedStyles === undefined
+            ? {}
+            : { packedStyles: batch.packedStyles }),
+          ...(dataSource.maxPointSize === undefined
+            ? {}
+            : { maxPointSize: dataSource.maxPointSize }),
+          startPoint,
+        });
+        if (followGrowingViewport && dataSource.domain === undefined) {
+          plot.update({ viewport: createDefaultFastScatterViewport(dataDomain) });
+        }
+        progress = {
+          capacity: pointCapacity,
+          complete: false,
+          ...(dataSource.expectedCount === undefined
+            ? {}
+            : { expectedCount: dataSource.expectedCount }),
+          loadedCount,
+        };
+        onStreamProgress?.(progress);
+        // A source can resolve its next batch entirely through microtasks (for
+        // example, decoded local pages). Explicitly yield once per append so
+        // pointer, wheel, paint, and React progress work are never starved by a
+        // long run of otherwise back-to-back CPU copies and GPU queue writes.
+        await yieldToBrowser();
       }
-      updateStreamAxisDomains(storage, dataDomain, dataSource.spec);
-      const columns = createVisibleStreamColumns(storage, loadedCount);
-      await appendFastScatterEngineData(plot, {
-        capacity: pointCapacity,
-        columns,
-        dataDomain,
-        ...(batch.packedStyles === undefined
-          ? {}
-          : { packedStyles: batch.packedStyles }),
-        ...(dataSource.maxPointSize === undefined
-          ? {}
-          : { maxPointSize: dataSource.maxPointSize }),
-        startPoint,
-      });
-      if (viewportPolicy === 'expand' && dataSource.domain === undefined) {
-        plot.update({ viewport: createDefaultFastScatterViewport(dataDomain) });
+      if (abortController.signal.aborted) {
+        throw abortController.signal.reason ??
+          new DOMException('Scatter stream loading was aborted.', 'AbortError');
       }
-      progress = {
-        capacity: pointCapacity,
-        complete: false,
-        ...(dataSource.expectedCount === undefined
-          ? {}
-          : { expectedCount: dataSource.expectedCount }),
-        loadedCount,
-      };
+      await finishFastScatterEngineData(plot);
+      finishedAppend = true;
+      progress = { ...progress, complete: true };
       onStreamProgress?.(progress);
-      // A source can resolve its next batch entirely through microtasks (for
-      // example, decoded local pages). Explicitly yield once per append so
-      // pointer, wheel, paint, and React progress work are never starved by a
-      // long run of otherwise back-to-back CPU copies and GPU queue writes.
-      await yieldToBrowser();
+    } finally {
+      // A partial plot remains useful after a transport failure or explicit
+      // abort. Leave preview mode and schedule its normal settled frame.
+      if (!finishedAppend && !disposed) {
+        try {
+          await finishFastScatterEngineData(plot);
+        } catch {
+          // Preserve the original stream/startup error.
+        }
+      }
+      stopFollowingUserViewport();
+      signal?.removeEventListener('abort', abortFromCaller);
+      if (!disposed) closeStreamIterator(iterator);
     }
-    if (abortController.signal.aborted) {
-      throw abortController.signal.reason ??
-        new DOMException('Scatter stream loading was aborted.', 'AbortError');
-    }
-    await finishFastScatterEngineData(plot);
-    progress = { ...progress, complete: true };
-    onStreamProgress?.(progress);
-  })().finally(() => {
-    signal?.removeEventListener('abort', abortFromCaller);
-    if (!disposed) void iterator.return?.();
-  });
+  })();
   void done.catch(() => undefined);
 
   const originalDispose = plot.dispose.bind(plot);
   const streaming: FastScatterWebgpuStreamingController = {
     abort(reason = new DOMException('Scatter stream loading was aborted.', 'AbortError')) {
       if (!abortController.signal.aborted) abortController.abort(reason);
-      void iterator.return?.();
+      closeStreamIterator(iterator);
     },
     done,
     getColumns: () => createVisibleStreamColumns(storage, loadedCount),
@@ -335,7 +385,7 @@ async function* encodeLiveRecordBatches(
   let loadedCount = 0;
   for await (const records of source.batches) {
     if (records.length === 0) continue;
-    if (loadedCount + records.length > source.count) {
+    if (source.count !== undefined && loadedCount + records.length > source.count) {
       throw new Error(
         `Stream supplied more records than its declared count ${source.count}.`,
       );
@@ -372,7 +422,7 @@ async function* encodeLiveRecordBatches(
     yield { columns };
     await yieldToBrowser();
   }
-  if (loadedCount !== source.count) {
+  if (source.count !== undefined && loadedCount !== source.count) {
     throw new Error(
       `Stream ended after ${loadedCount} records; expected ${source.count}.`,
     );
@@ -403,10 +453,11 @@ function normalizeLiveBatchAxes(
 }
 
 export async function loadFastScatterRecordBatchSource(
-  source: FastScatterRecordBatchSource,
+  source: FastScatterKnownCountRecordBatchSource,
   options: LoadFastScatterRecordBatchSourceOptions = {},
 ): Promise<LoadedFastScatterRecordBatchSource> {
-  if (!Number.isSafeInteger(source.count) || source.count < 0) {
+  const count = source.count;
+  if (count === undefined || !Number.isSafeInteger(count) || count < 0) {
     throw new Error('A streamed scatter source requires a non-negative, known record count.');
   }
   throwIfAborted(options.signal);
@@ -417,22 +468,22 @@ export async function loadFastScatterRecordBatchSource(
   for await (const records of source.batches) {
     throwIfAborted(options.signal);
     if (records.length === 0) continue;
-    if (loadedCount + records.length > source.count) {
+    if (loadedCount + records.length > count) {
       throw new Error(
-        `Stream supplied more records than its declared count ${source.count}.`,
+        `Stream supplied more records than its declared count ${count}.`,
       );
     }
     const encoded = encodeFastScatterSchemaRows(records, source.schema);
-    output ??= allocateColumns(encoded.columns, source.count, source);
+    output ??= allocateColumns(encoded.columns, count, source);
     copyColumns(output, encoded.columns, loadedCount);
     loadedCount += records.length;
-    options.onProgress?.({ loadedCount, totalCount: source.count });
+    options.onProgress?.({ loadedCount, totalCount: count });
     await yieldToBrowser();
   }
 
-  if (loadedCount !== source.count) {
+  if (loadedCount !== count) {
     throw new Error(
-      `Stream ended after ${loadedCount} records; expected ${source.count}.`,
+      `Stream ended after ${loadedCount} records; expected ${count}.`,
     );
   }
   const columns = finalizeAxes(output ?? allocateColumns(empty.columns, 0, source));
@@ -441,11 +492,19 @@ export async function loadFastScatterRecordBatchSource(
 
 export function createFastScatterJsonRecordBatchSource(
   stream: ReadableStream<Uint8Array>,
+  options: FastScatterKnownCountJsonRecordBatchSourceOptions,
+): FastScatterKnownCountRecordBatchSource;
+export function createFastScatterJsonRecordBatchSource(
+  stream: ReadableStream<Uint8Array>,
+  options: FastScatterJsonRecordBatchSourceOptions,
+): FastScatterRecordBatchSource;
+export function createFastScatterJsonRecordBatchSource(
+  stream: ReadableStream<Uint8Array>,
   options: FastScatterJsonRecordBatchSourceOptions,
 ): FastScatterRecordBatchSource {
   return {
     batches: streamFastScatterJsonRecordBatches(stream, options.batchSize),
-    count: options.count,
+    ...(options.count === undefined ? {} : { count: options.count }),
     ...(options.idAt === undefined ? {} : { idAt: options.idAt }),
     ...(options.numericStorage === undefined
       ? {}
@@ -543,6 +602,11 @@ export async function* streamFastScatterJsonRecordBatches(
     }
     if (batch.length > 0) yield batch;
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The source may already be closed or errored.
+    }
     reader.releaseLock();
   }
 }
@@ -663,16 +727,7 @@ function createLazyStringArray(
   length: number,
   getValue: (index: number) => string,
 ): readonly string[] {
-  return new Proxy({ length }, {
-    get(target, property) {
-      if (property === 'length') return target.length;
-      if (typeof property === 'string' && /^(0|[1-9]\d*)$/u.test(property)) {
-        const index = Number(property);
-        return index < target.length ? getValue(index) : undefined;
-      }
-      return undefined;
-    },
-  }) as unknown as readonly string[];
+  return createReadonlyArrayView(length, getValue);
 }
 
 function copyAxisValues(
@@ -757,7 +812,9 @@ function createLazyEpochNsValues(
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) throw new DOMException('Scatter stream loading was aborted.', 'AbortError');
+  if (signal?.aborted === true) {
+    throw signal.reason ?? new DOMException('Scatter stream loading was aborted.', 'AbortError');
+  }
 }
 
 function yieldToBrowser(): Promise<void> {
@@ -786,11 +843,11 @@ interface StreamColumnStorage {
 
 async function readNextNonEmptyBatch(
   iterator: AsyncIterator<FastScatterWebgpuStreamBatch>,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
 ): Promise<FastScatterWebgpuStreamBatch | null> {
   while (true) {
     throwIfAborted(signal);
-    const result = await iterator.next();
+    const result = await readStreamIteratorNext(iterator, signal);
     if (result.done) return null;
     if (result.value.columns.x.length > 0) return result.value;
   }
@@ -814,6 +871,16 @@ function readStreamIteratorNext(
       signal.removeEventListener('abort', handleAbort);
     });
   });
+}
+
+function closeStreamIterator(
+  iterator: AsyncIterator<FastScatterWebgpuStreamBatch>,
+): void {
+  try {
+    void Promise.resolve(iterator.return?.()).catch(() => undefined);
+  } catch {
+    // Iterator cleanup must not replace the stream or abort result.
+  }
 }
 
 function validateStreamCountHint(value: number | undefined, name: string): void {
@@ -863,7 +930,7 @@ function validateStreamBatch(
     }
   }
   validateOptionalBatchLength(columns.opacity, count, 'opacity');
-  validateOptionalBatchLength(columns.rotation, count, 'rotation');
+  validateOptionalBatchLength(columns.rotation ?? columns.rotationRadians, count, 'rotation');
   validateOptionalBatchLength(columns.shape, count, 'shape');
   validateOptionalBatchLength(columns.size, count, 'size');
   if (batch.packedStyles !== undefined && batch.packedStyles.length !== count) {
@@ -905,7 +972,9 @@ function createStreamColumnStorage(
   packedStyles: Uint32Array | undefined,
 ): StreamColumnStorage {
   const encoded = template as FastScatterEncodedSchemaColumns;
-  const rotation = template.rotation === undefined ? undefined : new Float32Array(capacity);
+  const rotation = template.rotation === undefined && template.rotationRadians === undefined
+    ? undefined
+    : new Float32Array(capacity);
   return {
     capacity,
     hasPackedStyles: packedStyles !== undefined,
@@ -1004,7 +1073,12 @@ function appendStreamColumns(
     throw new Error('Streamed scatter color storage changed between batches.');
   }
   copyOptionalStreamColumn(storage.opacity, batch.opacity, offset, 'opacity');
-  copyOptionalStreamColumn(storage.rotation, batch.rotation, offset, 'rotation');
+  copyOptionalStreamColumn(
+    storage.rotation,
+    batch.rotation ?? batch.rotationRadians,
+    offset,
+    'rotation',
+  );
   copyOptionalStreamColumn(storage.shape, batch.shape, offset, 'shape');
   copyOptionalStreamColumn(storage.size, batch.size, offset, 'size');
   copyOptionalStreamColumn(storage.sourceIndex, batch.sourceIndex, offset, 'sourceIndex');
@@ -1182,14 +1256,28 @@ function copyOptionalRecordIdentities(
 }
 
 function createArrayPrefixView<T>(values: readonly T[], length: number): readonly T[] {
+  return createReadonlyArrayView(length, (index) => values[index]);
+}
+
+function createReadonlyArrayView<T>(
+  length: number,
+  getValue: (index: number) => T | undefined,
+): readonly T[] {
   return new Proxy({ length }, {
-    get(target, property) {
+    get(target, property, receiver) {
       if (property === 'length') return target.length;
+      if (property === 'toJSON') return () => Array.from(receiver as ArrayLike<T>);
       if (typeof property === 'string' && /^(0|[1-9]\d*)$/u.test(property)) {
         const index = Number(property);
-        return index < target.length ? values[index] : undefined;
+        return index < target.length ? getValue(index) : undefined;
       }
-      return undefined;
+      return Reflect.get(Array.prototype, property, receiver);
+    },
+    has(target, property) {
+      if (typeof property === 'string' && /^(0|[1-9]\d*)$/u.test(property)) {
+        return Number(property) < target.length;
+      }
+      return property === 'length' || property in Array.prototype;
     },
   }) as unknown as readonly T[];
 }

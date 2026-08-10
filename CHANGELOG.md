@@ -14,6 +14,9 @@ should remain unchanged.
   of the loaded prefix.
 - Added progress, completion, abort, prepared-domain/viewport policies, an HTTP
   JSON record-batch bridge, compact packed-style batches, and lazy global IDs.
+- Allowed the live JSON/record bridge to omit its final count; known counts still
+  preallocate and validate, while the legacy materializing loader remains
+  explicitly known-count-only.
 - Integrated local-worker and small paged-HTTP streaming samples into the
   regular `/m-scatter-webgpu` demo route so they share its axes, interactions,
   display modes, and sidebar. The former standalone URL now redirects there.
@@ -32,6 +35,16 @@ should remain unchanged.
   graph through React state.
 - Matched local-worker and HTTP stream viewports to static scatter datasets by
   applying the shared axis-aware domain padding before the first streamed frame.
+- Made first-batch waits abortable, cancelled released HTTP readers, and ensured
+  failed or aborted streams leave their loaded prefix in the normal settled
+  render mode. Automatic growing-domain viewports now stop following after the
+  first user viewport interaction.
+- Kept lazy streamed ID arrays iterable and compatible with standard array
+  methods/JSON serialization, and accepted the shared `rotationRadians` alias in
+  typed stream batches.
+- Reported an explicit recreate requirement when device loss occurs after
+  memory-bounded packed-style stream pages have been released, instead of
+  surfacing a misleading packed-style length mismatch during recovery.
 
 ## WebGPU Parallel Coordinates
 

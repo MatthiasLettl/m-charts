@@ -22,7 +22,7 @@ as the default required source. Add `adapters`, scatter `workers`, or chart
 | Chart | Required source | Optional source |
 | --- | --- | --- |
 | Scatter | `packages/m-charts/src/m-scatter/core`, `packages/m-charts/src/m-scatter/engine` | Add `workers` for worker-backed aggregation/selection, `adapters` for dataset helpers, and `react` only for React helpers. |
-| Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for known-count record streams and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
+| Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for live typed batches or streamed JSON records, and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
 | Histogram | `packages/m-charts/src/m-histogram/core`, `packages/m-charts/src/m-histogram/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
 | Histogram WebGPU | The histogram `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-histogram-webgpu/core`, and `packages/m-charts/src/m-histogram-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. The shared WebGPU folder contains the embedded Rust aggregation binary. |
 | Parallel | `packages/m-charts/src/m-parallel/core`, `packages/m-charts/src/m-parallel/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
@@ -244,6 +244,38 @@ The WebGPU instance also adds `getWebgpuDiagnostics()`. The command surface is
 compatible, including renderer-owned `playEasterEgg()` playback and the default
 typed `future` sequence.
 
+To change an existing all-at-once WebGPU integration to live loading, keep the
+plot options and replace `columns`/`spec` with the streaming adapter source:
+
+```ts
+import {
+  createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamingPlot,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
+} from './vendor/m-charts/m-scatter-webgpu/adapters/index.js';
+
+const response = await fetch('/api/points');
+if (response.body === null) throw new Error('Missing response body');
+const records = createFastScatterJsonRecordBatchSource(response.body, {
+  schema,
+});
+const { columns: _columns, spec: _spec, ...streamOptions } = options;
+const plot = await createFastScatterWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: createFastScatterWebgpuStreamSourceFromRecordBatches(records),
+});
+await plot.streaming.done;
+```
+
+Add `count` when the server declares it to preallocate and validate the final
+total; it is optional for the live bridge. The plot is returned after the first
+non-empty batch, so bindings and interactions can start while later batches
+arrive. Typed-batch sources do not need a final count; `expectedCount` and
+`initialCapacity` are allocation hints.
+`plot.streaming.abort()`, `plot.dispose()`, and an optional `signal` cancel the
+load. A transport failure or abort rejects `plot.streaming.done` but leaves the
+loaded prefix in the normal settled render mode while the plot remains mounted.
+
 See [the copy-ready migration example](examples/scatter-webgpu-migration.md) and
 [the WebGPU scatter guide](../packages/m-charts/SCATTER_WEBGPU.md) for lifecycle,
 rendering, aggregation, diagnostics, streaming, demo, and benchmark details.
@@ -461,8 +493,10 @@ You can pass chart contracts directly or copy optional adapters:
   `ScatterViewport`, or copy `m-scatter/adapters` for supported dataset/table
   helpers.
 - Scatter WebGPU: pass the same scatter columns directly, or copy
-  `m-scatter-webgpu/adapters` for finite known-count JSON/application streams
-  that should be encoded into preallocated typed columns in bounded batches.
+  `m-scatter-webgpu/adapters` for unknown- or known-count live typed batches.
+  Streamed JSON records can optionally declare a count for preallocation and
+  final-total validation; the legacy materializing loader requires it when
+  rendering should wait for all records.
 - Histogram: pass `HistogramColumns`, `HistogramPlotSpec`, optional
   `HistogramAggregationSet`, and `HistogramViewport`, or copy
   `m-histogram/adapters`.

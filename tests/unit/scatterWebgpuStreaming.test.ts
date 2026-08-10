@@ -72,8 +72,27 @@ const compact = await loadFastScatterRecordBatchSource(
 );
 assert.equal(compact.columns.y.value instanceof Float32Array, true);
 assert.equal(compact.columns.ids[2], 'three');
+assert.deepEqual([...compact.columns.ids], ['one', 'two', 'three']);
+assert.deepEqual(compact.columns.ids.map((id) => id.toUpperCase()), ['ONE', 'TWO', 'THREE']);
+assert.equal(JSON.stringify(compact.columns.ids), '["one","two","three"]');
 assert.equal(compact.columns.rotationDegrees, undefined);
 assert.equal(compact.columns.rotation, compact.columns.rotationRadians);
+
+let streamCancelled = false;
+const cancelledIterator = streamFastScatterJsonRecordBatches(
+  new ReadableStream<Uint8Array>({
+    cancel() {
+      streamCancelled = true;
+    },
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"records":[{"id":"one"}]}'));
+    },
+  }),
+  1,
+);
+assert.equal((await cancelledIterator.next()).done, false);
+await cancelledIterator.return(undefined);
+assert.equal(streamCancelled, true);
 
 const liveSource = createFastScatterWebgpuStreamSourceFromRecordBatches({
   batches: (async function* () {
@@ -103,6 +122,19 @@ const unknownCountSource: FastScatterWebgpuStreamSource = {
   spec: liveSource.spec,
 };
 assert.equal(unknownCountSource.expectedCount, undefined);
+
+const unknownCountRecordSource = createFastScatterWebgpuStreamSourceFromRecordBatches(
+  createFastScatterJsonRecordBatchSource(createChunkedStream(json, 6), {
+    batchSize: 2,
+    schema,
+  }),
+);
+assert.equal(unknownCountRecordSource.expectedCount, undefined);
+const unknownCountRecordBatches = [];
+for await (const batch of unknownCountRecordSource.batches) {
+  unknownCountRecordBatches.push(...batch.columns.x);
+}
+assert.deepEqual(unknownCountRecordBatches, [1, 2, 3]);
 
 const datetimeSchema: FastScatterDatasetSchema = {
   version: 1,

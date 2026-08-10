@@ -317,6 +317,9 @@ CPU and GPU capacity geometrically when the final count is unknown. Known
 `expectedCount` streams preallocate both stores unless `initialCapacity`
 explicitly requests a smaller GPU allocation. `expectedCount` is an optional
 allocation hint, not a correctness requirement.
+The automatic growing-domain viewport stops following after the first user
+viewport interaction. Completion settles the full loaded population; abort or
+transport failure rejects `streaming.done` and also settles the retained prefix.
 `createFastScatterWebgpuStreamSourceFromRecordBatches`
 bridges existing incremental JSON/application record sources; the older
 known-count materializing loader remains compatible.

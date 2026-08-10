@@ -9,7 +9,8 @@ packages/m-charts/src/m-scatter-webgpu/core -> src/vendor/m-charts/m-scatter-web
 packages/m-charts/src/m-scatter-webgpu/engine -> src/vendor/m-charts/m-scatter-webgpu/engine
 ```
 
-Copy `m-scatter-webgpu/adapters` only for known-count record streaming. Add
+Copy `m-scatter-webgpu/adapters` for unknown- or known-count live typed batches,
+streamed JSON record encoding, or the legacy preloading adapter. Add
 `@webgpu/types` to the host TypeScript configuration when its DOM declarations
 do not include WebGPU.
 
@@ -24,6 +25,37 @@ import:
 The same options, bindings, commands, events, overlays, and shared CSS hooks are
 compatible. Await `plot.interactive` for the first displayed frame or
 `plot.ready` for the first complete settled frame.
+
+After making that renderer switch, an HTTP JSON stream is a focused constructor
+change rather than a route rewrite:
+
+```ts
+import {
+  createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamingPlot,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
+} from './vendor/m-charts/m-scatter-webgpu/adapters/index.js';
+
+const response = await fetch('/api/points');
+if (response.body === null) throw new Error('Missing response body');
+const records = createFastScatterJsonRecordBatchSource(response.body, {
+  schema,
+});
+const { columns: _columns, spec: _spec, ...streamOptions } = options;
+const plot = await createFastScatterWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: createFastScatterWebgpuStreamSourceFromRecordBatches(records),
+});
+plot.use(createDefaultScatterBindings());
+await plot.streaming.done;
+```
+
+Add `count` when the endpoint declares it to preallocate and validate the final
+total; the live bridge also accepts unknown-length responses. The constructor
+resolves after the first non-empty batch. The default growing
+viewport follows incoming data until the user pans or zooms, then preserves that
+interaction. Typed-batch sources may omit the final count; abort and transport
+errors reject `plot.streaming.done` while retaining the loaded prefix.
 
 The following version retains WebGL2 for clients or datasets that cannot start
 WebGPU:

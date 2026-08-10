@@ -98,7 +98,9 @@ currently loaded prefix for application overlays. High-volume producers may
 supply one compact `packedStyles` word per point and a source-level `idAt`
 resolver to avoid retaining expanded style arrays and ID strings. During
 ingestion the renderer uses bounded previews; it schedules the static-equivalent
-exact/LOD frame only after the source signals completion.
+exact/LOD frame after the source signals completion. The default growing
+viewport stops following when the user pans or zooms. A failed or aborted stream
+rejects `plot.streaming.done` and settles the already loaded prefix.
 
 See [docs/source-copy-integration.md](../../docs/source-copy-integration.md) for
 copy matrices, worker setup, CSS/overlay responsibilities, and validation steps.

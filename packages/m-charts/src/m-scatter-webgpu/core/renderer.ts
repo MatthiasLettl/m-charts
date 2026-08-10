@@ -14,6 +14,7 @@ import {
   type FastScatterBubbleSubplotAggregation,
   type FastScatterHeatmapSubplotAggregation,
   type FastScatterControllerOptions,
+  type FastScatterDataDomain,
   type FastScatterEasterEggPlaybackOptions,
   type FastScatterMetricsEvent,
   type FastScatterPlotSpec,
@@ -279,6 +280,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const {
       canvas: _canvas,
       aggregationBackend: _aggregationBackend,
+      dataDomain: _dataDomain,
       indexedStyle: _indexedStyle,
       lifecycle: _lifecycle,
       packedStyles: _packedStyles,
@@ -288,6 +290,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     } = rendererOptions;
     void _canvas;
     this.aggregationBackendPreference = _aggregationBackend ?? 'auto';
+    void _dataDomain;
     void _indexedStyle;
     void _lifecycle;
     void _packedStyles;
@@ -398,24 +401,39 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       );
       if (this.disposed || this.gpu !== gpu) return;
     }
+    const startedAt = performance.now();
     const indexedXRangeCompatible = isIndexedXRangeCompatible(
       columns.x,
       startPoint,
       gpu.xIndexedMode,
     );
+    let materializedIndexedX = false;
     if (!indexedXRangeCompatible) {
-      throw new Error(
-        'Streamed scatter x values changed an indexed x layout detected in the first batch.',
+      const nextX = await createEncodedColumn(
+        context.device,
+        columns.x,
+        'm-scatter-webgpu/x-stream-materialized',
+        nextPointCapacity,
+        this.rendererOptions.dataDomain?.x,
       );
+      if (this.disposed || this.gpu !== gpu) {
+        nextX.buffer.destroy();
+        return;
+      }
+      const previousX = gpu.x.buffer;
+      gpu.x = nextX;
+      gpu.xIndexedMode = 0;
+      recreatePlotBindGroups(context.device, gpu);
+      previousX.destroy();
+      materializedIndexedX = true;
     }
     // Queue growth before publishing the larger logical count. Later writes and
     // draws execute after the GPU-to-GPU prefix copies on the same queue.
     this.options = { ...this.options, columns };
     this.pointCapacity = nextPointCapacity;
 
-    const startedAt = performance.now();
-    let uploadBytes = 0;
-    if (gpu.xIndexedMode === 0) {
+    let uploadBytes = materializedIndexedX ? gpu.x.byteLength : 0;
+    if (gpu.xIndexedMode === 0 && !materializedIndexedX) {
       uploadBytes += uploadEncodedColumnRange(
         context.device.queue,
         gpu.x,
@@ -811,6 +829,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const columns = this.options.columns;
     const spec = this.options.spec;
     validatePointColumns(columns, spec);
+    assertPackedStylesCanRebuild(this.rendererOptions.packedStyles, columns.x.length);
 
     if (this.gpu !== null) {
       await context.device.queue.onSubmittedWorkDone();
@@ -827,6 +846,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       this.rendererOptions.packedStyles,
       this.options.hoverIndex,
       this.pointCapacity,
+      this.rendererOptions.dataDomain,
     );
     if (this.disposed || version !== this.rebuildVersion) {
       destroyGpuResources(next);
@@ -2332,16 +2352,32 @@ async function createGpuResources(
   packedStyles: FastScatterWebgpuPackedStyles | undefined,
   hoverIndex: FastScatterControllerOptions['hoverIndex'],
   requestedPointCapacity = columns.x.length,
+  dataDomain?: FastScatterDataDomain,
 ): Promise<GpuResources> {
   const { device } = context;
   const theme = requestedTheme ?? DEFAULT_THEME;
   const pointCapacity = normalizePointCapacity(requestedPointCapacity, columns.x.length);
   const yKeys = [...new Set(spec.plots.map((plot) => plot.yKey))];
+  const yDomainByKey = new Map<string, FastScatterRange>();
+  for (const plot of spec.plots) {
+    const range = dataDomain?.yByPlot[plot.id];
+    if (range === undefined) continue;
+    const current = yDomainByKey.get(plot.yKey);
+    yDomainByKey.set(plot.yKey, current === undefined
+      ? range
+      : { min: Math.min(current.min, range.min), max: Math.max(current.max, range.max) });
+  }
   const indexedXMode = await resolveIndexedXMode(columns.x);
   const [x, styles, sourceMapping, encodedYColumns] = await Promise.all([
     indexedXMode !== 0
       ? createIdentityEncodedColumn(device, 'm-scatter-webgpu/x-identity')
-      : createEncodedColumn(device, columns.x, 'm-scatter-webgpu/x', pointCapacity),
+      : createEncodedColumn(
+          device,
+          columns.x,
+          'm-scatter-webgpu/x',
+          pointCapacity,
+          dataDomain?.x,
+        ),
     createStyleBuffer(device, columns, theme, packedStyles, pointCapacity),
     createSourceMapping(columns),
     Promise.all(yKeys.map(async (yKey) => {
@@ -2354,6 +2390,7 @@ async function createGpuResources(
           values,
           `m-scatter-webgpu/y/${yKey}`,
           pointCapacity,
+          yDomainByKey.get(yKey),
         ),
       ] as const;
     })),
@@ -2680,6 +2717,7 @@ async function createEncodedColumn(
   values: ArrayLike<number>,
   label: string,
   requestedCapacity = values.length,
+  requestedEncodingRange?: FastScatterRange,
 ): Promise<EncodedColumn> {
   const pointCount = values.length;
   const pointCapacity = normalizePointCapacity(requestedCapacity, pointCount);
@@ -2712,10 +2750,19 @@ async function createEncodedColumn(
       if (index > 0 && index % BUILD_YIELD_INTERVAL === 0) await yieldToBrowser();
     }
   }
-  const offset = compactInteger || directFloat32 ? 0 : Number.isFinite(min) ? min : 0;
+  const requestedMin = requestedEncodingRange?.min;
+  const requestedMax = requestedEncodingRange?.max;
+  const useRequestedRange = Number.isFinite(requestedMin) && Number.isFinite(requestedMax);
+  const offset = compactInteger || directFloat32
+    ? 0
+    : useRequestedRange
+      ? requestedMin!
+      : Number.isFinite(min) ? min : 0;
   const scale = compactInteger || directFloat32
     ? 1
-    : Number.isFinite(max) && max > offset ? max - offset : 1;
+    : useRequestedRange && requestedMax! > offset
+      ? requestedMax! - offset
+      : Number.isFinite(max) && max > offset ? max - offset : 1;
   const buffer = device.createBuffer({
     label,
     mappedAtCreation: true,
@@ -2959,9 +3006,19 @@ function writeStyleQueueData(
 }
 
 function isNondecreasingRange(values: ArrayLike<number>, startPoint: number): boolean {
-  const start = Math.max(1, startPoint);
-  for (let index = start; index < values.length; index += 1) {
-    if ((values[index] ?? Number.NaN) < (values[index - 1] ?? Number.NaN)) return false;
+  let previous = Number.NEGATIVE_INFINITY;
+  for (let index = Math.min(startPoint - 1, values.length - 1); index >= 0; index -= 1) {
+    const value = values[index] ?? Number.NaN;
+    if (Number.isFinite(value)) {
+      previous = value;
+      break;
+    }
+  }
+  for (let index = Math.max(0, startPoint); index < values.length; index += 1) {
+    const value = values[index] ?? Number.NaN;
+    if (!Number.isFinite(value)) continue;
+    if (value < previous) return false;
+    previous = value;
   }
   return true;
 }
@@ -3825,6 +3882,24 @@ function validatePointColumns(columns: FastScatterPointColumns, spec: FastScatte
       throw new Error(`Fast scatter ${name} column must contain ${pointCount} values.`);
     }
   }
+}
+
+function assertPackedStylesCanRebuild(
+  packedStyles: FastScatterWebgpuPackedStyles | undefined,
+  pointCount: number,
+): void {
+  if (packedStyles === undefined || !('data' in packedStyles)) return;
+  const strideBytes = packedStyles.styleStrideBytes ?? (
+    packedStyles.data.length === pointCount * 3
+      ? 12
+      : packedStyles.data.length === pointCount * 2 ? 8 : 4
+  );
+  const wordsPerPoint = strideBytes /
+    Uint32Array.BYTES_PER_ELEMENT;
+  if (packedStyles.data.length === pointCount * wordsPerPoint) return;
+  throw new Error(
+    'WebGPU scatter cannot rebuild or restore after streamed packed-style batches were released; recreate the stream-backed plot.',
+  );
 }
 
 function isNondecreasing(values: ArrayLike<number>): boolean {

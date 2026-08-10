@@ -194,8 +194,9 @@ import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
 For WebGPU point, bubble, or heat-map scatter, keep the existing `m-scatter`
 contract modules and add `plot-engine-webgpu`, `m-scatter-webgpu/core`, and
 `m-scatter-webgpu/engine`. Include `m-scatter-webgpu/adapters` only when using
-known-count JSON/server record streams. Existing source-copy integrations keep
-their core imports and change the factory import:
+live typed batches, streamed JSON records, or the legacy preloading adapter.
+Existing source-copy integrations keep their core imports and change the factory
+import:
 
 ```diff
 - import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';

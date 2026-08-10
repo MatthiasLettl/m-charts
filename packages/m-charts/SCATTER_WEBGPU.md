@@ -378,13 +378,19 @@ display order (`xOrder` is unsupported), and supplied `sourceIndex` values must
 be contiguous global indices. Use `signal`, `plot.streaming.abort()`, or
 `plot.dispose()` for cancellation. Without a prepared domain or explicit
 viewport, the default `viewportPolicy: 'expand'` follows the growing domain;
-use `preserve` when user navigation must not move as data arrives.
+it stops following as soon as the user changes the viewport, so an in-progress
+pan or zoom is not reset by the next batch. Use `preserve` to keep the initial
+viewport fixed even before the first interaction. Abort and transport failures
+reject `plot.streaming.done`; if the plot remains mounted, its loaded prefix
+leaves preview mode and receives the normal settled render.
 
 For the compact WebGPU style layout, a batch can provide `packedStyles` as one
 32-bit word per point and the source can provide `maxPointSize`. A source-level
 `idAt` resolver keeps global IDs lazy. These options avoid materializing the
 expanded color, opacity, rotation, shape, size, and ID columns in high-volume
-streams.
+streams. Packed pages are released after upload to preserve that memory bound;
+if the WebGPU device is lost after later pages arrive, recreate the stream-backed
+plot because those released style pages cannot be replayed for device recovery.
 
 The source is transport-neutral. For an HTTP JSON response, adapt its byte
 stream without calling `response.json()`:
@@ -394,7 +400,6 @@ const response = await fetch('/api/points');
 if (response.body === null) throw new Error('Missing response body');
 const records = createFastScatterJsonRecordBatchSource(response.body, {
   batchSize: 16_384,
-  count: 10_000_000,
   schema,
 });
 
@@ -402,6 +407,13 @@ const plot = await createFastScatterWebgpuStreamingPlot(host, {
   dataSource: createFastScatterWebgpuStreamSourceFromRecordBatches(records),
 });
 ```
+
+`count` is optional on the live JSON/record bridge. Supply it when known to
+preallocate storage and validate the final record total; omit it for an
+open-ended response and let storage grow geometrically. The legacy
+`createFastScatterWebgpuPlotFromDataSource` loader still requires a count because
+it intentionally materializes final columns before plot creation. A prepared
+`domain` also supplies stable high-precision GPU encoding ranges.
 
 The older `createFastScatterWebgpuPlotFromDataSource` remains available for
 callers that intentionally finish loading a known-count record stream before
