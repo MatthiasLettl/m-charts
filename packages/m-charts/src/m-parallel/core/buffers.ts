@@ -109,6 +109,8 @@ export interface ParallelWebgpuPackedData {
   createPages(): AsyncIterable<ParallelWebgpuPackedPage>;
   representativeRecordLimit?: number;
   representativeSourceIndices?: Promise<Uint32Array>;
+  /** Reserved record capacity used by renderers that append streamed pages. */
+  streamingCapacity?: number;
 }
 
 export interface ParallelSelectedRecord {

@@ -42,10 +42,12 @@ packages/m-charts/src/m-histogram/core   -> src/vendor/m-charts/m-histogram/core
 packages/m-charts/src/m-histogram/engine -> src/vendor/m-charts/m-histogram/engine
 packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
+packages/m-charts/src/m-histogram-webgpu/adapters -> src/vendor/m-charts/m-histogram-webgpu/adapters # live streams only
 packages/m-charts/src/m-parallel/core   -> src/vendor/m-charts/m-parallel/core
 packages/m-charts/src/m-parallel/engine -> src/vendor/m-charts/m-parallel/engine
 packages/m-charts/src/m-parallel-webgpu/core -> src/vendor/m-charts/m-parallel-webgpu/core
 packages/m-charts/src/m-parallel-webgpu/engine -> src/vendor/m-charts/m-parallel-webgpu/engine
+packages/m-charts/src/m-parallel-webgpu/adapters -> src/vendor/m-charts/m-parallel-webgpu/adapters # live streams only
 ```
 
 Add chart `adapters`, scatter `workers`, or chart `react` folders only when the
@@ -101,6 +103,26 @@ ingestion the renderer uses bounded previews; it schedules the static-equivalent
 exact/LOD frame after the source signals completion. The default growing
 viewport stops following when the user pans or zooms. A failed or aborted stream
 rejects `plot.streaming.done` and settles the already loaded prefix.
+
+Parallel coordinates and histograms expose matching opt-in constructors:
+`createParallelWebgpuStreamingPlot` and
+`createHistogramWebgpuStreamingPlot`. Both accept transport-neutral typed
+`AsyncIterable` batches, create an interactive plot from the first non-empty
+batch, retain static creation, and expose progress/completion/cancellation on
+`plot.streaming`. Parallel streams require prepared full-stream axis domains;
+histogram streams carry the stable plot spec and preserve a user-modified
+viewport while exact aggregation is rebuilt at geometrically growing prefixes
+and completion. The
+parallel adapter appends optional decoder-prepared `packedPage` payloads to
+resident GPU storage and aggregates only the incoming page while capacity is
+available; unknown streams rebuild only when geometric capacity grows. CPU
+columns remain segmented rather than being recopied for every prefix. Streams
+without packed pages retain a geometrically growing replacement fallback.
+
+The repository also includes a complete, cost-bounded server example: a capped
+Vercel Function returns one chunked JSON response, and all three WebGPU demos
+adapt `response.body` without materializing it first. See
+[docs/server-function-streaming.md](../../docs/server-function-streaming.md).
 
 See [docs/source-copy-integration.md](../../docs/source-copy-integration.md) for
 copy matrices, worker setup, CSS/overlay responsibilities, and validation steps.

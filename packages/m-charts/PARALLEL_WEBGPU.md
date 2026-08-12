@@ -20,6 +20,61 @@ WebGPU instance and create the WebGL2 plot as its product fallback.
 See the [copy-ready migration example](../../docs/examples/parallel-webgpu-migration.md)
 for source-copy paths, startup handling, and a complete fallback lifecycle.
 
+## Live typed streams
+
+Static `buffers` remain supported. To create the plot as soon as the first
+typed batch arrives, switch only the constructor and data option:
+
+```ts
+import { createParallelWebgpuStreamingPlot } from 'm-charts/m-parallel-webgpu';
+
+const plot = await createParallelWebgpuStreamingPlot(host, {
+  dataSource: {
+    batches, // AsyncIterable<{ columns, packedPage? }>
+    domainsByAxis, // prepared domains for the complete stream
+    expectedCount,
+  },
+  theme,
+});
+
+await plot.interactive;
+await plot.streaming.done;
+```
+
+The plot remains interactive between batches. While resident capacity is
+available, a decoder-prepared `packedPage` is appended immediately and only
+that page is added to the existing density bins; prior pages, pipelines, and
+interaction state remain resident. Unknown streams grow capacity geometrically
+and rebuild all resident pages only when they cross a capacity boundary.
+Sources without packed pages retain a geometrically growing replacement
+fallback. Stable full-stream domains are required so already
+visible polylines do not move when a later batch extends an axis.
+`expectedCount` and `initialCapacity` are optional hints; a supplied expected
+count reserves streaming membership capacity and is validated at completion.
+`plot.streaming` exposes `done`, `abort()`, `getBuffers()`, and `getProgress()`.
+A failed or aborted source rejects `done` while leaving the loaded prefix
+available until disposal.
+
+The repository's `?webgpuData=stream-function` demo maps the same genuinely
+chunked Vercel Function response used by scatter into parallel columns and
+packed pages and never materializes the complete HTTP body. See the
+[server-function streaming guide](../../docs/server-function-streaming.md).
+
+Decoders that already produce quantized record-major values may attach a
+`packedPage: { start, count, values, densityStyles }` to each batch. These pages
+are uploaded directly once, avoiding repeated CPU normalization, packing, or
+full-prefix GPU uploads. Each page contributes a proportional bounded
+representative sample for direct rendering and hover. CPU columns are likewise
+retained as segmented views instead of being recopied into a new full-prefix
+allocation. Every batch must use the same axis order and must consistently
+include or omit `packedPage`. Active brushes are re-evaluated against arriving
+rows so public selection counts and source indices do not become stale.
+The stream owns `buffers`; other mutable interaction/theme options remain
+available through `plot.update(...)`.
+
+The `/m-parallel-webgpu?webgpuData=stream-local` demo progressively delivers
+the same generated typed data and keeps brush/viewport interaction enabled.
+
 ## Large-data renderer
 
 The renderer does not expand one WebGL vertex buffer per adjacent-axis

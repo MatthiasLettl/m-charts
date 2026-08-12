@@ -20,6 +20,7 @@ import { createFastScatterWebgpuPlot } from '../engine/createScatterWebgpuPlot.j
 import type {
   FastScatterWebgpuPlotInstance,
   FastScatterWebgpuPlotOptions,
+  FastScatterWebgpuPlotUpdateOptions,
 } from '../engine/types.js';
 
 export interface FastScatterRecordBatchSource {
@@ -75,8 +76,14 @@ export interface FastScatterWebgpuStreamingController {
 }
 
 export interface FastScatterWebgpuStreamingPlotInstance
-  extends FastScatterWebgpuPlotInstance {
+  extends Omit<FastScatterWebgpuPlotInstance, 'update'> {
   readonly streaming: FastScatterWebgpuStreamingController;
+  update(
+    options: Omit<
+      FastScatterWebgpuPlotUpdateOptions,
+      'columns' | 'dataDomain' | 'spec'
+    >,
+  ): void;
 }
 
 export interface FastScatterWebgpuStreamingPlotOptions
@@ -267,6 +274,7 @@ export async function createFastScatterWebgpuStreamingPlot(
   }
   let disposed = false;
   let followGrowingViewport = viewportPolicy === 'expand';
+  const originalUpdate = plot.update.bind(plot);
   const stopFollowingUserViewport = plot.on('viewportchange', () => {
     followGrowingViewport = false;
   });
@@ -312,7 +320,7 @@ export async function createFastScatterWebgpuStreamingPlot(
           startPoint,
         });
         if (followGrowingViewport && dataSource.domain === undefined) {
-          plot.update({ viewport: createDefaultFastScatterViewport(dataDomain) });
+          originalUpdate({ viewport: createDefaultFastScatterViewport(dataDomain) });
         }
         progress = {
           capacity: pointCapacity,
@@ -372,6 +380,19 @@ export async function createFastScatterWebgpuStreamingPlot(
       originalDispose();
     },
     streaming,
+    update(updateOptions: Parameters<typeof originalUpdate>[0]) {
+      if (
+        updateOptions.columns !== undefined ||
+        updateOptions.dataDomain !== undefined ||
+        updateOptions.spec !== undefined
+      ) {
+        throw new Error(
+          'A streamed scatter plot owns columns, dataDomain, and spec through dataSource.',
+        );
+      }
+      if (updateOptions.viewport !== undefined) followGrowingViewport = false;
+      originalUpdate(updateOptions);
+    },
   });
   return plot as FastScatterWebgpuStreamingPlotInstance;
 }

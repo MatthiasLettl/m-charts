@@ -383,6 +383,8 @@ pan or zoom is not reset by the next batch. Use `preserve` to keep the initial
 viewport fixed even before the first interaction. Abort and transport failures
 reject `plot.streaming.done`; if the plot remains mounted, its loaded prefix
 leaves preview mode and receives the normal settled render.
+The stream owns `columns`, `dataDomain`, and `spec`; other mutable plot options
+remain available through `plot.update(...)`.
 
 For the compact WebGPU style layout, a batch can provide `packedStyles` as one
 32-bit word per point and the source can provide `maxPointSize`. A source-level
@@ -420,6 +422,12 @@ callers that intentionally finish loading a known-count record stream before
 creating the plot. `File.stream()`, NDJSON or binary framing can likewise be
 decoded into typed batches; HTTP, WebSocket, and local producers all use the
 same chart-facing contract.
+
+The repository demo exercises this exact path with a capped Vercel Function at
+`/api/webgpu-stream`: it passes `response.body` to the JSON record-batch adapter
+and never calls `response.json()`. See the
+[server-function streaming guide](../../docs/server-function-streaming.md) for
+the protocol, cost boundary, local development, and deployment checks.
 
 Use the opt-in WebGPU smoke suite on Linux:
 

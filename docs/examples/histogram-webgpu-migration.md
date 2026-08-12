@@ -8,6 +8,7 @@ add:
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
+packages/m-charts/src/m-histogram-webgpu/adapters -> src/vendor/m-charts/m-histogram-webgpu/adapters # live streams only
 ```
 
 The shared `plot-engine-webgpu` copy includes the embedded aggregation WASM
@@ -26,6 +27,48 @@ The same raw columns, pre-aggregated bars, options, bindings, commands, events,
 overlays, callback payloads, shared CSS hooks, and controlled updates remain
 valid. Await either readiness promise and handle rejection; histogram currently
 resolves `interactive` and `ready` after its exact first frame completes.
+
+After that renderer migration, changing an all-at-once raw histogram to live
+loading only replaces the constructor and data fields:
+
+```ts
+import {
+  createHistogramWebgpuStreamingPlot,
+} from './vendor/m-charts/m-histogram-webgpu/adapters/index.js';
+
+const { aggregation: _aggregation, columns: _columns, spec, ...streamOptions } = options;
+const plot = await createHistogramWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: {
+    batches, // AsyncIterable<{ columns: HistogramColumns }>
+    expectedCount,
+    spec,
+  },
+});
+plot.use(createDefaultHistogramBindings());
+
+try {
+  await plot.streaming.done;
+} catch (error) {
+  // The loaded prefix remains interactive until it is disposed.
+  console.error('Histogram stream stopped.', error);
+}
+```
+
+The first non-empty batch creates the plot. Progress advances for every batch;
+exact rendered prefixes are published at geometric growth thresholds and on
+completion. Batch column constructors and optional color/provenance metadata
+must remain consistent, and custom source indices must be contiguous global
+row indices. `expectedCount` is optional but, when supplied, is validated at
+completion. Use `signal`, `plot.streaming.abort()`, or `plot.dispose()` to
+cancel. Restart the source before attempting WebGL2 fallback after a consumed
+stream fails.
+
+For an HTTP server-stream producer, decode `response.body` incrementally and
+map each decoded record batch to `HistogramWebgpuStreamBatch`; do not call
+`response.json()`. The repository's
+[server-function demonstration](../server-function-streaming.md) shows this
+complete path with a hard-capped Vercel Function shared by all three plots.
 
 The following version retains WebGL2 for clients that cannot start WebGPU:
 

@@ -158,6 +158,10 @@ test('overview links only custom plot routes and preserves theme', async ({ page
     'href',
     '/m-scatter-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
   );
+  await expect(webgpuCard.getByRole('link', { name: 'Server stream' })).toHaveAttribute(
+    'href',
+    '/m-scatter-webgpu?webgpuData=stream-function&theme=dark',
+  );
   const histogramWebgpuCard = page
     .locator('.prototype-card')
     .filter({ hasText: 'm-histogram WebGPU' });
@@ -170,6 +174,26 @@ test('overview links only custom plot routes and preserves theme', async ({ page
   ).toHaveAttribute(
     'href',
     '/m-histogram-webgpu?points=1000000&tables=multi&theme=dark',
+  );
+  await expect(histogramWebgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
+    'href',
+    '/m-histogram-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
+  );
+  await expect(
+    histogramWebgpuCard.getByRole('link', { name: 'Server stream' }),
+  ).toHaveAttribute(
+    'href',
+    '/m-histogram-webgpu?webgpuData=stream-function&theme=dark',
+  );
+  await expect(parallelWebgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
+    'href',
+    '/m-parallel-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
+  );
+  await expect(
+    parallelWebgpuCard.getByRole('link', { name: 'Server stream' }),
+  ).toHaveAttribute(
+    'href',
+    '/m-parallel-webgpu?webgpuData=stream-function&theme=dark',
   );
 
   await page.getByRole('link', { name: 'One table' }).first().click();
@@ -204,6 +228,9 @@ test('m-histogram WebGPU route preserves the histogram surface and reports avail
       name: 'Pre-aggregated bars',
     }),
   ).toBeChecked();
+  await expect(
+    page.getByTestId('histogram-webgpu-table-mode').getByRole('button'),
+  ).toHaveCount(3);
   const backendRadios = page
     .getByTestId('histogram-webgpu-aggregation-backend')
     .getByRole('radio');
@@ -313,6 +340,63 @@ test('m-histogram WebGPU opt-in renders the exact million-row WASM aggregation',
   expect(selection?.available).toBe(true);
   expect(selection?.selectedSourceCount ?? 0).toBeGreaterThan(0);
   expect(gpuErrors, gpuErrors.join('\n')).toEqual([]);
+});
+
+test('m-histogram WebGPU streaming keeps stable colors and a live zoom preview', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  test.skip(
+    process.env.M_CHARTS_ENABLE_WEBGPU_E2E !== '1',
+    'Set M_CHARTS_ENABLE_WEBGPU_E2E=1 on a WebGPU-capable machine.',
+  );
+  await page.goto(
+    '/m-histogram-webgpu?points=10000000&webgpuData=stream-local',
+    { waitUntil: 'domcontentloaded' },
+  );
+  const host = page.getByTestId('histogram-fast-route-host');
+  await expect(host).toHaveAttribute('data-render-state', 'ready', { timeout: 60_000 });
+  await expect.poll(async () => Number(
+    await page.getByTestId('histogram-webgpu-stream-progress').getAttribute('data-loaded-count'),
+  )).toBeGreaterThanOrEqual(250_000);
+  const initialLoadedCount = Number(
+    await page.getByTestId('histogram-webgpu-stream-progress').getAttribute('data-loaded-count'),
+  );
+  const initialPhaseYMax = await page.evaluate(() =>
+    window.__histogramFastRouteStateTestHook?.()?.viewport
+      ?.subplotById.phase?.y.max ?? null,
+  );
+  expect(initialPhaseYMax).not.toBeNull();
+  if (initialLoadedCount < 10_000_000) {
+    await expect.poll(async () => Number(
+      await page.getByTestId('histogram-webgpu-stream-progress').getAttribute('data-loaded-count'),
+    )).toBeGreaterThan(initialLoadedCount);
+    await expect.poll(() => page.evaluate(() =>
+      window.__histogramFastRouteStateTestHook?.()?.viewport
+        ?.subplotById.phase?.y.max ?? null,
+    )).toBeGreaterThan(initialPhaseYMax!);
+  }
+  await expect.poll(async () => {
+    const state = await readHistogramState(page) as { stackSegmentCount?: number } | null;
+    return state?.stackSegmentCount ?? Number.POSITIVE_INFINITY;
+  }).toBeLessThan(500);
+
+  const signalFrame = page.locator('.histogram-fast-overlay-plot-frame').last();
+  const signalRect = await signalFrame.boundingBox();
+  if (signalRect === null) throw new Error('Streaming histogram plot frame is unavailable.');
+  await page.mouse.move(
+    signalRect.x + signalRect.width * 0.25,
+    signalRect.y + signalRect.height * 0.35,
+  );
+  await page.mouse.down({ button: 'left' });
+  await page.mouse.move(
+    signalRect.x + signalRect.width * 0.75,
+    signalRect.y + signalRect.height * 0.55,
+    { steps: 8 },
+  );
+  await expect(page.locator('.histogram-fast-rectangle-zoom')).toBeVisible();
+  await page.mouse.up({ button: 'left' });
+  await expect(page).toHaveURL(/histViewport\.signalValue\./u);
 });
 
 test('theme switch is URL backed on custom routes', async ({ page }) => {
@@ -556,6 +640,54 @@ test('m-scatter WebGPU streaming is integrated and preserves its viewport', asyn
   }
 });
 
+test('the server-function sample is a capped chunked response used by all WebGPU routes', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const stream = await page.evaluate(async () => {
+    const response = await fetch('/api/webgpu-stream?count=1000000000');
+    const reader = response.body?.getReader();
+    if (reader === undefined) throw new Error('Missing response body.');
+    const decoder = new TextDecoder();
+    let chunkCount = 0;
+    let json = '';
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunkCount += 1;
+      json += decoder.decode(result.value, { stream: true });
+    }
+    json += decoder.decode();
+    const payload = JSON.parse(json) as { records: unknown[] };
+    return {
+      cacheControl: response.headers.get('cache-control'),
+      chunkCount,
+      count: payload.records.length,
+      countHeader: response.headers.get('x-m-charts-record-count'),
+      protocol: response.headers.get('x-m-charts-stream-protocol'),
+      status: response.status,
+    };
+  });
+  expect(stream.status).toBe(200);
+  expect(stream.cacheControl).toContain('no-store');
+  expect(stream.protocol).toBe('m-charts-webgpu-record-stream-v1');
+  expect(stream.countHeader).toBe('5000');
+  expect(stream.count).toBe(5_000);
+  expect(stream.chunkCount).toBeGreaterThan(3);
+
+  for (const route of [
+    '/m-scatter-webgpu',
+    '/m-histogram-webgpu',
+    '/m-parallel-webgpu',
+  ]) {
+    await page.goto(`${route}?webgpuData=stream-function`);
+    await expect(page.getByText(/hard-capped at 5,000|capped live response/u)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Server function' })).toHaveClass(
+      /is-active/u,
+    );
+  }
+});
+
 async function getScatterStreamResponsiveness(page: Page): Promise<{
   maxFrameGapMs: number;
   maxLongTaskMs: number;
@@ -686,6 +818,29 @@ test('m-scatter WebGPU generates, reuses, switches, and deletes its browser-loca
     { timeout: 30_000 },
   );
   await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toHaveCount(0);
+
+  await page.getByTestId('scatter-webgpu-table-mode').getByRole('button', {
+    name: 'Streaming',
+  }).click();
+  await expect(page).toHaveURL(/webgpuData=stream-local/u);
+  await expect(page.getByTestId('scatter-fast-chart-shell')).toHaveAttribute(
+    'data-record-count',
+    '1000',
+    { timeout: 30_000 },
+  );
+  const advancedDiagnostics = page.locator('details.route-advanced-diagnostics');
+  if (!(await advancedDiagnostics.evaluate(
+    (element) => (element as HTMLDetailsElement).open,
+  ))) {
+    await advancedDiagnostics.locator(':scope > summary').click();
+  }
+  const diagnostics = page.getByTestId('scatter-fast-dataset-diagnostics');
+  await diagnostics.getByText('Dataset diagnostics', { exact: true }).click();
+  await expect(diagnostics).toContainText('indexeddb://');
+  await page.getByTestId('scatter-webgpu-table-mode').getByRole('button', {
+    name: 'Single table',
+  }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get('webgpuData')).toBeNull();
 
   await page.evaluate(() => {
     (globalThis as typeof globalThis & { __webgpuDocumentMarker?: string })
@@ -966,6 +1121,7 @@ test('m-parallel WebGPU matches shared dataset controls and reload behavior', as
       name: 'Single table',
     }),
   ).toHaveClass(/is-active/u);
+  await expect(page.getByTestId('parallel-webgpu-table-mode').getByRole('button')).toHaveCount(3);
   const details = page.getByTestId('parallel-webgpu-dataset-details');
   await details.getByText('Dataset details', { exact: true }).click();
   await expect(details).toContainText('complete source data');
@@ -995,6 +1151,76 @@ test('m-parallel WebGPU matches shared dataset controls and reload behavior', as
     (globalThis as typeof globalThis & { __parallelDocumentMarker?: string })
       .__parallelDocumentMarker ?? null,
   )).toBeNull();
+});
+
+test('WebGPU local streaming retains the selected multiple-table dataset', async ({
+  page,
+}) => {
+  for (const route of [
+    '/m-scatter-webgpu',
+    '/m-histogram-webgpu',
+    '/m-parallel-webgpu',
+  ]) {
+    await page.goto(`${route}?points=1000000&tables=multi`);
+    await page.getByRole('button', { name: 'Streaming', exact: true }).click();
+    await expect.poll(() => {
+      const url = new URL(page.url());
+      return `${url.searchParams.get('webgpuData')}:${url.searchParams.get('tables')}`;
+    }).toBe('stream-local:multi');
+  }
+});
+
+test('m-parallel WebGPU streaming exposes a usable frame while data is arriving', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  test.skip(
+    process.env.M_CHARTS_ENABLE_WEBGPU_E2E !== '1',
+    'Set M_CHARTS_ENABLE_WEBGPU_E2E=1 on a WebGPU-capable machine.',
+  );
+  await page.goto(
+    '/m-parallel-webgpu?points=1000000&webgpuData=stream-local&__e2eParallelFastBrushHook=1',
+    { waitUntil: 'domcontentloaded' },
+  );
+  const chart = page.getByTestId('parallel-fast-chart-layout');
+  const shell = page.getByRole('region', { name: 'Parallel fast WebGPU chart' });
+  await expect(shell).toHaveAttribute('data-plot-ready', 'true', { timeout: 60_000 });
+  await expect(page.getByTestId('parallel-fast-plot-loading')).toHaveCount(0);
+  let observedStreamUpdates = 0;
+  let previousLoadedCount = 0;
+  let prefixMismatch = false;
+  await expect.poll(async () => {
+    const loadedCount = Number(
+      await page.getByTestId('parallel-webgpu-stream-progress').getAttribute(
+        'data-loaded-count',
+      ),
+    );
+    const renderedCount = Number(await chart.getAttribute('data-record-count'));
+    if (loadedCount > previousLoadedCount) {
+      observedStreamUpdates += 1;
+      previousLoadedCount = loadedCount;
+      if (renderedCount !== loadedCount) prefixMismatch = true;
+    }
+    return loadedCount;
+  }, { timeout: 120_000 }).toBe(1_000_000);
+  expect(prefixMismatch).toBe(false);
+  expect(observedStreamUpdates).toBeGreaterThan(1);
+  await expect.poll(async () => Number(
+    await page.getByTestId('parallel-webgpu-stream-progress').getAttribute('data-loaded-count'),
+  ), { timeout: 120_000 }).toBe(1_000_000);
+  await expect(chart).toHaveAttribute('data-record-count', '1000000', {
+    timeout: 120_000,
+  });
+  await expect(chart).toHaveAttribute('data-render-state', 'ready', {
+    timeout: 120_000,
+  });
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & {
+      __parallelFastPrototypeTestHooks?: {
+        getWebgpuDiagnostics(): { renderMode: string } | null;
+      };
+    }).__parallelFastPrototypeTestHooks?.getWebgpuDiagnostics()?.renderMode ?? null,
+  )).toBe('hybrid');
 });
 
 test('m-parallel WebGPU loads a stored 10M dataset without a tab crash', async ({

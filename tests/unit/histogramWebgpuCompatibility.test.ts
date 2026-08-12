@@ -10,6 +10,7 @@ import * as webgpuHistogram from '../../packages/m-charts/src/m-histogram-webgpu
 import type { HistogramPlotOptions } from '../../packages/m-charts/src/m-histogram/index.ts';
 import type {
   HistogramWebgpuPlotOptions,
+  HistogramWebgpuStreamingPlotOptions,
 } from '../../packages/m-charts/src/m-histogram-webgpu/index.ts';
 
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -45,11 +46,18 @@ assert.equal(
   webgpuHistogram.createHistogramPlot,
   webgpuHistogram.createHistogramWebgpuPlot,
 );
+assert.equal(typeof webgpuHistogram.createHistogramWebgpuStreamingPlot, 'function');
 
 function acceptsWebgpuOptions(options: HistogramWebgpuPlotOptions): void {
   void options;
 }
 acceptsWebgpuOptions(null as unknown as HistogramPlotOptions);
+
+function acceptsStreamingOptions(options: HistogramWebgpuStreamingPlotOptions): void {
+  void options.dataSource.batches;
+  void options.dataSource.spec;
+}
+void acceptsStreamingOptions;
 
 const sharedEngine = readFileSync(
   resolve(repoRoot, 'packages/m-charts/src/m-histogram/engine/createHistogramEngine.ts'),

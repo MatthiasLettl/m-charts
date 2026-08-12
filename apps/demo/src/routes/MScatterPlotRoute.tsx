@@ -265,7 +265,8 @@ type DatasetLoadState =
         | 'http-webgpu-stream'
         | 'indexeddb-webgpu-binary'
         | 'local-webgpu-stream'
-        | 'paged-webgpu-binary';
+        | 'paged-webgpu-binary'
+        | 'server-function-webgpu-stream';
       sourceUrl: string;
       streaming?: {
         kind: ScatterWebgpuDemoStreamKind;
@@ -592,11 +593,14 @@ export function MScatterPlotRoute({
       try {
         const loadResult =
           webgpuPointCount !== null && webgpuStreamKind !== null
-            ? await loadWebgpuStreamingDataset(
+              ? await loadWebgpuStreamingDataset(
                 startedAt,
                 webgpuPointCount,
                 webgpuStreamKind,
                 abortController.signal,
+                tableMode === 'multi'
+                  ? deriveSecondaryTableFixtureUrl(mixedTableFixtureUrl)
+                  : null,
               )
           : webgpuPointCount !== null
             ? await loadWebgpuScatterDataset(
@@ -776,7 +780,6 @@ export function MScatterPlotRoute({
     if (kind === webgpuStreamKind) return;
     const next = new URL(window.location.href);
     next.searchParams.set(WEBGPU_DATA_SOURCE_PARAM, `stream-${kind}`);
-    next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
     next.searchParams.delete(FAST_SCATTER_X_AXIS_PARAM);
     next.searchParams.set(FAST_SCATTER_X_MODE_PARAM, DEFAULT_FAST_SCATTER_X_MODE);
     clearFastScatterViewportSearchParams(next.searchParams);
@@ -2518,9 +2521,16 @@ export function MScatterPlotRoute({
                       </button>
                     ))}
                   </div>
-                  {webgpuStreamKind === 'http' ? (
+                  {webgpuStreamKind === 'local' ? (
+                    <p className="compact-note">
+                      Streams the selected {tableMode === 'multi' ? 'multiple-table' : 'single-table'} dataset from browser-local pages (IndexedDB when stored).
+                    </p>
+                  ) : null}
+                  {webgpuStreamKind === 'http' || webgpuStreamKind === 'function' ? (
                     <p className="compact-note" data-testid="scatter-webgpu-http-stream-size">
-                      The HTTP demonstration uses a small server-provisioned sample
+                      The {webgpuStreamKind === 'function'
+                        ? 'Vercel Function demonstration uses a capped live response'
+                        : 'static HTTP demonstration uses a small paged sample'}
                       ({formatCount(datasetState.status === 'loaded'
                         ? datasetState.tableMetadata?.tableRecordCounts['benchmark-primary'] ?? 0
                         : 0)} points).
@@ -2550,7 +2560,7 @@ export function MScatterPlotRoute({
                       className="segmented-control scatter-webgpu-stream-source-control"
                       data-testid="scatter-webgpu-stream-source"
                     >
-                      {(['local', 'http'] as const).map((kind) => (
+                      {(['local', 'http', 'function'] as const).map((kind) => (
                         <button
                           aria-pressed={webgpuStreamKind === kind}
                           className={webgpuStreamKind === kind ? 'is-active' : undefined}
@@ -2558,7 +2568,9 @@ export function MScatterPlotRoute({
                           onClick={() => selectWebgpuStreamKind(kind)}
                           type="button"
                         >
-                          {kind === 'local' ? 'Local worker' : 'HTTP pages'}
+                          {kind === 'local'
+                            ? 'Browser local'
+                            : kind === 'http' ? 'Static HTTP pages' : 'Server function'}
                         </button>
                       ))}
                     </div>
@@ -2572,7 +2584,9 @@ export function MScatterPlotRoute({
                       <p className="compact-note">
                         {webgpuStreamKind === null
                           ? 'Primary table size. The multiple-table demo adds a fixed 1,000-record secondary table with shared and secondary-only columns.'
-                          : 'Streaming uses the same renderer, axes, interaction bindings, and display modes. Local batches come from a worker; HTTP batches arrive from small binary pages.'}
+                          : webgpuStreamKind === 'function'
+                            ? 'A small Vercel Function sends one genuinely chunked JSON response. The browser decodes records incrementally into typed batches without calling response.json().'
+                            : 'Streaming uses the same renderer, axes, interaction bindings, and display modes. Browser-local batches use IndexedDB or the seeded worker; static HTTP batches arrive from small binary pages.'}
                       </p>
                       <p className="compact-note">
                         Settled point views draw every visible record through one million
@@ -3562,12 +3576,14 @@ async function loadWebgpuStreamingDataset(
   requestedPointCount: number,
   kind: ScatterWebgpuDemoStreamKind,
   signal: AbortSignal,
+  secondaryFixtureUrl: string | null,
 ): Promise<Omit<LoadedDatasetState, 'status'>> {
   const fetchStartedAt = performance.now();
   if (kind === 'local') await assertWebgpuPointCapacity(requestedPointCount);
   const prepared = await prepareScatterWebgpuDemoStream({
     kind,
     pointCount: requestedPointCount,
+    ...(secondaryFixtureUrl === null ? {} : { secondaryFixtureUrl }),
     signal,
   });
   const columns = prepared.firstBatch.columns as FastScatterDisplayColumns;
@@ -3600,10 +3616,16 @@ async function loadWebgpuStreamingDataset(
     loadTimeMs: performance.now() - startedAt,
     parseMs: 0,
     schemaEncodeMs: 0,
-    sourceFormat: kind === 'http' ? 'http-webgpu-stream' : 'local-webgpu-stream',
+    sourceFormat: kind === 'function'
+      ? 'server-function-webgpu-stream'
+      : kind === 'http' ? 'http-webgpu-stream' : 'local-webgpu-stream',
     sourceUrl: prepared.sourceUrl,
     streaming: { kind, source: prepared.source },
-    tableMetadata: createSingleTableMetadata(prepared.pointCount),
+    tableMetadata: {
+      tableCount: prepared.tableNames.length,
+      tableNames: prepared.tableNames,
+      tableRecordCounts: prepared.tableRecordCounts,
+    },
   };
 }
 
@@ -6029,6 +6051,7 @@ function parseWebgpuStreamKind(
   const value = searchParams.get(WEBGPU_DATA_SOURCE_PARAM);
   if (value === 'stream-local') return 'local';
   if (value === 'stream-http') return 'http';
+  if (value === 'stream-function') return 'function';
   return null;
 }
 

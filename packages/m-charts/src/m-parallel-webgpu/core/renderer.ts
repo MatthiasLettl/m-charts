@@ -9,6 +9,7 @@ import {
   type ParallelFastTheme,
   type ParallelNearestRecordResult,
   type ParallelRawValuesByAxis,
+  type ParallelWebgpuPackedPage,
   type ParallelWebgl2RendererDrawMetrics,
   type ParallelWebgl2RendererSetupMetrics,
   type ParallelWebgl2SelectedUpdateMetrics,
@@ -105,6 +106,7 @@ interface ParallelGpuResources {
   renderPipeline: GPURenderPipeline;
   renderUniformBuffer: GPUBuffer;
   selectionClearPipeline: GPUComputePipeline;
+  selectionBindGroupLayout: GPUBindGroupLayout;
   selectionPipeline: GPUComputePipeline;
   selectedMaskBuffer: GPUBuffer;
 }
@@ -162,7 +164,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    private readonly buffers: ParallelBuffers,
+    private buffers: ParallelBuffers,
     private readonly options: ParallelWebgpuRendererOptions = {},
   ) {
     this.theme = options.theme ?? DEFAULT_THEME;
@@ -244,6 +246,159 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
 
   getDiagnostics(): ParallelWebgpuDiagnostics {
     return { ...this.diagnostics, densityVisible: this.densityVisible };
+  }
+
+  /** @internal Adds one decoder-prepared page without rebuilding resident GPU state. */
+  async appendPackedPage(
+    packedPage: ParallelWebgpuPackedPage,
+    nextBuffers: ParallelBuffers,
+  ): Promise<void> {
+    await this.interactive;
+    await this.waitForAggregationIdle();
+    const gpu = this.gpu;
+    const context = this.context;
+    if (this.disposed || gpu === null || context === null) return;
+    const previousRecordCount = this.buffers.recordCount;
+    const previousStreamingCapacity = Math.max(
+      previousRecordCount,
+      this.buffers.webgpuPackedData?.streamingCapacity ?? previousRecordCount,
+    );
+    const streamingCapacity = Math.max(
+      previousRecordCount,
+      nextBuffers.webgpuPackedData?.streamingCapacity ?? nextBuffers.recordCount,
+    );
+    if (
+      packedPage.start !== previousRecordCount ||
+      packedPage.count <= 0 ||
+      nextBuffers.recordCount !== previousRecordCount + packedPage.count ||
+      nextBuffers.axisCount !== this.buffers.axisCount ||
+      nextBuffers.axisOrder.some((axis, index) => axis !== this.buffers.axisOrder[index]) ||
+      streamingCapacity !== previousStreamingCapacity ||
+      nextBuffers.recordCount > streamingCapacity
+    ) {
+      throw new Error('The streamed parallel page is incompatible with the resident renderer.');
+    }
+
+    Object.assign(this.buffers, nextBuffers);
+    this.wasmSelection = null;
+    const page = createPackedGpuPage({
+      axisBuffer: gpu.axisBuffer,
+      axisCount: this.buffers.axisCount,
+      binBuffer: gpu.binBuffer,
+      computeBindGroupLayout: gpu.computeBindGroupLayout,
+      count: packedPage.count,
+      densityStyles: packedPage.densityStyles,
+      device: context.device,
+      directBindGroupLayout: gpu.directBindGroupLayout,
+      preselectedMaskBuffer: gpu.preselectedMaskBuffer,
+      refinementRecordBuffer: gpu.refinementRecordBuffer,
+      refinementStateBuffer: gpu.refinementStateBuffer,
+      selectedMaskBuffer: gpu.selectedMaskBuffer,
+      selectionBindGroupLayout: gpu.selectionBindGroupLayout,
+      start: packedPage.start,
+      values: packedPage.values,
+    });
+    gpu.pages.push(page);
+
+    const addedResidentBytes = packedPage.values.byteLength +
+      packedPage.densityStyles.byteLength + COMPUTE_UNIFORM_BYTES +
+      DIRECT_UNIFORM_BYTES;
+    let addedUploadBytes = packedPage.values.byteLength +
+      packedPage.densityStyles.byteLength;
+    if (this.diagnostics.renderMode === 'hybrid') {
+      const representativePage = gpu.staticDirectPages.find(
+        (candidate) => candidate.representativeOnly === true,
+      );
+      if (representativePage === undefined) {
+        throw new Error('The streamed parallel representative page is unavailable.');
+      }
+      const existingSourceIndices =
+        representativePage.representativeSourceIndices ?? new Uint32Array(0);
+      const remainingCapacity = Math.max(
+        0,
+        this.diagnostics.representativeRecordCount - existingSourceIndices.length,
+      );
+      const representativeCount = Math.min(
+        packedPage.count,
+        remainingCapacity,
+        Math.max(
+          1,
+          Math.round(
+            (packedPage.count / streamingCapacity) *
+            this.diagnostics.representativeRecordCount,
+          ),
+        ),
+      );
+      const nextSourceIndices = createUniformSourceIndicesForRange(
+          packedPage.start,
+          packedPage.count,
+          representativeCount,
+        );
+      const allSourceIndices = new Uint32Array(
+        existingSourceIndices.length + nextSourceIndices.length,
+      );
+      allSourceIndices.set(existingSourceIndices);
+      allSourceIndices.set(nextSourceIndices, existingSourceIndices.length);
+      const representativeValues = packSampledRecordMajorValues(
+        this.buffers,
+        allSourceIndices,
+      );
+      const representativeStyles = packSampledStyles(
+        this.buffers,
+        this.theme,
+        allSourceIndices,
+      );
+      if (representativeValues.byteLength > 0) {
+        context.device.queue.writeBuffer(
+          representativePage.valuesBuffer,
+          0,
+          representativeValues,
+        );
+      }
+      if (representativeStyles.byteLength > 0) {
+        context.device.queue.writeBuffer(
+          representativePage.styleBuffer,
+          0,
+          representativeStyles,
+        );
+      }
+      if (allSourceIndices.byteLength > 0) {
+        context.device.queue.writeBuffer(
+          representativePage.sourceIndicesBuffer,
+          0,
+          allSourceIndices,
+        );
+      }
+      representativePage.count = allSourceIndices.length;
+      representativePage.representativeSourceIndices = allSourceIndices;
+      addedUploadBytes += representativeValues.byteLength +
+        representativeStyles.byteLength + allSourceIndices.byteLength;
+    } else {
+      gpu.staticDirectPages.push(page);
+    }
+    gpu.directPages = gpu.staticDirectPages;
+    const pairCount = Math.max(0, this.buffers.axisCount - 1);
+    this.diagnostics = {
+      ...this.diagnostics,
+      directRecordCount: resolveDirectRecordCount(
+        this.buffers,
+        this.options.directSegmentLimit,
+      ),
+      hoverSearchRecordCount:
+        this.diagnostics.renderMode === 'hybrid'
+          ? gpu.staticDirectPages.reduce((sum, candidate) => sum + candidate.count, 0)
+          : this.buffers.recordCount,
+      pageCount: gpu.pages.length,
+      residentBytes: this.diagnostics.residentBytes + addedResidentBytes,
+      uploadBytes: this.diagnostics.uploadBytes + addedUploadBytes,
+    };
+    this.setupMetrics.segmentCount = pairCount * this.buffers.recordCount;
+    this.setupMetrics.vertexCount = pairCount * this.buffers.recordCount * 2;
+    if (this.buffers.recordCount >= streamingCapacity) {
+      await this.aggregate(this.selectionFromBrushes);
+    } else {
+      await this.aggregateAppendedPage(page);
+    }
   }
 
   dispose(): void {
@@ -889,9 +1044,13 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
       'parallel density bins',
     );
+    const maskRecordCapacity = Math.max(
+      this.buffers.recordCount,
+      this.buffers.webgpuPackedData?.streamingCapacity ?? 0,
+    );
     const maskByteLength = Math.max(
       EMPTY_BUFFER_BYTES,
-      Math.ceil(this.buffers.recordCount / 32) * Uint32Array.BYTES_PER_ELEMENT,
+      Math.ceil(maskRecordCapacity / 32) * Uint32Array.BYTES_PER_ELEMENT,
     );
     const selectedMaskBuffer = createBuffer(
       device,
@@ -1224,6 +1383,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       ? await createRepresentativeGpuPage({
           axisBuffer,
           buffers: this.buffers,
+          capacity: this.diagnostics.representativeRecordCount,
           directBindGroupLayout,
           device,
           theme: this.theme,
@@ -1297,6 +1457,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       renderPipeline,
       renderUniformBuffer,
       selectionClearPipeline,
+      selectionBindGroupLayout,
       selectionPipeline,
       selectedMaskBuffer,
     };
@@ -1319,6 +1480,57 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       this.aggregationInFlight = null;
       this.drainAggregationRequests();
     });
+  }
+
+  private async aggregateAppendedPage(page: ParallelGpuPage): Promise<void> {
+    const gpu = this.gpu;
+    const context = this.context;
+    if (this.disposed || gpu === null || context === null) return;
+    if (this.diagnostics.renderMode === 'direct') {
+      this.densityVisible = false;
+      this.draw();
+      await context.device.queue.onSubmittedWorkDone();
+      return;
+    }
+    const startedAt = performance.now();
+    const pairCount = Math.max(0, this.buffers.axisCount - 1);
+    writeComputeUniform(
+      context.device,
+      page,
+      this.buffers.axisCount,
+      this.diagnostics.binResolution,
+      this.selectionFromBrushes,
+      0,
+      { count: pairCount, start: 0 },
+      this.selectedSourceIndices.length > 0,
+      this.preselectedSourceIndices.length > 0,
+      this.buffers.styleBuffers === undefined,
+    );
+    const encoder = context.device.createCommandEncoder({
+      label: 'parallel streamed page aggregation encoder',
+    });
+    const pass = encoder.beginComputePass({
+      label: 'parallel streamed page aggregation pass',
+    });
+    pass.setPipeline(gpu.computePipeline);
+    pass.setBindGroup(0, page.computeBindGroup!);
+    pass.dispatchWorkgroups(Math.ceil(page.count / 256));
+    pass.end();
+    context.device.queue.submit([encoder.finish()]);
+    await context.device.queue.onSubmittedWorkDone();
+    this.densityVisible = true;
+    this.diagnostics = {
+      ...this.diagnostics,
+      lastAggregationMs: performance.now() - startedAt,
+      lastAggregationPairCount: pairCount,
+    };
+    this.options.onMetrics?.({
+      aggregationResolution: this.diagnostics.binResolution,
+      densityBinCount: this.diagnostics.binCount,
+      rendererKind: 'webgpu-parallel-density',
+      rendererState: 'ready',
+    });
+    this.draw();
   }
 
   private scheduleSelectionAggregation(selectionFromBrushes: boolean): void {
@@ -1900,9 +2112,125 @@ function createBufferWithData(
   return buffer;
 }
 
+function createPackedGpuPage(options: {
+  axisBuffer: GPUBuffer;
+  axisCount: number;
+  binBuffer: GPUBuffer;
+  computeBindGroupLayout: GPUBindGroupLayout;
+  count: number;
+  densityStyles: Uint32Array;
+  device: GPUDevice;
+  directBindGroupLayout: GPUBindGroupLayout;
+  preselectedMaskBuffer: GPUBuffer;
+  refinementRecordBuffer: GPUBuffer;
+  refinementStateBuffer: GPUBuffer;
+  selectedMaskBuffer: GPUBuffer;
+  selectionBindGroupLayout: GPUBindGroupLayout;
+  start: number;
+  values: Uint32Array;
+}): ParallelGpuPage {
+  const expectedValueWords = Math.max(
+    1,
+    Math.ceil((options.count * options.axisCount) / 2),
+  );
+  const expectedStyleWords = Math.max(1, Math.ceil(options.count / 2));
+  if (
+    options.values.length !== expectedValueWords ||
+    options.densityStyles.length !== expectedStyleWords
+  ) {
+    throw new Error(`Parallel packed page ${options.start} has invalid coordinate or style lengths.`);
+  }
+  const valuesBuffer = createBufferWithData(
+    options.device,
+    options.values,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+    'parallel streamed normalized values page',
+  );
+  const styleBuffer = createBufferWithData(
+    options.device,
+    options.densityStyles,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+    'parallel streamed styles page',
+  );
+  const computeUniformBuffer = createBuffer(
+    options.device,
+    COMPUTE_UNIFORM_BYTES,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+    'parallel streamed compute uniform',
+  );
+  const directUniformBuffer = createBuffer(
+    options.device,
+    DIRECT_UNIFORM_BYTES,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+    'parallel streamed direct uniform',
+  );
+  return {
+    computeBindGroup: options.device.createBindGroup({
+      entries: [
+        { binding: 0, resource: { buffer: valuesBuffer } },
+        { binding: 1, resource: { buffer: styleBuffer } },
+        { binding: 2, resource: { buffer: options.binBuffer } },
+        { binding: 3, resource: { buffer: options.selectedMaskBuffer } },
+        { binding: 4, resource: { buffer: options.preselectedMaskBuffer } },
+        { binding: 5, resource: { buffer: options.axisBuffer } },
+        { binding: 6, resource: { buffer: computeUniformBuffer } },
+        { binding: 7, resource: { buffer: options.refinementRecordBuffer } },
+        { binding: 8, resource: { buffer: options.refinementStateBuffer } },
+      ],
+      layout: options.computeBindGroupLayout,
+    }),
+    computeUniformBuffer,
+    count: options.count,
+    directBindGroup: options.device.createBindGroup({
+      entries: [
+        { binding: 0, resource: { buffer: valuesBuffer } },
+        { binding: 1, resource: { buffer: styleBuffer } },
+        { binding: 2, resource: { buffer: options.axisBuffer } },
+        { binding: 3, resource: { buffer: directUniformBuffer } },
+      ],
+      layout: options.directBindGroupLayout,
+    }),
+    directUniformBuffer,
+    selectionBindGroup: options.device.createBindGroup({
+      entries: [
+        { binding: 0, resource: { buffer: valuesBuffer } },
+        { binding: 1, resource: { buffer: options.binBuffer } },
+        { binding: 2, resource: { buffer: options.selectedMaskBuffer } },
+        { binding: 3, resource: { buffer: options.axisBuffer } },
+        { binding: 4, resource: { buffer: computeUniformBuffer } },
+      ],
+      layout: options.selectionBindGroupLayout,
+    }),
+    sourceIndicesBuffer: valuesBuffer,
+    start: options.start,
+    styleBuffer,
+    valueEncoding: 1,
+    valuesBuffer,
+  };
+}
+
+function createUniformSourceIndicesForRange(
+  start: number,
+  count: number,
+  limit: number,
+): Uint32Array {
+  const sampleCount = Math.min(count, Math.max(0, Math.floor(limit)));
+  if (sampleCount === 0) return new Uint32Array(0);
+  if (sampleCount === count) {
+    return Uint32Array.from({ length: count }, (_, index) => start + index);
+  }
+  const result = new Uint32Array(sampleCount);
+  const denominator = Math.max(1, sampleCount - 1);
+  for (let index = 0; index < sampleCount; index += 1) {
+    result[index] = start + Math.floor((index * (count - 1)) / denominator);
+  }
+  return result;
+}
+
 async function createRepresentativeGpuPage(options: {
   axisBuffer: GPUBuffer;
   buffers: ParallelBuffers;
+  capacity?: number;
   device: GPUDevice;
   directBindGroupLayout: GPUBindGroupLayout;
   limit: number;
@@ -1912,6 +2240,7 @@ async function createRepresentativeGpuPage(options: {
   const sourceIndices = options.sourceIndices ??
     await createParallelRepresentativeSourceIndices(options.buffers, options.limit);
   const count = sourceIndices.length;
+  const capacity = Math.max(count, options.capacity ?? count);
   const packedValues = packSampledRecordMajorValues(
     options.buffers,
     sourceIndices,
@@ -1923,24 +2252,32 @@ async function createRepresentativeGpuPage(options: {
   );
   const valuesBuffer = createBuffer(
     options.device,
-    packedValues.byteLength,
+    Math.max(1, Math.ceil((capacity * options.buffers.axisCount) / 2)) *
+      Uint32Array.BYTES_PER_ELEMENT,
     GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     'parallel representative values',
   );
   const styleBuffer = createBuffer(
     options.device,
-    packedStyles.byteLength,
+    Math.max(1, capacity) * Uint32Array.BYTES_PER_ELEMENT,
     GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     'parallel representative styles',
   );
   options.device.queue.writeBuffer(valuesBuffer, 0, packedValues);
   options.device.queue.writeBuffer(styleBuffer, 0, packedStyles);
-  const sourceIndicesBuffer = createBufferWithData(
+  const sourceIndicesBuffer = createBuffer(
     options.device,
-    sourceIndices,
-    GPUBufferUsage.STORAGE,
+    Math.max(1, capacity) * Uint32Array.BYTES_PER_ELEMENT,
+    GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
     'parallel representative source indices',
   );
+  if (sourceIndices.byteLength > 0) {
+    options.device.queue.writeBuffer(
+      sourceIndicesBuffer,
+      0,
+      new Uint32Array(sourceIndices),
+    );
+  }
   const directUniformBuffer = createBuffer(
     options.device,
     DIRECT_UNIFORM_BYTES,
@@ -2437,7 +2774,13 @@ function resolveRepresentativeRecordCount(
   const normalizedLimit = Number.isFinite(limit)
     ? Math.max(0, Math.floor(limit))
     : DEFAULT_REPRESENTATIVE_RECORD_LIMIT;
-  return Math.min(buffers.recordCount, normalizedLimit);
+  return Math.min(
+    Math.max(
+      buffers.recordCount,
+      buffers.webgpuPackedData?.streamingCapacity ?? 0,
+    ),
+    normalizedLimit,
+  );
 }
 
 function resolveRenderMode(
@@ -2446,10 +2789,16 @@ function resolveRenderMode(
 ): ParallelWebgpuDiagnostics['renderMode'] {
   if (options.renderMode === 'density') return 'density';
   if (options.renderMode === 'direct') return 'direct';
-  return buffers.recordCount <= resolveDirectRecordCount(
-    buffers,
-    options.directSegmentLimit,
-  )
+  const effectiveRecordCount = Math.max(
+    buffers.recordCount,
+    buffers.webgpuPackedData?.streamingCapacity ?? 0,
+  );
+  const pairCount = Math.max(1, buffers.axisCount - 1);
+  const directRecordLimit = Math.floor(
+    Math.max(0, options.directSegmentLimit ?? DEFAULT_DIRECT_SEGMENT_LIMIT) /
+    pairCount,
+  );
+  return effectiveRecordCount <= directRecordLimit
     ? 'direct'
     : 'hybrid';
 }

@@ -8,6 +8,7 @@ folders, then add:
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-parallel-webgpu/core -> src/vendor/m-charts/m-parallel-webgpu/core
 packages/m-charts/src/m-parallel-webgpu/engine -> src/vendor/m-charts/m-parallel-webgpu/engine
+packages/m-charts/src/m-parallel-webgpu/adapters -> src/vendor/m-charts/m-parallel-webgpu/adapters # live streams only
 ```
 
 The shared `plot-engine-webgpu` copy includes the embedded selection WASM
@@ -26,6 +27,48 @@ The same buffers, options, bindings, commands, events, overlays, selection and
 inspection payloads, themes, shared CSS hooks, keyboard shortcuts, and
 controlled updates remain valid. Await `plot.interactive` for the first
 displayed frame or `plot.ready` for the first complete settled frame.
+
+After that renderer migration, switch an all-at-once WebGPU plot from
+`buffers` to typed batches plus stable full-stream domains:
+
+```ts
+import {
+  createParallelWebgpuStreamingPlot,
+} from './vendor/m-charts/m-parallel-webgpu/adapters/index.js';
+
+const { buffers: _buffers, ...streamOptions } = options;
+const plot = await createParallelWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: {
+    batches, // AsyncIterable<{ columns: ParallelFastColumns, packedPage? }>
+    domainsByAxis,
+    expectedCount,
+  },
+});
+plot.use(createDefaultParallelBindings());
+
+try {
+  await plot.streaming.done;
+} catch (error) {
+  // The loaded prefix remains interactive until it is disposed.
+  console.error('Parallel stream stopped.', error);
+}
+```
+
+Every batch must keep the same axis order and consistently include or omit
+`packedPage`. Prepared pages append directly to resident GPU data; unknown
+counts grow capacity geometrically and rebuild only when a capacity boundary is
+crossed. Sources without packed pages use geometrically growing replacement
+prefixes. Current axis viewports and exact brush selection are refreshed as new
+rows arrive. `expectedCount` is optional and validated when present. Use
+`signal`, `plot.streaming.abort()`, or `plot.dispose()` to cancel, and restart
+the source before attempting WebGL2 fallback after a consumed stream fails.
+
+For an HTTP server-stream producer, decode `response.body` incrementally and
+map each decoded record batch to `ParallelWebgpuStreamBatch`; do not call
+`response.json()`. The repository's
+[server-function demonstration](../server-function-streaming.md) shows this
+complete path with a hard-capped Vercel Function shared by all three plots.
 
 The following version retains WebGL2 for clients or datasets that cannot start
 WebGPU:

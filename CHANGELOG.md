@@ -4,6 +4,51 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Vercel Function Streaming Demonstration
+
+- Added a real, opt-in `/api/webgpu-stream` Vercel Function that returns one
+  chunked Web `ReadableStream` containing a deterministic, hard-capped
+  5,000-record JSON sample. Query parameters cannot increase its size; it uses
+  `no-store`, protocol/count headers, route-level request cancellation, Fluid
+  Compute, and an explicit 10-second maximum duration.
+- Added `?webgpuData=stream-function` to the scatter, histogram, and
+  parallel-coordinate WebGPU routes. All three pass `response.body` through the
+  public incremental JSON-record decoder and their typed streaming adapters;
+  none calls `response.json()` or materializes the complete HTTP payload first.
+- Added a Vite development middleware backed by the same exported handler,
+  endpoint/protocol and three-chart integration tests, overview links, and a
+  deployment/verification guide. Large 1M/10M/25M modes remain browser-local
+  and never invoke the function.
+
+## WebGPU Histogram And Parallel Streaming
+
+- Added non-breaking live typed-batch constructors for WebGPU histograms and
+  parallel-coordinate plots, matching scatter's first-batch startup, optional
+  count/capacity hints, progress, completion, cancellation, and loaded-prefix
+  controller shape while retaining all static constructors.
+- Preserved histogram selections and user viewports while rebuilding exact
+  aggregation for each prefix. Parallel streams require prepared full-stream
+  domains, retain brushes/axis viewports, append decoder-prepared pages to the
+  resident renderer, and backpressure producers until each batch is visible.
+- Added scatter-aligned `Streaming` actions to the overview and three-way
+  dataset controls to both existing WebGPU demo routes. The live routes now
+  page the same browser-generated IndexedDB datasets used by all-at-once mode
+  (with the identical seeded local worker as the missing-cache fallback),
+  report loaded-prefix progress, and support both single- and multiple-table
+  inputs through the public streaming constructors.
+- Kept histogram aggregation snapshots synchronized with geometrically growing
+  streamed prefixes so subplot count axes grow without quadratic per-batch
+  full-prefix copies/rebuilds, and explicitly render every published
+  aggregation so canvas bars and color stacks match those axes.
+  The seeded demo stream also uses the normal-table signal domains so continuous
+  bin boundaries and axis labels remain identical between loading modes.
+  Parallel streams append decoder-prepared GPU pages and increment only the new
+  page's density contribution while capacity is available, grow unknown-count
+  resident resources geometrically, retain CPU columns as zero-copy segmented
+  views, refresh active brush membership, and maintain a bounded representative
+  layer for smooth final interaction. Non-packed sources retain the sparse
+  replacement fallback.
+
 ## WebGPU Scatter Streaming
 
 - Added non-breaking live typed-batch ingestion for WebGPU scatter plots. The
@@ -17,23 +62,23 @@ should remain unchanged.
 - Allowed the live JSON/record bridge to omit its final count; known counts still
   preallocate and validate, while the legacy materializing loader remains
   explicitly known-count-only.
-- Integrated local-worker and small paged-HTTP streaming samples into the
-  regular `/m-scatter-webgpu` demo route so they share its axes, interactions,
-  display modes, and sidebar. The former standalone URL now redirects there.
+- Integrated IndexedDB-backed local and small paged-HTTP streaming samples
+  into the regular `/m-scatter-webgpu` demo route so they share its axes,
+  interactions, display modes, and sidebar. The former standalone URL now
+  redirects there.
 - Kept the last completed GPU frame interactive during appends, bounded
   in-progress stream previews to representative point draws, and deferred the
   exact full-population frame until explicit stream completion. Streaming now
   retains lazy IDs and batch-only packed styles, coalesces cached submissions,
   drops superseded in-flight previews, periodically drains bounded upload
   staging, and avoids redundant sortedness scans and compact upload copies. Demo
-  worker generation, progress state, navigator, and overflow bookkeeping no
-  longer perform large unused work on the interaction thread. Local worker
-  deliveries now stay within short interaction-friendly slices, prepared
-  streams reuse their first worker/page instead of regenerating it, and stream
-  completion drains staged GPU work before the settled draw. The demo retains
+  progress state, navigator, and overflow bookkeeping no longer perform large
+  unused work on the interaction thread. IndexedDB page deliveries stay within
+  short interaction-friendly slices, prepared streams reuse their first page,
+  and stream completion drains staged GPU work before the settled draw. The demo retains
   completed columns behind a ref instead of republishing the full typed-column
   graph through React state.
-- Matched local-worker and HTTP stream viewports to static scatter datasets by
+- Matched local and HTTP stream viewports to static scatter datasets by
   applying the shared axis-aware domain padding before the first streamed frame.
 - Made first-batch waits abortable, cancelled released HTTP readers, and ensured
   failed or aborted streams leave their loaded prefix in the normal settled

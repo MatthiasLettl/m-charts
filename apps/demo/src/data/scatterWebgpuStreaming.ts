@@ -3,11 +3,19 @@ import type {
   FastScatterEncodedAxis,
   FastScatterPlotSpec,
   FastScatterPointColumns,
+  FastScatterTypedNumericArray,
 } from 'm-charts/m-scatter';
-import { createPaddedFastScatterDomainRange } from 'm-charts/m-scatter';
+import {
+  adaptMixedTablesForFastScatter,
+  createPaddedFastScatterDomainRange,
+} from 'm-charts/m-scatter';
 import type {
   FastScatterWebgpuStreamBatch,
   FastScatterWebgpuStreamSource,
+} from 'm-charts/m-scatter-webgpu';
+import {
+  createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
 } from 'm-charts/m-scatter-webgpu';
 
 import {
@@ -16,6 +24,21 @@ import {
   type ScatterWebgpuPagedManifest,
   type ScatterWebgpuPagedManifestPage,
 } from './scatterWebgpuDatasetFormat.ts';
+import {
+  getStoredScatterWebgpuDataset,
+  readStoredScatterWebgpuPage,
+  type StoredScatterWebgpuDataset,
+} from './scatterWebgpuDatasetStore.ts';
+import { loadFastPlotMixedTableFixture } from './fastPlotTableSources.ts';
+import {
+  WEBGPU_SERVER_STREAM_BATCH_SIZE,
+  WEBGPU_SERVER_STREAM_COUNT,
+  WEBGPU_SERVER_STREAM_COUNT_HEADER,
+  WEBGPU_SERVER_STREAM_ENDPOINT,
+  WEBGPU_SERVER_STREAM_PROTOCOL,
+  WEBGPU_SERVER_STREAM_PROTOCOL_HEADER,
+  WEBGPU_SERVER_STREAM_SCHEMA,
+} from './webgpuServerStreamProtocol.ts';
 
 export const SCATTER_WEBGPU_HTTP_STREAM_MANIFEST_URL =
   '/data/scatter-webgpu-stream.json';
@@ -28,23 +51,37 @@ const SIGNAL_SCALE = 0.0025;
 // columns and queued into several GPU buffers before control returns to input.
 const LOCAL_STREAM_BATCH_SIZE = 65_536;
 
-export type ScatterWebgpuDemoStreamKind = 'http' | 'local';
+export type ScatterWebgpuDemoStreamKind = 'function' | 'http' | 'local';
 
 export interface PreparedScatterWebgpuDemoStream {
   readonly firstBatch: FastScatterWebgpuStreamBatch;
+  readonly missingValueCountByColumn: Readonly<Record<string, number>>;
   readonly pointCount: number;
   readonly source: FastScatterWebgpuStreamSource;
   readonly sourceUrl: string;
+  readonly tableNames: readonly string[];
+  readonly tableRecordCounts: Readonly<Record<string, number>>;
 }
 
 export async function prepareScatterWebgpuDemoStream(options: {
+  batchSize?: number;
   kind: ScatterWebgpuDemoStreamKind;
   pointCount: number;
+  secondaryFixtureUrl?: string;
   signal: AbortSignal;
 }): Promise<PreparedScatterWebgpuDemoStream> {
-  const prepared = options.kind === 'http'
-    ? await createHttpStream(options.signal)
-    : createLocalStream(options.pointCount, options.signal);
+  let prepared = options.kind === 'function'
+    ? await createFunctionStream(options.signal)
+    : options.kind === 'http'
+      ? await createHttpStream(options.signal)
+      : await createLocalStream(options.pointCount, options.signal, options.batchSize);
+  if (options.secondaryFixtureUrl !== undefined) {
+    prepared = await appendSecondaryTableStream(
+      prepared,
+      options.secondaryFixtureUrl,
+      options.kind,
+    );
+  }
   const iterator = prepared.source.batches[Symbol.asyncIterator]();
   const first = await iterator.next();
   if (first.done || first.value.columns.x.length === 0) {
@@ -76,23 +113,65 @@ export async function prepareScatterWebgpuDemoStream(options: {
   };
   return {
     firstBatch,
+    missingValueCountByColumn: prepared.missingValueCountByColumn,
     pointCount: prepared.pointCount,
     source,
     sourceUrl: prepared.sourceUrl,
+    tableNames: prepared.tableNames,
+    tableRecordCounts: prepared.tableRecordCounts,
   };
 }
 
-function createLocalStream(
+type UnpreparedScatterWebgpuDemoStream = Omit<
+  PreparedScatterWebgpuDemoStream,
+  'firstBatch'
+>;
+
+async function createLocalStream(
   pointCount: number,
   signal: AbortSignal,
-): Omit<PreparedScatterWebgpuDemoStream, 'firstBatch'> {
+  batchSize = LOCAL_STREAM_BATCH_SIZE,
+): Promise<UnpreparedScatterWebgpuDemoStream> {
+  const stored = await getStoredScatterWebgpuDataset(pointCount);
+  if (stored === null) {
+    return createGeneratedLocalStream(pointCount, signal, batchSize);
+  }
+  const manifest = stored.manifest;
+  validateManifest(manifest);
+  const rawDomain = createManifestRawDomain(manifest);
+  return {
+    missingValueCountByColumn: createZeroMissingValueCounts(STREAM_SPEC),
+    pointCount: manifest.count,
+    source: {
+      batches: {
+        [Symbol.asyncIterator]: () => streamStoredPages(stored, signal, batchSize),
+      },
+      domain: createPaddedStreamDomain(rawDomain),
+      expectedCount: manifest.count,
+      idAt: (sourceIndex) => formatId(manifest.idPrefix, manifest.idWidth, sourceIndex),
+      initialCapacity: manifest.pages[0]?.count ?? 1,
+      maxPointSize: manifest.maxPointSize,
+      spec: STREAM_SPEC,
+    },
+    sourceUrl: `indexeddb://${stored.datasetId}`,
+    tableNames: ['benchmark-primary'],
+    tableRecordCounts: { 'benchmark-primary': manifest.count },
+  };
+}
+
+function createGeneratedLocalStream(
+  pointCount: number,
+  signal: AbortSignal,
+  batchSize: number,
+): UnpreparedScatterWebgpuDemoStream {
   const idWidth = Math.max(6, String(Math.max(0, pointCount - 1)).length);
   const rawDomain = createStreamRawDomain(pointCount);
   return {
+    missingValueCountByColumn: createZeroMissingValueCounts(STREAM_SPEC),
     pointCount,
     source: {
       batches: {
-        [Symbol.asyncIterator]: () => streamWorkerPages(pointCount, signal),
+        [Symbol.asyncIterator]: () => streamWorkerPages(pointCount, signal, batchSize),
       },
       domain: createPaddedStreamDomain(rawDomain),
       expectedCount: pointCount,
@@ -101,12 +180,377 @@ function createLocalStream(
       spec: STREAM_SPEC,
     },
     sourceUrl: `worker://scatter-webgpu-stream/${pointCount}`,
+    tableNames: ['benchmark-primary'],
+    tableRecordCounts: { 'benchmark-primary': pointCount },
   };
+}
+
+async function* streamStoredPages(
+  stored: StoredScatterWebgpuDataset,
+  signal: AbortSignal,
+  batchSize: number,
+): AsyncGenerator<FastScatterWebgpuStreamBatch> {
+  const manifest = stored.manifest;
+  const domain = createManifestRawDomain(manifest);
+  for (let pageIndex = 0; pageIndex < manifest.pages.length; pageIndex += 1) {
+    if (signal.aborted) throw signal.reason;
+    const page = manifest.pages[pageIndex]!;
+    const [coordinateBuffer, styleBuffer] = await Promise.all([
+      readStoredScatterWebgpuPage(stored.datasetId, 'coordinates', pageIndex),
+      readStoredScatterWebgpuPage(stored.datasetId, 'styles', pageIndex),
+    ]);
+    if (signal.aborted) throw signal.reason;
+    for (let localOffset = 0; localOffset < page.count; localOffset += batchSize) {
+      const count = Math.min(batchSize, page.count - localOffset);
+      const batchPage = sliceManifestPage(page, localOffset, count);
+      yield createBatchFromPage(
+        batchPage,
+        coordinateBuffer,
+        styleBuffer.slice(
+          localOffset * Uint32Array.BYTES_PER_ELEMENT,
+          (localOffset + count) * Uint32Array.BYTES_PER_ELEMENT,
+        ),
+        domain,
+        manifest.idPrefix,
+        manifest.idWidth,
+        BigInt(manifest.timestampOriginNs),
+        manifest.xScaleMs ?? X_SCALE_MS,
+      );
+    }
+  }
+}
+
+function sliceManifestPage(
+  page: ScatterWebgpuPagedManifestPage,
+  localOffset: number,
+  count: number,
+): ScatterWebgpuPagedManifestPage {
+  return {
+    ...page,
+    count,
+    startIndex: page.startIndex + localOffset,
+    columns: Object.fromEntries(Object.entries(page.columns).map(([key, column]) => [
+      key,
+      {
+        ...column,
+        byteLength: count * (column.byteLength / column.length),
+        byteOffset: column.byteOffset + localOffset * (column.byteLength / column.length),
+        length: count,
+      },
+    ])),
+  };
+}
+
+async function appendSecondaryTableStream(
+  primary: UnpreparedScatterWebgpuDemoStream,
+  fixtureUrl: string,
+  kind: ScatterWebgpuDemoStreamKind,
+): Promise<UnpreparedScatterWebgpuDemoStream> {
+  const { fixture } = await loadFastPlotMixedTableFixture(fixtureUrl);
+  const secondary = adaptMixedTablesForFastScatter(fixture);
+  const secondaryCount = secondary.columns.x.length;
+  const totalCount = primary.pointCount + secondaryCount;
+  const spec: FastScatterPlotSpec = {
+    plots: [
+      ...primary.source.spec.plots,
+      ...secondary.spec.plots.filter(
+        (plot) => !primary.source.spec.plots.some(
+          (primaryPlot) => primaryPlot.yKey === plot.yKey,
+        ),
+      ),
+    ],
+    xLabel: primary.source.spec.xLabel,
+  };
+  const domain = createCombinedStreamDomain(
+    primary.source.domain,
+    secondary.columns,
+    spec,
+    totalCount,
+    kind,
+  );
+  const primaryTable = primary.tableNames[0] ?? 'benchmark-primary';
+  const secondaryTable = secondary.metadata.tableNames[0] ?? 'benchmark-secondary';
+  const secondaryBatch = createSecondaryScatterBatch(
+    secondary.columns,
+    spec,
+    primary.pointCount,
+    secondaryTable,
+    kind,
+  );
+  const missingValueCountByColumn = Object.fromEntries(spec.plots.map((plot) => {
+    const primaryMissing = primary.source.spec.plots.some(
+      (primaryPlot) => primaryPlot.yKey === plot.yKey,
+    )
+      ? primary.missingValueCountByColumn[plot.yKey] ?? 0
+      : primary.pointCount;
+    const secondaryValues = secondary.columns.y[plot.yKey];
+    let secondaryMissing = 0;
+    if (secondaryValues === undefined) {
+      secondaryMissing = secondaryCount;
+    } else {
+      for (let index = 0; index < secondaryValues.length; index += 1) {
+        if (!Number.isFinite(secondaryValues[index])) secondaryMissing += 1;
+      }
+    }
+    return [plot.yKey, primaryMissing + secondaryMissing];
+  }));
+  const batches = primary.source.batches;
+  return {
+    missingValueCountByColumn,
+    pointCount: totalCount,
+    source: {
+      ...primary.source,
+      batches: {
+        async *[Symbol.asyncIterator]() {
+          let sourceOffset = 0;
+          for await (const batch of batches) {
+            yield normalizePrimaryTableBatch(
+              batch,
+              spec,
+              primaryTable,
+              sourceOffset,
+            );
+            sourceOffset += batch.columns.x.length;
+          }
+          if (secondaryCount > 0) yield secondaryBatch;
+        },
+      },
+      domain,
+      expectedCount: totalCount,
+      spec,
+    },
+    sourceUrl: `${primary.sourceUrl} + ${fixtureUrl}`,
+    tableNames: [primaryTable, ...secondary.metadata.tableNames],
+    tableRecordCounts: {
+      ...primary.tableRecordCounts,
+      ...secondary.metadata.tableRecordCounts,
+    },
+  };
+}
+
+function normalizePrimaryTableBatch(
+  batch: FastScatterWebgpuStreamBatch,
+  spec: FastScatterPlotSpec,
+  table: string,
+  sourceOffset: number,
+): FastScatterWebgpuStreamBatch {
+  const count = batch.columns.x.length;
+  const y: Record<string, FastScatterTypedNumericArray> = { ...batch.columns.y };
+  for (const plot of spec.plots) {
+    if (y[plot.yKey] !== undefined) continue;
+    const missing = new Float32Array(count);
+    missing.fill(Number.NaN);
+    y[plot.yKey] = missing;
+  }
+  const tableBySourceIndex = createLazyConstantValues(table, count);
+  const sourceIndex = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) {
+    sourceIndex[index] = sourceOffset + index;
+  }
+  return {
+    ...batch,
+    columns: {
+      ...batch.columns,
+      recordIdentityBySourceIndex: createLazyRecordIdentities(
+        batch.columns.ids,
+        tableBySourceIndex,
+        sourceOffset,
+      ),
+      sourceIndex,
+      tableBySourceIndex,
+      y,
+    },
+  };
+}
+
+function createSecondaryScatterBatch(
+  columns: FastScatterPointColumns,
+  spec: FastScatterPlotSpec,
+  sourceOffset: number,
+  fallbackTable: string,
+  kind: ScatterWebgpuDemoStreamKind,
+): FastScatterWebgpuStreamBatch {
+  const count = columns.x.length;
+  const x = kind === 'function'
+    ? new Float64Array(count)
+    : new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) {
+    x[index] = generatedOverlapXValue(sourceOffset + index) *
+      (kind === 'function' ? X_SCALE_MS : 1);
+  }
+  const y: Record<string, FastScatterTypedNumericArray> = {};
+  for (const plot of spec.plots) {
+    const values = columns.y[plot.yKey];
+    if (values !== undefined) {
+      if (kind === 'function') {
+        y[plot.yKey] = Float32Array.from(values);
+      } else if (plot.yKey === 'phase' || plot.yKey === 'accepted') {
+        y[plot.yKey] = Uint8Array.from(values);
+      } else if (plot.yKey === 'signalValue') {
+        const encoded = new Uint16Array(count);
+        for (let index = 0; index < count; index += 1) {
+          encoded[index] = Math.max(
+            0,
+            Math.min(65_535, Math.round((values[index] ?? 0) / SIGNAL_SCALE)),
+          );
+        }
+        y[plot.yKey] = encoded;
+      } else {
+        y[plot.yKey] = Float32Array.from(values);
+      }
+    } else {
+      const missing = new Float32Array(count);
+      missing.fill(Number.NaN);
+      y[plot.yKey] = missing;
+    }
+  }
+  const tableBySourceIndex = columns.tableBySourceIndex ??
+    createLazyConstantValues(fallbackTable, count);
+  const sourceIndex = new Uint32Array(count);
+  for (let index = 0; index < count; index += 1) sourceIndex[index] = sourceOffset + index;
+  return {
+    columns: {
+      ids: columns.ids,
+      ...(kind !== 'function'
+        ? {}
+        : {
+            ...(columns.color === undefined ? {} : { color: columns.color }),
+            ...(columns.colorFormat === undefined
+              ? {}
+              : { colorFormat: columns.colorFormat }),
+            ...(columns.opacity === undefined ? {} : { opacity: columns.opacity }),
+            ...(columns.rotation === undefined ? {} : { rotation: columns.rotation }),
+            ...(columns.shape === undefined ? {} : { shape: columns.shape }),
+            ...(columns.size === undefined ? {} : { size: columns.size }),
+          }),
+      recordIdentityBySourceIndex: createLazyRecordIdentities(
+        columns.ids,
+        tableBySourceIndex,
+        sourceOffset,
+      ),
+      sourceIndex,
+      tableBySourceIndex,
+      x,
+      ...(columns.xKey === undefined ? {} : { xKey: columns.xKey }),
+      y,
+    },
+    packedStyles: packCompactStyles(columns),
+  };
+}
+
+function createCombinedStreamDomain(
+  primary: FastScatterDataDomain | undefined,
+  secondary: FastScatterPointColumns,
+  spec: FastScatterPlotSpec,
+  totalCount: number,
+  kind: ScatterWebgpuDemoStreamKind,
+): FastScatterDataDomain | undefined {
+  if (primary === undefined) return undefined;
+  const yByPlot = { ...primary.yByPlot };
+  for (const plot of spec.plots) {
+    const values = secondary.y[plot.yKey];
+    let min = yByPlot[plot.id]?.min ?? Number.POSITIVE_INFINITY;
+    let max = yByPlot[plot.id]?.max ?? Number.NEGATIVE_INFINITY;
+    if (values !== undefined) {
+      for (let index = 0; index < values.length; index += 1) {
+        const value = values[index] ?? Number.NaN;
+        if (!Number.isFinite(value)) continue;
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+    }
+    yByPlot[plot.id] = Number.isFinite(min) && Number.isFinite(max)
+      ? { min, max }
+      : { min: 0, max: 1 };
+  }
+  return {
+    x: {
+      min: primary.x.min,
+      max: generatedOverlapXValue(totalCount - 1) *
+        (kind === 'function' ? X_SCALE_MS : 1),
+    },
+    yByPlot,
+  };
+}
+
+function createLazyConstantValues<T>(value: T, length: number): readonly T[] {
+  return new Proxy({ length }, {
+    get(target, property) {
+      if (property === 'length') return target.length;
+      if (typeof property !== 'string' || !/^(0|[1-9]\d*)$/u.test(property)) {
+        return Reflect.get(Array.prototype, property);
+      }
+      return Number(property) < length ? value : undefined;
+    },
+  }) as unknown as readonly T[];
+}
+
+function createLazyRecordIdentities(
+  ids: readonly string[],
+  tables: readonly string[],
+  sourceOffset: number,
+): NonNullable<FastScatterPointColumns['recordIdentityBySourceIndex']> {
+  return new Proxy({ length: ids.length }, {
+    get(target, property) {
+      if (property === 'length') return target.length;
+      if (typeof property !== 'string' || !/^(0|[1-9]\d*)$/u.test(property)) {
+        return Reflect.get(Array.prototype, property);
+      }
+      const index = Number(property);
+      return index < ids.length
+        ? {
+            id: ids[index] ?? String(sourceOffset + index),
+            sourceIndex: sourceOffset + index,
+            table: tables[index] ?? 'benchmark-primary',
+          }
+        : undefined;
+    },
+  }) as unknown as NonNullable<FastScatterPointColumns['recordIdentityBySourceIndex']>;
+}
+
+function packCompactStyles(columns: FastScatterPointColumns): Uint32Array {
+  const result = new Uint32Array(columns.x.length);
+  for (let index = 0; index < columns.x.length; index += 1) {
+    const colorOffset = index * 4;
+    const color = columns.color;
+    const red = color instanceof Uint32Array
+      ? color[index]! & 0xff
+      : color?.[colorOffset] ?? 37;
+    const green = color instanceof Uint32Array
+      ? (color[index]! >>> 8) & 0xff
+      : color?.[colorOffset + 1] ?? 99;
+    const blue = color instanceof Uint32Array
+      ? (color[index]! >>> 16) & 0xff
+      : color?.[colorOffset + 2] ?? 235;
+    const alpha = color instanceof Uint32Array
+      ? (color[index]! >>> 24) & 0xff
+      : color?.[colorOffset + 3] ?? 255;
+    const opacity = Math.round(
+      Math.max(0, Math.min(1, columns.opacity?.[index] ?? 1)) * 255,
+    );
+    const shape = Math.max(0, Math.min(7, columns.shape?.[index] ?? 0));
+    const rotation = columns.rotationRadians?.[index] ?? columns.rotation?.[index] ?? 0;
+    const fullTurn = Math.PI * 2;
+    const signedRotation = ((rotation + Math.PI) % fullTurn + fullTurn) % fullTurn - Math.PI;
+    const normalizedRotation = (signedRotation + Math.PI) / fullTurn;
+    const size = Math.max(0, columns.size?.[index] ?? 3);
+    const rgb565 = Math.round((red / 255) * 31) |
+      (Math.round((green / 255) * 63) << 5) |
+      (Math.round((blue / 255) * 31) << 11);
+    result[index] = (
+      rgb565 |
+      (Math.round(((opacity * alpha) / (255 * 255)) * 15) << 16) |
+      (shape << 20) |
+      (Math.round(normalizedRotation * 63) << 23) |
+      (Math.max(0, Math.min(7, Math.round(size - 1))) << 29)
+    ) >>> 0;
+  }
+  return result;
 }
 
 async function createHttpStream(
   signal: AbortSignal,
-): Promise<Omit<PreparedScatterWebgpuDemoStream, 'firstBatch'>> {
+): Promise<UnpreparedScatterWebgpuDemoStream> {
   const response = await fetch(SCATTER_WEBGPU_HTTP_STREAM_MANIFEST_URL, { signal });
   if (!response.ok) {
     throw new Error(
@@ -117,6 +561,7 @@ async function createHttpStream(
   validateManifest(manifest);
   const rawDomain = createManifestRawDomain(manifest);
   return {
+    missingValueCountByColumn: createZeroMissingValueCounts(STREAM_SPEC),
     pointCount: manifest.count,
     source: {
       batches: {
@@ -129,12 +574,94 @@ async function createHttpStream(
       spec: STREAM_SPEC,
     },
     sourceUrl: SCATTER_WEBGPU_HTTP_STREAM_MANIFEST_URL,
+    tableNames: ['benchmark-primary'],
+    tableRecordCounts: { 'benchmark-primary': manifest.count },
+  };
+}
+
+async function createFunctionStream(
+  signal: AbortSignal,
+): Promise<UnpreparedScatterWebgpuDemoStream> {
+  const response = await fetch(WEBGPU_SERVER_STREAM_ENDPOINT, {
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Server-function stream is unavailable (${response.status} ${response.statusText}).`,
+    );
+  }
+  if (response.body === null) {
+    throw new Error('Server-function stream response does not have a readable body.');
+  }
+  const protocol = response.headers.get(WEBGPU_SERVER_STREAM_PROTOCOL_HEADER);
+  if (protocol !== WEBGPU_SERVER_STREAM_PROTOCOL) {
+    await response.body.cancel().catch(() => undefined);
+    throw new Error('Server-function stream uses an unsupported protocol version.');
+  }
+  const count = Number(response.headers.get(WEBGPU_SERVER_STREAM_COUNT_HEADER));
+  if (
+    !Number.isSafeInteger(count) || count < 1 ||
+    count > WEBGPU_SERVER_STREAM_COUNT
+  ) {
+    await response.body.cancel().catch(() => undefined);
+    throw new Error('Server-function stream supplied an invalid record-count header.');
+  }
+  const records = createFastScatterJsonRecordBatchSource(response.body, {
+    batchSize: WEBGPU_SERVER_STREAM_BATCH_SIZE,
+    count,
+    numericStorage: 'float32',
+    schema: WEBGPU_SERVER_STREAM_SCHEMA,
+  });
+  const recordSource = createFastScatterWebgpuStreamSourceFromRecordBatches(records);
+  return {
+    missingValueCountByColumn: createZeroMissingValueCounts(STREAM_SPEC),
+    pointCount: count,
+    source: {
+      ...recordSource,
+      batches: mapFunctionRecordBatches(recordSource.batches),
+      domain: createFunctionStreamDomain(count),
+      maxPointSize: 8,
+    },
+    sourceUrl: WEBGPU_SERVER_STREAM_ENDPOINT,
+    tableNames: ['benchmark-primary'],
+    tableRecordCounts: { 'benchmark-primary': count },
+  };
+}
+
+function mapFunctionRecordBatches(
+  batches: AsyncIterable<FastScatterWebgpuStreamBatch>,
+): AsyncIterable<FastScatterWebgpuStreamBatch> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for await (const batch of batches) {
+        yield {
+          ...batch,
+          packedStyles: packCompactStyles(batch.columns),
+        };
+      }
+    },
+  };
+}
+
+function createFunctionStreamDomain(count: number): FastScatterDataDomain {
+  return {
+    x: {
+      min: 0,
+      max: Math.max(1, generatedOverlapXValue(count - 1) * X_SCALE_MS),
+    },
+    yByPlot: {
+      accepted: { min: -0.5, max: 1.5 },
+      phase: { min: -0.5, max: 3.5 },
+      signal: { min: 25, max: 110 },
+    },
   };
 }
 
 async function* streamWorkerPages(
   pointCount: number,
   signal: AbortSignal,
+  batchSize: number,
 ): AsyncGenerator<FastScatterWebgpuStreamBatch> {
   const worker = new Worker(
     new URL('../workers/scatterWebgpuDataset.worker.ts', import.meta.url),
@@ -144,7 +671,7 @@ async function* streamWorkerPages(
     let messagePromise = waitForWorkerMessage(worker, signal);
     worker.postMessage({
       count: pointCount,
-      pageSize: LOCAL_STREAM_BATCH_SIZE,
+      pageSize: batchSize,
       seed: SCATTER_WEBGPU_DEFAULT_SEED,
       type: 'start',
     });
@@ -501,3 +1028,9 @@ const STREAM_SPEC: FastScatterPlotSpec = {
   ],
   xLabel: 'Timestamp (UTC)',
 };
+
+function createZeroMissingValueCounts(
+  spec: FastScatterPlotSpec,
+): Readonly<Record<string, number>> {
+  return Object.fromEntries(spec.plots.map((plot) => [plot.yKey, 0]));
+}

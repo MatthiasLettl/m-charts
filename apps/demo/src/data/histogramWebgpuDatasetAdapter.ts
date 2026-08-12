@@ -30,6 +30,16 @@ const PHASE_COLORS = [
 ] as const;
 const REJECTED_COLORS = [0xdc26_26ff, 0xea58_0cff] as const;
 
+export function getHistogramWebgpuRecordColor(
+  phaseCode: number,
+  isAccepted: boolean,
+  sourceIndex: number,
+): number {
+  return isAccepted
+    ? PHASE_COLORS[phaseCode] ?? PHASE_COLORS[0]
+    : REJECTED_COLORS[sourceIndex % REJECTED_COLORS.length]!;
+}
+
 export interface LoadedHistogramWebgpuDataset {
   columns: HistogramColumns;
   generated: boolean;
@@ -111,9 +121,11 @@ export async function loadHistogramWebgpuDataset(options: {
       const phaseCode = pagePhase[localIndex] ?? 0;
       const isAccepted = pageAccepted[localIndex] === 1;
       signalValue[targetIndex] = (pageSignal[localIndex] ?? 0) * signalScale;
-      color[targetIndex] = isAccepted
-        ? PHASE_COLORS[phaseCode] ?? PHASE_COLORS[0]
-        : REJECTED_COLORS[targetIndex % REJECTED_COLORS.length]!;
+      color[targetIndex] = getHistogramWebgpuRecordColor(
+        phaseCode,
+        isAccepted,
+        targetIndex,
+      );
     }
     await yieldToBrowser();
   }

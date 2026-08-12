@@ -106,15 +106,19 @@ import { adaptScatterBenchmarkForParallelFast } from 'm-charts/m-parallel';
 import type { LoadedScatterFastBenchmarkSource } from '../data/fastPlotTableSources.ts';
 import {
   createParallelWebgpuPlot,
+  createParallelWebgpuStreamingPlot,
   type ParallelAxisViewports,
   type ParallelWebgpuDiagnostics,
   type ParallelWebgpuPlotInstance,
+  type ParallelWebgpuStreamProgress,
+  type ParallelWebgpuStreamSource,
 } from 'm-charts/m-parallel-webgpu';
 import {
   LocalParallelWebgpuDatasetUnavailableError,
   loadParallelWebgpuDataset,
   type LoadedParallelWebgpuDataset,
 } from '../data/parallelWebgpuDatasetAdapter.ts';
+import { prepareParallelWebgpuDemoStream } from '../data/webgpuStreamingAdapters.ts';
 import {
   SCATTER_WEBGPU_DEMO_POINT_COUNTS,
   deleteStoredScatterWebgpuDataset,
@@ -379,6 +383,9 @@ export function MParallelPlotRoute({
     createEmptyParallelFastTableMetadata(),
   );
   const [hoverIndex, setHoverIndex] = useState<ParallelHoverIndex | null>(null);
+  const [streamProgress, setStreamProgress] =
+    useState<ParallelWebgpuStreamProgress | null>(null);
+  const [streamedBuffers, setStreamedBuffers] = useState<ParallelBuffers | null>(null);
   const [plotInteractionGate, setPlotInteractionGate] = useState<PlotInteractionGateState>(
     INITIAL_PLOT_INTERACTION_GATE_STATE,
   );
@@ -396,7 +403,7 @@ export function MParallelPlotRoute({
   const datasetGenerationAbortRef = useRef<AbortController | null>(null);
 
   const baseReadyBuffers = bufferState.status === 'ready' ? bufferState.buffers : null;
-  const readyBuffers = baseReadyBuffers;
+  const readyBuffers = streamedBuffers ?? baseReadyBuffers;
   const persistedAxisViewports = useMemo(
     () =>
       readyBuffers === null
@@ -457,6 +464,14 @@ export function MParallelPlotRoute({
     () => parseParallelWebgpuPointCount(searchParams),
     [searchParams],
   );
+  const webgpuStreamingKind = rendererBackend === 'webgpu'
+    ? parseParallelWebgpuStreamKind(searchParams)
+    : null;
+  const webgpuStreaming = webgpuStreamingKind !== null;
+  const webgpuStreamingSource =
+    datasetState.status === 'loaded' && datasetState.datasetKind === 'webgpu-buffers'
+      ? (datasetState.dataset as LoadedParallelWebgpuDataset).streamingSource
+      : undefined;
   const webgpuManifestUrl = useMemo(() => {
     if (searchParams.get('webgpuData') !== 'http') return undefined;
     return searchParams.get('__e2eParallelWebgpuManifest') ??
@@ -483,14 +498,27 @@ export function MParallelPlotRoute({
     window.location.assign(next.href);
   }, [webgpuPointCount]);
 
-  const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
-    if (mode === tableMode) return;
+  const selectWebgpuStreaming = useCallback(() => {
     const next = new URL(window.location.href);
+    next.searchParams.set('webgpuData', 'stream-local');
+    window.location.assign(next.href);
+  }, []);
+
+  const selectWebgpuStreamKind = useCallback((kind: 'function' | 'local') => {
+    const next = new URL(window.location.href);
+    next.searchParams.set('webgpuData', `stream-${kind}`);
+    window.location.assign(next.href);
+  }, []);
+
+  const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
+    if (mode === tableMode && !webgpuStreaming) return;
+    const next = new URL(window.location.href);
+    next.searchParams.delete('webgpuData');
     const value = formatFastRouteTableMode(mode);
     if (value === null) next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
     else next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
     window.location.assign(next.href);
-  }, [tableMode]);
+  }, [tableMode, webgpuStreaming]);
 
   const generateWebgpuDataset = useCallback(async () => {
     datasetGenerationAbortRef.current?.abort();
@@ -637,9 +665,26 @@ export function MParallelPlotRoute({
 
     async function loadDataset() {
       try {
+        setStreamProgress(null);
+        setStreamedBuffers(null);
         const loaded =
           rendererBackend === 'webgpu'
-            ? await loadParallelWebgpuDataset({
+            ? await (webgpuStreaming
+              ? prepareParallelWebgpuDemoStream({
+                  kind: webgpuStreamingKind ?? 'local',
+                  pointCount: webgpuPointCount,
+                  ...(tableMode === 'multi'
+                    ? {
+                        secondaryFixtureUrl: mixedTableFixtureUrl.replace(
+                          /\.json(?=($|[?#]))/u,
+                          '.secondary.json',
+                        ),
+                      }
+                    : {}),
+                  signal: controller.signal,
+                  startedAt,
+                })
+              : loadParallelWebgpuDataset({
                 fixtureUrl: mixedTableFixtureUrl,
                 ...(webgpuManifestUrl === undefined
                   ? {}
@@ -648,7 +693,7 @@ export function MParallelPlotRoute({
                 signal: controller.signal,
                 startedAt,
                 tableMode,
-              }).then((dataset) => ({
+              })).then((dataset) => ({
                 dataset,
                 datasetKind: 'webgpu-buffers' as const,
                 metrics: {
@@ -729,6 +774,8 @@ export function MParallelPlotRoute({
     tableMode,
     webgpuManifestUrl,
     webgpuPointCount,
+    webgpuStreaming,
+    webgpuStreamingKind,
   ]);
 
   useEffect(() => {
@@ -1380,6 +1427,11 @@ export function MParallelPlotRoute({
                       selectedVisualUpdateDelayMs={100}
                       shortcutGate={getPlotInteractionActive}
                       theme={plotTheme}
+                      streamingSource={webgpuStreamingSource}
+                      onStreamProgress={(progress, buffers) => {
+                        setStreamProgress(progress);
+                        setStreamedBuffers(buffers);
+                      }}
                     />
                   </div>
                 ) : null}
@@ -1404,6 +1456,7 @@ export function MParallelPlotRoute({
               <h2>Dataset</h2>
               {rendererBackend === 'webgpu' ? (
                 <div className="scatter-webgpu-dataset-controls">
+                  {webgpuStreamingKind !== 'function' ? (
                   <div
                     aria-label="WebGPU parallel dataset size"
                     className="segmented-control"
@@ -1421,24 +1474,63 @@ export function MParallelPlotRoute({
                       </button>
                     ))}
                   </div>
+                  ) : (
+                    <p className="compact-note">
+                      The server-function sample is hard-capped at 5,000 records.
+                    </p>
+                  )}
                   <div
-                    aria-label="WebGPU parallel table mode"
+                    aria-label="WebGPU parallel dataset mode"
                     className="segmented-control scatter-webgpu-table-mode-control"
                     data-testid="parallel-webgpu-table-mode"
                   >
-                    {(['single', 'multi'] as const).map((mode) => (
+                    {(['single', 'multi', 'stream'] as const).map((mode) => (
                       <button
-                        aria-pressed={tableMode === mode}
-                        className={tableMode === mode ? 'is-active' : undefined}
+                        aria-pressed={mode === 'stream' ? webgpuStreaming : !webgpuStreaming && tableMode === mode}
+                        className={
+                          (mode === 'stream' ? webgpuStreaming : !webgpuStreaming && tableMode === mode)
+                            ? 'is-active'
+                            : undefined
+                        }
                         disabled={datasetState.status === 'generating'}
                         key={mode}
-                        onClick={() => selectWebgpuTableMode(mode)}
+                        onClick={() => mode === 'stream'
+                          ? selectWebgpuStreaming()
+                          : selectWebgpuTableMode(mode)}
                         type="button"
                       >
-                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
+                        {mode === 'single'
+                          ? 'Single table'
+                          : mode === 'multi' ? 'Multiple tables' : 'Streaming'}
                       </button>
                     ))}
                   </div>
+                  {webgpuStreaming ? (
+                    <div
+                      aria-label="WebGPU parallel streaming source"
+                      className="segmented-control scatter-webgpu-stream-source-control"
+                      data-testid="parallel-webgpu-stream-source"
+                    >
+                      {(['local', 'function'] as const).map((kind) => (
+                        <button
+                          aria-pressed={webgpuStreamingKind === kind}
+                          className={webgpuStreamingKind === kind ? 'is-active' : undefined}
+                          key={kind}
+                          onClick={() => selectWebgpuStreamKind(kind)}
+                          type="button"
+                        >
+                          {kind === 'local' ? 'Browser local' : 'Server function'}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {webgpuStreaming ? (
+                    <p className="compact-note">
+                      {webgpuStreamingKind === 'function'
+                        ? 'Streams one capped, genuinely chunked JSON response from the Vercel Function.'
+                        : <>Streams the selected {tableMode === 'multi' ? 'multiple-table' : 'single-table'} dataset from browser-local pages (IndexedDB when stored).</>}
+                    </p>
+                  ) : null}
                   <details
                     className="control-disclosure scatter-webgpu-dataset-details"
                     data-testid="parallel-webgpu-dataset-details"
@@ -1446,8 +1538,11 @@ export function MParallelPlotRoute({
                     <summary>Dataset details</summary>
                     <div className="control-disclosure-body">
                       <p className="compact-note">
-                        Uses the same locally generated, paged dataset as m-scatter
-                        and m-histogram WebGPU, including each record&apos;s color.
+                        {webgpuStreamingKind === 'function'
+                          ? 'The browser passes response.body to the incremental JSON-record decoder, maps each batch to parallel-coordinate columns and packed GPU pages, and never materializes the complete HTTP payload first.'
+                          : webgpuStreaming
+                          ? 'Streaming uses the same renderer, axes, density aggregation, and interactions. Batches come from the shared browser-local dataset; the seeded worker is used only when no stored copy exists.'
+                          : 'Uses the same locally generated, paged dataset as m-scatter and m-histogram WebGPU, including each record\'s color.'}
                       </p>
                       <p className="compact-note">
                         Density rendering evaluates every record. Exact hover and axis
@@ -1456,7 +1551,23 @@ export function MParallelPlotRoute({
                       </p>
                     </div>
                   </details>
-                  {datasetState.status === 'loaded' && webgpuManifestUrl === undefined ? (
+                  {streamProgress !== null ? (
+                    <dl
+                      className="metrics-grid"
+                      data-loaded-count={streamProgress.loadedCount}
+                      data-testid="parallel-webgpu-stream-progress"
+                    >
+                      <div>
+                        <dt>Streamed</dt>
+                        <dd>{streamProgress.loadedCount.toLocaleString()}</dd>
+                      </div>
+                      <div>
+                        <dt>Capacity</dt>
+                        <dd>{streamProgress.capacity.toLocaleString()}</dd>
+                      </div>
+                    </dl>
+                  ) : null}
+                  {datasetState.status === 'loaded' && webgpuManifestUrl === undefined && !webgpuStreaming ? (
                     <button
                       className="secondary-link"
                       data-testid="parallel-webgpu-delete-dataset"
@@ -1469,7 +1580,10 @@ export function MParallelPlotRoute({
                 </div>
               ) : null}
               <dl className="metrics-grid">
-                <MetricTerm label="Records" value={diagnostics.recordCount} />
+                <MetricTerm
+                  label="Records"
+                  value={streamProgress?.loadedCount ?? diagnostics.recordCount}
+                />
                 <MetricTerm label="Tables" value={`${tableMetadata.tableCount} (${tableMode})`} />
                 <MetricTerm
                   label="Parameters"
@@ -1866,6 +1980,8 @@ function MParallelEngineChart({
   selectedVisualUpdateDelayMs,
   shortcutGate,
   theme,
+  streamingSource,
+  onStreamProgress,
 }: {
   rendererBackend: ParallelRendererBackend;
   axisViewports: ParallelAxisViewports;
@@ -1902,6 +2018,11 @@ function MParallelEngineChart({
   selectedVisualUpdateDelayMs: number;
   shortcutGate: () => boolean;
   theme?: Parameters<ParallelPlotCommands['updateTheme']>[0];
+  streamingSource?: ParallelWebgpuStreamSource;
+  onStreamProgress: (
+    progress: ParallelWebgpuStreamProgress,
+    buffers: ParallelBuffers,
+  ) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const shellRef = useRef<HTMLDivElement | null>(null);
@@ -1928,6 +2049,7 @@ function MParallelEngineChart({
     onMetricsChange,
     onOverlaysChange,
     onSelectionChange,
+    onStreamProgress,
   });
   const styleBuffers = (
     buffers as ParallelBuffers & {
@@ -1942,6 +2064,8 @@ function MParallelEngineChart({
     message?: string;
     status: ParallelFastRendererState;
   }>({ status: 'idle' });
+  const [readyStreamingSource, setReadyStreamingSource] =
+    useState<ParallelWebgpuStreamSource | null>(null);
 
   useEffect(() => {
     callbacksRef.current = {
@@ -1952,6 +2076,7 @@ function MParallelEngineChart({
       onMetricsChange,
       onOverlaysChange,
       onSelectionChange,
+      onStreamProgress,
     };
   }, [
     onAxisViewportsChange,
@@ -1961,7 +2086,10 @@ function MParallelEngineChart({
     onMetricsChange,
     onOverlaysChange,
     onSelectionChange,
+    onStreamProgress,
   ]);
+
+  const plotDataKey = streamingSource ?? buffers;
 
   useEffect(() => {
     latestHoverIndexRef.current = hoverIndex;
@@ -2000,33 +2128,64 @@ function MParallelEngineChart({
       return;
     }
     const initialOptions = latestEngineOptionsRef.current;
-    const createPlot =
-      rendererBackend === 'webgpu'
-        ? createParallelWebgpuPlot
-        : createParallelPlot;
-    const plot = createPlot(host, {
-      axisViewports: initialOptions.axisViewports,
-      baseCanvasClassName:
-        rendererBackend === 'webgpu'
-          ? 'parallel-fast-webgpu-canvas parallel-fast-webgpu-canvas-base'
-          : 'parallel-fast-webgl-canvas parallel-fast-webgl-canvas-base',
-      buffers: initialOptions.buffers,
-      brushIntervals: initialOptions.brushIntervals,
-      hoverCanvasClassName:
-        'parallel-fast-webgl-canvas parallel-fast-webgl-hover-canvas',
-      inspection: initialOptions.inspection,
-      lineOpacityScale: initialOptions.lineOpacityScale,
-      onMetrics: (event) => {
-        callbacksRef.current.onMetricsChange(
-          event as ParallelFastRendererMetricsEvent,
-        );
-      },
-      preserveDrawingBuffer: initialOptions.preserveDrawingBuffer,
-      preselectedOverlayEnabled: initialOptions.preselectedOverlayEnabled,
-      preselectedSourceIndices: initialOptions.preselectedSourceIndices,
-      selectedVisualUpdateDelayMs: initialOptions.selectedVisualUpdateDelayMs,
-      theme: initialOptions.theme,
-    });
+    let disposed = false;
+    let cleanupAttachedPlot = () => undefined;
+    const createAndAttachPlot = async () => {
+      const commonOptions = {
+        axisViewports: initialOptions.axisViewports,
+        baseCanvasClassName:
+          rendererBackend === 'webgpu'
+            ? 'parallel-fast-webgpu-canvas parallel-fast-webgpu-canvas-base'
+            : 'parallel-fast-webgl-canvas parallel-fast-webgl-canvas-base',
+        brushIntervals: initialOptions.brushIntervals,
+        hoverCanvasClassName:
+          'parallel-fast-webgl-canvas parallel-fast-webgl-hover-canvas',
+        inspection: initialOptions.inspection,
+        lineOpacityScale: initialOptions.lineOpacityScale,
+        onMetrics: (event: ParallelFastRendererMetricsEvent) => {
+          callbacksRef.current.onMetricsChange(event);
+        },
+        preserveDrawingBuffer: initialOptions.preserveDrawingBuffer,
+        preselectedOverlayEnabled: initialOptions.preselectedOverlayEnabled,
+        preselectedSourceIndices: initialOptions.preselectedSourceIndices,
+        selectedVisualUpdateDelayMs: initialOptions.selectedVisualUpdateDelayMs,
+        theme: initialOptions.theme,
+      };
+      let streamingPlot: Awaited<
+        ReturnType<typeof createParallelWebgpuStreamingPlot>
+      > | null = null;
+      const plot: ParallelPlotInstance =
+        rendererBackend === 'webgpu' && streamingSource !== undefined
+          ? await createParallelWebgpuStreamingPlot(host, {
+              ...commonOptions,
+              dataSource: streamingSource,
+              onStreamProgress: (progress) => {
+                callbacksRef.current.onStreamProgress(
+                  progress,
+                  streamingPlot?.streaming.getBuffers() ?? initialOptions.buffers,
+                );
+              },
+            }).then((createdPlot) => {
+              streamingPlot = createdPlot;
+              callbacksRef.current.onStreamProgress(
+                createdPlot.streaming.getProgress(),
+                createdPlot.streaming.getBuffers(),
+              );
+              return createdPlot;
+            })
+          : rendererBackend === 'webgpu'
+            ? createParallelWebgpuPlot(host, {
+                ...commonOptions,
+                buffers: initialOptions.buffers,
+              })
+            : createParallelPlot(host, {
+                ...commonOptions,
+                buffers: initialOptions.buffers,
+              });
+      if (disposed) {
+        plot.dispose();
+        return;
+      }
     plotRef.current = plot;
     setRenderState({
       message: plot.commands.getRenderSnapshot().renderStateMessage,
@@ -2091,6 +2250,9 @@ function MParallelEngineChart({
     );
     const unsubscribeRenderState = plot.on('renderstatechange', (event) => {
       setRenderState({ message: event.message, status: event.state });
+      if (streamingSource !== undefined && event.state === 'ready') {
+        setReadyStreamingSource(streamingSource);
+      }
     });
     const unsubscribeBrushPreview = plot.on('brushpreview', (event) => {
       if (event.defaultAction !== 'select') {
@@ -2132,7 +2294,19 @@ function MParallelEngineChart({
       },
     );
 
-    return () => {
+      const activeStreamingPlot = streamingSource === undefined
+        ? null
+        : plot as Awaited<ReturnType<typeof createParallelWebgpuStreamingPlot>>;
+      if (activeStreamingPlot !== null) {
+        void activeStreamingPlot.streaming.done.catch((error: unknown) => {
+          if (disposed) return;
+          setRenderState({
+            message: error instanceof Error ? error.message : 'Unknown streaming error.',
+            status: 'error',
+          });
+        });
+      }
+      cleanupAttachedPlot = () => {
       unsubscribeAxisViewportPreview();
       unsubscribeAxisViewport();
       unsubscribeLineOpacity();
@@ -2145,14 +2319,28 @@ function MParallelEngineChart({
       onOverlaysChange([]);
       plotRef.current = null;
       plot.dispose();
+      };
+    };
+    void createAndAttachPlot().catch((error: unknown) => {
+      if (disposed) return;
+      setRenderState({
+        message: error instanceof Error ? error.message : 'Unknown plot startup error.',
+        status: 'error',
+      });
+    });
+
+    return () => {
+      disposed = true;
+      cleanupAttachedPlot();
     };
   }, [
-    buffers,
     onHandleChange,
     onOverlaysChange,
+    plotDataKey,
     preserveDrawingBuffer,
     rendererBackend,
     shortcutGate,
+    streamingSource,
   ]);
 
   useEffect(() => {
@@ -2185,7 +2373,9 @@ function MParallelEngineChart({
     plot.update({ inspection });
   }, [inspection]);
 
-  const plotReadyForInteraction = renderState.status === 'ready';
+  const plotReadyForInteraction =
+    renderState.status === 'ready' ||
+    (streamingSource !== undefined && readyStreamingSource === streamingSource);
   const plotPreparing = !plotReadyForInteraction && renderState.status !== 'error';
 
   return (
@@ -3604,6 +3794,15 @@ function parseParallelWebgpuPointCount(
   const parsed = Number(searchParams.get('points'));
   return PARALLEL_WEBGPU_POINT_COUNTS.find((count) => count === parsed) ??
     PARALLEL_WEBGPU_POINT_COUNTS[0];
+}
+
+function parseParallelWebgpuStreamKind(
+  searchParams: URLSearchParams,
+): 'function' | 'local' | null {
+  const value = searchParams.get('webgpuData');
+  if (value === 'stream-local') return 'local';
+  if (value === 'stream-function') return 'function';
+  return null;
 }
 
 async function loadParallelFastRouteDataset(

@@ -148,6 +148,15 @@ exact TypeScript builder for unsupported shapes. Exact membership
 materialization stays in Rust/WASM for supported inputs. Pre-aggregated bar
 mode does not run raw aggregation.
 
+For a live typed source, use `createHistogramWebgpuStreamingPlot` and replace
+`columns`/`spec` with `dataSource: { batches, spec }`. Async batches contain
+`{ columns: HistogramColumns }`. The first non-empty batch creates the plot;
+later geometrically growing prefixes and the final prefix are aggregated
+exactly while interaction stays attached.
+Optional `expectedCount`/`initialCapacity`, `viewportPolicy`, progress,
+cancellation, `streaming.done`, and `streaming.getColumns()` match the WebGPU
+scatter lifecycle.
+
 The full human guide and copy-ready fallback example are in
 `packages/m-charts/HISTOGRAM_WEBGPU.md`,
 `docs/source-copy-integration.md`, and
@@ -193,6 +202,18 @@ For hybrid rendering, `interactive` resolves after the exact-style
 representative frame and `ready` after the full-population density frame.
 Device loss/restoration and renderer metrics retain the shared typed engine
 event and option-callback paths.
+
+For live data, use `createParallelWebgpuStreamingPlot` and replace `buffers`
+with `dataSource: { batches, domainsByAxis }`; batches contain
+`{ columns: ParallelFastColumns, packedPage? }`. `packedPage` carries optional
+GPU-ready `{ start, count, values, densityStyles }` arrays. Prepared full-stream domains keep all
+previously visible lines stable. The adapter preserves brushes and axis
+viewports, retains CPU columns as segmented views, appends packed pages to
+resident GPU storage, and increments only the incoming page's density
+contribution while capacity is available. Unknown capacity grows geometrically;
+non-packed sources use geometrically growing replacement prefixes. Progress,
+abort, `streaming.done`, and
+`streaming.getBuffers()` follow the scatter streaming shape.
 
 Every source row contributes to pairwise adjacent-axis screen bins. Density
 stores count and quantized premultiplied color statistics; selected and
@@ -323,6 +344,12 @@ transport failure rejects `streaming.done` and also settles the retained prefix.
 `createFastScatterWebgpuStreamSourceFromRecordBatches`
 bridges existing incremental JSON/application record sources; the older
 known-count materializing loader remains compatible.
+The demo's `?webgpuData=stream-function` path exercises the same bridge against
+the real `/api/webgpu-stream` Vercel Function. The response is fixed at 5,000
+records, uses protocol/count headers and `no-store`, and is mapped to scatter,
+histogram, and parallel typed streams without calling `response.json()`. Large
+demo datasets never use the Function. Full protocol and deployment details are
+in `docs/server-function-streaming.md`.
 
 The WebGPU demo route accepts the same `tables=multi` URL mode as the WebGL2
 scatter route. Its `points` parameter changes only the primary table; a fixed

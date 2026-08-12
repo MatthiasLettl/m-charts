@@ -30,6 +30,52 @@ object between factories; the WebGPU factory ignores them. The two WebGPU-only
 options are excluded from `plot.update(...)`. Recreate the plot to change
 either one.
 
+## Live typed streams
+
+Static `columns` and pre-aggregated bars remain unchanged. Raw typed columns
+can instead be delivered incrementally:
+
+```ts
+import { createHistogramWebgpuStreamingPlot } from 'm-charts/m-histogram-webgpu';
+
+const plot = await createHistogramWebgpuStreamingPlot(host, {
+  aggregationBackend: 'auto',
+  dataSource: {
+    batches, // AsyncIterable<{ columns: HistogramColumns }>
+    expectedCount,
+    spec, // prepared parameter metadata/domains for the complete stream
+  },
+});
+
+await plot.interactive;
+await plot.streaming.done;
+```
+
+Typed column storage grows geometrically without recopying every earlier row.
+Progress is reported for each accepted batch; exact chart prefixes are
+published when the loaded count doubles and once more at completion, avoiding
+quadratic full-prefix aggregation while keeping ingestion and interaction
+responsive. The existing WebGPU renderer uploads only the resulting bounded
+bin/stack buffers. Selection and a user-modified viewport are preserved between
+published prefixes. The default `viewportPolicy: 'expand'` follows
+growing aggregate bounds until the user changes the viewport; use `preserve`
+or provide an initial viewport to keep it fixed from startup. `expectedCount`
+and `initialCapacity` are optional hints, and a supplied expected count is
+validated. `plot.streaming` exposes `done`, `abort()`, `getColumns()`, and
+`getProgress()`. Batch value/color storage types and optional provenance fields
+must remain consistent; supplied source indices must be contiguous global row
+indices.
+The stream owns `aggregation`, `columns`, and `spec`; recreate the streaming
+plot instead of passing those fields to `plot.update(...)`.
+
+The repository's `?webgpuData=stream-function` demo maps the same genuinely
+chunked Vercel Function response used by scatter into histogram batches and
+never materializes the complete HTTP body. See the
+[server-function streaming guide](../../docs/server-function-streaming.md).
+
+The `/m-histogram-webgpu?webgpuData=stream-local` demo progressively delivers
+the generated raw typed columns while all histogram interactions remain live.
+
 `auto` is the default and selects Rust/WASM for typed continuous and unsigned
 integer categorical/boolean columns with explicit parameter domains.
 Sequentially encoded categories and packed `Uint32Array` rgba32 color stacks
@@ -96,6 +142,7 @@ Keep the existing `plot-engine`, `m-histogram/core`, and
 packages/m-charts/src/plot-engine-webgpu
 packages/m-charts/src/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine
+packages/m-charts/src/m-histogram-webgpu/adapters # live streams only
 ```
 
 The shared WebGPU folder contains adapter/device helpers, timestamp profiling,
