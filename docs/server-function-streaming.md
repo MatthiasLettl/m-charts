@@ -17,6 +17,11 @@ invoke the plain `api/*.ts` entry point with the Web `Request`/`Response`
 interface required by its `ReadableStream` response rather than the legacy
 Node request/response bridge.
 
+Its cross-file TypeScript import uses a `.js` runtime specifier. Vercel emits
+each traced `.ts` source as `.js` without rewriting explicit `.ts` import
+suffixes, so this keeps the compiled function loadable while TypeScript still
+resolves the source module during local development and validation.
+
 The 1M, 10M, and 25M demonstrations never use this function. They remain
 browser-local: streaming reads their IndexedDB pages when present and falls
 back to the identical seeded browser worker when a stored copy is absent.

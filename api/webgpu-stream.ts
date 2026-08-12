@@ -8,7 +8,7 @@ import {
   WEBGPU_SERVER_STREAM_TIMESTAMP_ORIGIN_NS,
   WEBGPU_SERVER_STREAM_TIMESTAMP_STEP_NS,
   type WebgpuServerStreamRecord,
-} from '../apps/demo/src/data/webgpuServerStreamProtocol.ts';
+} from '../apps/demo/src/data/webgpuServerStreamProtocol.js';
 
 const STREAM_CHUNK_DELAY_MS = 20;
 const PHASES = ['idle', 'ramp', 'steady', 'cooldown'] as const;

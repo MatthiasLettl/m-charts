@@ -22,6 +22,8 @@ should remain unchanged.
 - Explicitly opted the plain Vercel Function into the Web API handler interface,
   fixing production `FUNCTION_INVOCATION_FAILED` responses caused by the legacy
   Node request/response bridge.
+- Made the function's traced TypeScript protocol import use the emitted `.js`
+  runtime suffix, preventing a startup failure in Vercel's compiled function.
 
 ## WebGPU Histogram And Parallel Streaming
 

@@ -42,6 +42,15 @@ assert.deepEqual(vercelConfig.functions?.['api/webgpu-stream.ts'], {
 });
 assert.deepEqual(webgpuStreamConfig, { useWebApi: true });
 
+const functionSource = await readFile(
+  new URL('../../api/webgpu-stream.ts', import.meta.url),
+  'utf8',
+);
+assert.match(
+  functionSource,
+  /from '\.\.\/apps\/demo\/src\/data\/webgpuServerStreamProtocol\.js';/u,
+);
+
 const request = new Request('https://demo.example/api/webgpu-stream?count=1000000000');
 const response = webgpuStreamHandler(request);
 assert.equal(response.status, 200);
