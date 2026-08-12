@@ -7,7 +7,10 @@ import ts from 'typescript';
 import * as webglParallel from '../../packages/m-charts/src/m-parallel/index.ts';
 import * as webgpuParallel from '../../packages/m-charts/src/m-parallel-webgpu/index.ts';
 import type { ParallelFastPlotOptions } from '../../packages/m-charts/src/m-parallel/index.ts';
-import type { ParallelWebgpuPlotOptions } from '../../packages/m-charts/src/m-parallel-webgpu/index.ts';
+import type {
+  ParallelWebgpuPlotOptions,
+  ParallelWebgpuStreamingPlotOptions,
+} from '../../packages/m-charts/src/m-parallel-webgpu/index.ts';
 
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const webglEntry = resolve(repoRoot, 'packages/m-charts/src/m-parallel/index.ts');
@@ -49,10 +52,17 @@ assert.equal(
   webgpuParallel.createParallelFastPlot,
   webgpuParallel.createParallelWebgpuPlot,
 );
+assert.equal(typeof webgpuParallel.createParallelWebgpuStreamingPlot, 'function');
 
 function acceptsWebgpuOptions(options: ParallelWebgpuPlotOptions): void {
   void options;
 }
 acceptsWebgpuOptions(null as unknown as ParallelFastPlotOptions);
+
+function acceptsStreamingOptions(options: ParallelWebgpuStreamingPlotOptions): void {
+  void options.dataSource.batches;
+  void options.dataSource.domainsByAxis;
+}
+void acceptsStreamingOptions;
 
 console.log('parallel WebGPU compatibility contract tests passed');

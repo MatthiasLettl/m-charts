@@ -335,39 +335,99 @@ staging from accumulating a second large transient copy.
 
 ## Streaming Sources
 
-`m-scatter-webgpu/adapters` accepts finite record streams with a known count.
-The loader preallocates final typed columns once, encodes bounded batches, and
-releases each input batch. This is bounded-memory ingestion, not live append
-rendering: the WebGPU plot is created after all declared records have been
-encoded. Existing callers can continue passing `columns`.
+`m-scatter-webgpu/adapters` supports live typed-column streams in addition to
+the existing static `columns` API. The plot is created from the first non-empty
+batch, later batches are appended to persistent GPU buffers with `writeBuffer`,
+and rendering is coalesced by the existing animation-frame scheduler. A final
+point count is not required: `expectedCount` is only a preallocation hint, and
+known streams preallocate CPU and GPU storage while unknown streams grow CPU and
+GPU capacity geometrically. `initialCapacity` can explicitly request a smaller
+starting GPU allocation when that tradeoff is preferable.
+
+While batches arrive, the renderer keeps the last completed cache usable for
+zoom and pan and draws bounded representative previews of the newest loaded
+prefix. Once the source explicitly completes, it submits the same exact/LOD
+render policy used by a static dataset. This prevents pauses between expensive
+batches from being mistaken for completion and avoids queuing several large
+exact frames without changing the final point population or styling.
 
 ```ts
-const source = createFastScatterJsonRecordBatchSource(file.stream(), {
+const plot = await createFastScatterWebgpuStreamingPlot(host, {
+  dataSource: {
+    batches: {
+      async *[Symbol.asyncIterator]() {
+        for await (const columns of applicationBatches) yield { columns };
+      },
+    },
+    domain: preparedDomain,
+    idAt: (sourceIndex) => `point-${sourceIndex}`,
+    initialCapacity: 65_536,
+    spec,
+  },
+  mode: 'pan',
+  viewportPolicy: 'preserve',
+});
+
+await plot.interactive;
+await plot.streaming.done;
+const loadedColumns = plot.streaming.getColumns();
+```
+
+Batch numeric/style storage types must remain consistent. Batches arrive in
+display order (`xOrder` is unsupported), and supplied `sourceIndex` values must
+be contiguous global indices. Use `signal`, `plot.streaming.abort()`, or
+`plot.dispose()` for cancellation. Without a prepared domain or explicit
+viewport, the default `viewportPolicy: 'expand'` follows the growing domain;
+it stops following as soon as the user changes the viewport, so an in-progress
+pan or zoom is not reset by the next batch. Use `preserve` to keep the initial
+viewport fixed even before the first interaction. Abort and transport failures
+reject `plot.streaming.done`; if the plot remains mounted, its loaded prefix
+leaves preview mode and receives the normal settled render.
+The stream owns `columns`, `dataDomain`, and `spec`; other mutable plot options
+remain available through `plot.update(...)`.
+
+For the compact WebGPU style layout, a batch can provide `packedStyles` as one
+32-bit word per point and the source can provide `maxPointSize`. A source-level
+`idAt` resolver keeps global IDs lazy. These options avoid materializing the
+expanded color, opacity, rotation, shape, size, and ID columns in high-volume
+streams. Packed pages are released after upload to preserve that memory bound;
+if the WebGPU device is lost after later pages arrive, recreate the stream-backed
+plot because those released style pages cannot be replayed for device recovery.
+
+The source is transport-neutral. For an HTTP JSON response, adapt its byte
+stream without calling `response.json()`:
+
+```ts
+const response = await fetch('/api/points');
+if (response.body === null) throw new Error('Missing response body');
+const records = createFastScatterJsonRecordBatchSource(response.body, {
   batchSize: 16_384,
-  count: 10_000_000,
-  idAt: (index) => `sf-${String(index).padStart(8, '0')}`,
   schema,
 });
 
-const plot = await createFastScatterWebgpuPlotFromDataSource(host, {
-  axisMode: 'xy',
-  dataSource: source,
-  mode: 'pan',
-  onStreamProgress: ({ loadedCount, totalCount }) => {
-    console.log(loadedCount, totalCount);
-  },
+const plot = await createFastScatterWebgpuStreamingPlot(host, {
+  dataSource: createFastScatterWebgpuStreamSourceFromRecordBatches(records),
 });
-await plot.ready;
 ```
 
-Use `File.stream()`, a streamed `fetch()` response, or an application-owned
-`AsyncIterable` of record batches. Do not call `response.json()`, `file.text()`,
-or `JSON.parse()` for ten-million-record inputs: doing so creates the complete
-string/object graph before the bounded loader can help. The finite source must
-declare its record count so typed arrays never grow and copy during ingestion.
-WebGPU streams store Y values as `Float32Array` by default and can use `idAt`
-to keep predictable IDs lazy. Set `numericStorage: 'float64'` or omit `idAt`
-when the source requires full double precision or arbitrary materialized IDs.
+`count` is optional on the live JSON/record bridge. Supply it when known to
+preallocate storage and validate the final record total; omit it for an
+open-ended response and let storage grow geometrically. The legacy
+`createFastScatterWebgpuPlotFromDataSource` loader still requires a count because
+it intentionally materializes final columns before plot creation. A prepared
+`domain` also supplies stable high-precision GPU encoding ranges.
+
+The older `createFastScatterWebgpuPlotFromDataSource` remains available for
+callers that intentionally finish loading a known-count record stream before
+creating the plot. `File.stream()`, NDJSON or binary framing can likewise be
+decoded into typed batches; HTTP, WebSocket, and local producers all use the
+same chart-facing contract.
+
+The repository demo exercises this exact path with a capped Vercel Function at
+`/api/webgpu-stream`: it passes `response.body` to the JSON record-batch adapter
+and never calls `response.json()`. See the
+[server-function streaming guide](../../docs/server-function-streaming.md) for
+the protocol, cost boundary, local development, and deployment checks.
 
 Use the opt-in WebGPU smoke suite on Linux:
 

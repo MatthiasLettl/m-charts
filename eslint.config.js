@@ -43,6 +43,7 @@ export default tseslint.config(
   {
     files: [
       '*.config.{js,ts}',
+      'api/**/*.{ts,tsx}',
       'eslint.config.js',
       'scripts/**/*.{ts,tsx}',
       'tests/**/*.{ts,tsx}',

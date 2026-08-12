@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 
 import {
   createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
   loadFastScatterRecordBatchSource,
   streamFastScatterJsonRecordBatches,
   type FastScatterDatasetSchema,
+  type FastScatterWebgpuStreamSource,
 } from '../../packages/m-charts/src/m-scatter-webgpu/index.ts';
 
 const schema: FastScatterDatasetSchema = {
@@ -70,8 +72,69 @@ const compact = await loadFastScatterRecordBatchSource(
 );
 assert.equal(compact.columns.y.value instanceof Float32Array, true);
 assert.equal(compact.columns.ids[2], 'three');
+assert.deepEqual([...compact.columns.ids], ['one', 'two', 'three']);
+assert.deepEqual(compact.columns.ids.map((id) => id.toUpperCase()), ['ONE', 'TWO', 'THREE']);
+assert.equal(JSON.stringify(compact.columns.ids), '["one","two","three"]');
 assert.equal(compact.columns.rotationDegrees, undefined);
 assert.equal(compact.columns.rotation, compact.columns.rotationRadians);
+
+let streamCancelled = false;
+const cancelledIterator = streamFastScatterJsonRecordBatches(
+  new ReadableStream<Uint8Array>({
+    cancel() {
+      streamCancelled = true;
+    },
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('{"records":[{"id":"one"}]}'));
+    },
+  }),
+  1,
+);
+assert.equal((await cancelledIterator.next()).done, false);
+await cancelledIterator.return(undefined);
+assert.equal(streamCancelled, true);
+
+const liveSource = createFastScatterWebgpuStreamSourceFromRecordBatches({
+  batches: (async function* () {
+    yield records.slice(0, 1);
+    yield records.slice(1);
+  })(),
+  count: records.length,
+  idAt: (index) => `live-${index}`,
+  schema,
+});
+assert.equal(liveSource.expectedCount, records.length);
+const liveBatches = [];
+for await (const batch of liveSource.batches) liveBatches.push(batch.columns);
+assert.deepEqual(liveBatches.map((columns) => columns.x.length), [1, 2]);
+assert.deepEqual(liveBatches.flatMap((columns) => [...columns.ids]), [
+  'live-0',
+  'live-1',
+  'live-2',
+]);
+assert.deepEqual(Array.from(liveBatches[1]!.sourceIndex ?? []), [1, 2]);
+assert.equal(liveBatches[0]!.y.value instanceof Float32Array, true);
+
+const unknownCountSource: FastScatterWebgpuStreamSource = {
+  batches: (async function* () {
+    yield { columns: liveBatches[0]! };
+  })(),
+  spec: liveSource.spec,
+};
+assert.equal(unknownCountSource.expectedCount, undefined);
+
+const unknownCountRecordSource = createFastScatterWebgpuStreamSourceFromRecordBatches(
+  createFastScatterJsonRecordBatchSource(createChunkedStream(json, 6), {
+    batchSize: 2,
+    schema,
+  }),
+);
+assert.equal(unknownCountRecordSource.expectedCount, undefined);
+const unknownCountRecordBatches = [];
+for await (const batch of unknownCountRecordSource.batches) {
+  unknownCountRecordBatches.push(...batch.columns.x);
+}
+assert.deepEqual(unknownCountRecordBatches, [1, 2, 3]);
 
 const datetimeSchema: FastScatterDatasetSchema = {
   version: 1,
@@ -103,6 +166,21 @@ const datetimeAxis = (
   }
 ).axisByColumn.timestampNs;
 assert.equal(datetimeAxis?.epochNsValues[2], datetimeRecords[2]!.timestampNs);
+
+const liveDatetimeSource = createFastScatterWebgpuStreamSourceFromRecordBatches({
+  batches: (async function* () {
+    yield datetimeRecords.slice(0, 2);
+    yield datetimeRecords.slice(2);
+  })(),
+  count: datetimeRecords.length,
+  schema: datetimeSchema,
+});
+const liveDatetimeBatches = [];
+for await (const batch of liveDatetimeSource.batches) {
+  liveDatetimeBatches.push(batch.columns);
+}
+assert.deepEqual(Array.from(liveDatetimeBatches[0]!.x), [0, 1000]);
+assert.deepEqual(Array.from(liveDatetimeBatches[1]!.x), [2000]);
 
 await assert.rejects(
   loadFastScatterRecordBatchSource(

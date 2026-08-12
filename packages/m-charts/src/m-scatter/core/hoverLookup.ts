@@ -23,6 +23,7 @@ import type {
   FastScatterPlotSpec,
   FastScatterPointColumns,
   FastScatterPointRef,
+  FastScatterRange,
   FastScatterViewport,
 } from './types.js';
 
@@ -545,8 +546,22 @@ export function lookupFastScatterNearestPoint(
       () => bestDistanceSquared,
     );
   } else if (hoverGrid === undefined) {
-    for (let sortedIndex = scanStartIndex; sortedIndex < scanEndIndex; sortedIndex += 1) {
-      considerPoint(getPointIndexAtXOrder(input.columns, sortedIndex));
+    if (input.columns.xOrder === undefined && input.isPointEligible === undefined) {
+      visitNearestSortedXFallbackCandidates(
+        input.columns,
+        scanStartIndex,
+        scanEndIndex,
+        pointerXIndex,
+        input.pointerCssX,
+        input.viewport.x,
+        plotRect,
+        considerPoint,
+        () => bestDistanceSquared,
+      );
+    } else {
+      for (let sortedIndex = scanStartIndex; sortedIndex < scanEndIndex; sortedIndex += 1) {
+        considerPoint(getPointIndexAtXOrder(input.columns, sortedIndex));
+      }
     }
     // Preserve the established diagnostic definition for the unfiltered X-only fallback.
     if (input.isPointEligible === undefined) {
@@ -615,6 +630,51 @@ export function lookupFastScatterNearestPoint(
     ),
     hit: bestHit,
   };
+}
+
+function visitNearestSortedXFallbackCandidates(
+  columns: FastScatterPointColumns,
+  scanStartIndex: number,
+  scanEndIndex: number,
+  pointerXIndex: number,
+  pointerCssX: number,
+  viewportX: FastScatterRange,
+  plotRect: FastScatterPlotRect,
+  visit: (pointIndex: number) => void,
+  bestDistanceSquared: () => number,
+): void {
+  let left = Math.min(scanEndIndex - 1, pointerXIndex - 1);
+  let right = Math.max(scanStartIndex, pointerXIndex);
+  const xDistanceSquared = (pointIndex: number): number => {
+    const x = columns.x[pointIndex];
+    if (!Number.isFinite(x)) return Number.POSITIVE_INFINITY;
+    const canvasX = axisToPixel(
+      x!,
+      viewportX,
+      plotRect.xCssPx,
+      plotRect.xCssPx + plotRect.widthCssPx,
+    );
+    const distance = canvasX - pointerCssX;
+    return distance * distance;
+  };
+
+  while (left >= scanStartIndex || right < scanEndIndex) {
+    const leftDistance = left >= scanStartIndex
+      ? xDistanceSquared(left)
+      : Number.POSITIVE_INFINITY;
+    const rightDistance = right < scanEndIndex
+      ? xDistanceSquared(right)
+      : Number.POSITIVE_INFINITY;
+    const nearestXDistance = Math.min(leftDistance, rightDistance);
+    if (nearestXDistance > bestDistanceSquared()) return;
+    if (leftDistance <= rightDistance) {
+      visit(left);
+      left -= 1;
+    } else {
+      visit(right);
+      right += 1;
+    }
+  }
 }
 
 function visitFastScatterCompactHoverCandidates(

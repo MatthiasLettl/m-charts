@@ -25,6 +25,7 @@ import {
   resolveScatterFastSchemaUrl,
 } from '../data/fastPlotTableSources.ts';
 import { loadHistogramWebgpuDataset } from '../data/histogramWebgpuDatasetAdapter.ts';
+import { prepareHistogramWebgpuDemoStream } from '../data/webgpuStreamingAdapters.ts';
 import {
   isInteractionAxis,
   type InteractionAxis,
@@ -84,9 +85,12 @@ import type {
 } from 'm-charts/m-histogram';
 import {
   createHistogramWebgpuPlot,
+  createHistogramWebgpuStreamingPlot,
   type HistogramWebgpuAggregationBackend,
   type HistogramWebgpuPlotDiagnostics,
   type HistogramWebgpuPlotInstance,
+  type HistogramWebgpuStreamProgress,
+  type HistogramWebgpuStreamSource,
 } from 'm-charts/m-histogram-webgpu';
 
 const HISTOGRAM_MODE_PARAM = 'histMode';
@@ -176,6 +180,7 @@ type HistogramDatasetState =
       sourceFormat: string;
       spec: HistogramPlotSpec;
       status: 'loaded';
+      streamingSource?: HistogramWebgpuStreamSource;
     };
 
 type RendererState = {
@@ -304,6 +309,10 @@ export function MHistogramPlotRoute({
     () => parseHistogramWebgpuAggregationBackend(searchParams),
     [searchParams],
   );
+  const webgpuStreamingKind = rendererBackend === 'webgpu'
+    ? parseHistogramWebgpuStreamKind(searchParams)
+    : null;
+  const webgpuStreaming = webgpuStreamingKind !== null;
   const selectionMode = useMemo(
     () => parseHistogramSelectionMode(searchParams),
     [searchParams],
@@ -381,6 +390,9 @@ export function MHistogramPlotRoute({
   const [metrics, setMetrics] = useState<HistogramMetricsEvent | null>(null);
   const [webgpuDiagnostics, setWebgpuDiagnostics] =
     useState<HistogramWebgpuPlotDiagnostics | null>(null);
+  const [streamProgress, setStreamProgress] =
+    useState<HistogramWebgpuStreamProgress | null>(null);
+  const streamedColumnsRef = useRef<HistogramColumns | null>(null);
   const [selection, setSelection] = useState<HistogramSelectionEvent | null>(null);
   const [hover, setHover] = useState<HistogramHoverEvent | null>(null);
   const [measurement, setMeasurement] = useState<HistogramMeasurementEvent | null>(
@@ -612,6 +624,8 @@ export function MHistogramPlotRoute({
 
     async function loadDataset() {
       setDatasetState({ status: 'loading' });
+      setStreamProgress(null);
+      streamedColumnsRef.current = null;
       setSelection(null);
       setHover(null);
       setMeasurement(null);
@@ -622,6 +636,26 @@ export function MHistogramPlotRoute({
         const loaded =
           histMode === 'bar'
             ? await loadHistogramBarDataset(startedAt)
+            : rendererBackend === 'webgpu' && webgpuStreaming
+              ? await prepareHistogramWebgpuDemoStream({
+                    kind: webgpuStreamingKind ?? 'local',
+                    pointCount: webgpuPointCount,
+                    ...(tableMode === 'multi'
+                      ? {
+                          secondaryFixtureUrl: mixedTableFixtureUrl.replace(
+                            /\.json(?=($|[?#]))/u,
+                            '.secondary.json',
+                          ),
+                        }
+                      : {}),
+                    signal: abortController.signal,
+                    startedAt,
+                  }).then(({ source, ...stream }) => ({
+                    ...stream,
+                    recordExportAvailable: true,
+                    status: 'loaded' as const,
+                    streamingSource: source,
+                  }))
             : rendererBackend === 'webgpu'
               ? {
                   ...(await loadHistogramWebgpuDataset({
@@ -671,6 +705,8 @@ export function MHistogramPlotRoute({
     scatterFastLoadParams,
     tableMode,
     webgpuPointCount,
+    webgpuStreaming,
+    webgpuStreamingKind,
   ]);
 
   const binSizes = useMemo(() => {
@@ -959,19 +995,61 @@ export function MHistogramPlotRoute({
       theme: histogramTheme,
       viewport: initialViewport ?? undefined,
     };
-    const plot: HistogramPlotInstance = rendererBackend === 'webgpu'
-      ? createHistogramWebgpuPlot(host, {
-          ...commonOptions,
-          aggregationBackend: webgpuAggregationBackend,
-        })
-      : createHistogramPlot(host, commonOptions);
+    let disposed = false;
+    let mountedPlot: HistogramPlotInstance | null = null;
+    let streamingPlot: Awaited<
+      ReturnType<typeof createHistogramWebgpuStreamingPlot>
+    > | null = null;
+    let binding: { dispose(): void } | null = null;
+    let subscriptions: Array<() => void> = [];
+
+    const createAndAttachPlot = async () => {
+      const plot: HistogramPlotInstance =
+        rendererBackend === 'webgpu' && datasetState.streamingSource !== undefined
+          ? await createHistogramWebgpuStreamingPlot(host, {
+              aggregationBackend: webgpuAggregationBackend,
+              axisMode: commonOptions.axisMode,
+              binSizes: commonOptions.binSizes,
+              dataSource: datasetState.streamingSource,
+              mode: commonOptions.mode,
+              onStreamProgress: (progress) => {
+                setStreamProgress(progress);
+                if (streamingPlot !== null) {
+                  streamedColumnsRef.current = streamingPlot.streaming.getColumns();
+                }
+                if (mountedPlot !== null) {
+                  setSnapshot(mountedPlot.commands.getStateSnapshot());
+                }
+              },
+              overlayClassName: commonOptions.overlayClassName,
+              preserveDrawingBuffer: commonOptions.preserveDrawingBuffer,
+              selectedSourceIndices: commonOptions.selectedSourceIndices,
+              theme: commonOptions.theme,
+              viewportPolicy: 'expand',
+            }).then((createdPlot) => {
+              streamingPlot = createdPlot;
+              streamedColumnsRef.current = createdPlot.streaming.getColumns();
+              setStreamProgress(createdPlot.streaming.getProgress());
+              return createdPlot;
+            })
+          : rendererBackend === 'webgpu'
+            ? createHistogramWebgpuPlot(host, {
+                ...commonOptions,
+                aggregationBackend: webgpuAggregationBackend,
+              })
+            : createHistogramPlot(host, commonOptions);
+      if (disposed) {
+        plot.dispose();
+        return;
+      }
+      mountedPlot = plot;
     plotRef.current = plot;
-    const binding = plot.use(
+    binding = plot.use(
       createDefaultHistogramBindings({
         suppressContextMenu: true,
       }),
     );
-    const subscriptions = [
+    subscriptions = [
       plot.on('renderstatechange', (event) => {
         setRendererState({ message: event.message, status: event.state });
         if (isHistogramWebgpuPlot(plot)) {
@@ -1105,6 +1183,31 @@ export function MHistogramPlotRoute({
       });
     }
     plot.commands.render();
+      if ('streaming' in plot) {
+        const streamingPlot = plot as Awaited<
+          ReturnType<typeof createHistogramWebgpuStreamingPlot>
+        >;
+        const captureFinalColumns = () => {
+          streamedColumnsRef.current = streamingPlot.streaming.getColumns();
+          setSnapshot(streamingPlot.commands.getStateSnapshot());
+        };
+        if (streamingPlot.streaming.getProgress().complete) captureFinalColumns();
+        void streamingPlot.streaming.done.then(captureFinalColumns).catch((error: unknown) => {
+          if (disposed) return;
+          setRendererState({
+            message: error instanceof Error ? error.message : 'Unknown streaming error.',
+            status: 'error',
+          });
+        });
+      }
+    };
+    void createAndAttachPlot().catch((error: unknown) => {
+      if (disposed) return;
+      setRendererState({
+        message: error instanceof Error ? error.message : 'Unknown plot startup error.',
+        status: 'error',
+      });
+    });
 
     function writeViewportToUrl(
       viewport: HistogramViewport,
@@ -1137,6 +1240,7 @@ export function MHistogramPlotRoute({
     }
 
     return () => {
+      disposed = true;
       cancelPendingViewportWrite();
       cancelPendingViewportReconcile();
       if (pendingMembershipMaterializeRef.current !== 0) {
@@ -1144,13 +1248,13 @@ export function MHistogramPlotRoute({
         pendingMembershipMaterializeRef.current = 0;
       }
       clearPendingBinSizeState();
-      binding.dispose();
+      binding?.dispose();
       for (const unsubscribe of subscriptions) {
         unsubscribe();
       }
-      plot.dispose();
+      mountedPlot?.dispose();
       setWebgpuDiagnostics(null);
-      if (plotRef.current === plot) {
+      if (plotRef.current === mountedPlot) {
         plotRef.current = null;
         resetViewportSeedRef.current = null;
       }
@@ -1190,9 +1294,10 @@ export function MHistogramPlotRoute({
     plot.update({
       binSizes,
       ...(histMode === 'bar' ? { aggregation: datasetState.aggregation } : {}),
-      columns: datasetState.columns,
+      ...(datasetState.streamingSource === undefined
+        ? { columns: datasetState.columns, spec: datasetState.spec }
+        : {}),
       focusedSubplotId,
-      spec: datasetState.spec,
       theme: histogramTheme,
       ...(preserveViewport ? { viewport: currentSnapshot.viewport } : {}),
     });
@@ -1487,19 +1592,36 @@ export function MHistogramPlotRoute({
   }, [webgpuPointCount]);
 
   const selectWebgpuTableMode = useCallback((mode: FastRouteTableMode) => {
-    if (mode === tableMode) return;
+    if (mode === tableMode && !webgpuStreaming) return;
     const next = new URL(window.location.href);
+    next.searchParams.delete('webgpuData');
     const value = formatFastRouteTableMode(mode);
     if (value === null) next.searchParams.delete(FAST_ROUTE_TABLES_PARAM);
     else next.searchParams.set(FAST_ROUTE_TABLES_PARAM, value);
     window.location.assign(next.href);
-  }, [tableMode]);
+  }, [tableMode, webgpuStreaming]);
+
+  const selectWebgpuStreaming = useCallback(() => {
+    const next = new URL(window.location.href);
+    next.searchParams.set('webgpuData', 'stream-local');
+    window.location.assign(next.href);
+  }, []);
+
+  const selectWebgpuStreamKind = useCallback((kind: 'function' | 'local') => {
+    const next = new URL(window.location.href);
+    next.searchParams.set('webgpuData', `stream-${kind}`);
+    window.location.assign(next.href);
+  }, []);
 
   const selectHistogramMode = useCallback((mode: HistogramRouteMode) => {
     if (mode === histMode) return;
     const next = new URL(window.location.href);
-    if (mode === 'histogram') next.searchParams.delete(HISTOGRAM_MODE_PARAM);
-    else next.searchParams.set(HISTOGRAM_MODE_PARAM, mode);
+    if (mode === 'histogram') {
+      next.searchParams.delete(HISTOGRAM_MODE_PARAM);
+    } else {
+      next.searchParams.set(HISTOGRAM_MODE_PARAM, mode);
+      next.searchParams.delete('webgpuData');
+    }
     window.location.assign(next.href);
   }, [histMode]);
 
@@ -1594,7 +1716,10 @@ export function MHistogramPlotRoute({
     if (resolvedSelection === null) {
       return;
     }
-    const exportResult = materializeSelectedIds(datasetState.columns, resolvedSelection);
+    const exportResult = materializeSelectedIds(
+      streamedColumnsRef.current ?? datasetState.columns,
+      resolvedSelection,
+    );
     if (!exportResult.available) {
       setExportStatus(exportResult.message);
       return;
@@ -1612,7 +1737,7 @@ export function MHistogramPlotRoute({
       return;
     }
     const exportResult = materializeSelectedRecords(
-      datasetState.columns,
+      streamedColumnsRef.current ?? datasetState.columns,
       resolvedSelection,
     );
     if (!exportResult.available) {
@@ -1720,6 +1845,7 @@ export function MHistogramPlotRoute({
               <h2>Dataset</h2>
               {rendererBackend === 'webgpu' ? (
                 <div className="scatter-webgpu-dataset-controls">
+                  {webgpuStreamingKind !== 'function' ? (
                   <div
                     aria-label="WebGPU histogram dataset size"
                     className="segmented-control"
@@ -1737,24 +1863,63 @@ export function MHistogramPlotRoute({
                       </button>
                     ))}
                   </div>
+                  ) : (
+                    <p className="compact-note">
+                      The server-function sample is hard-capped at 5,000 records.
+                    </p>
+                  )}
+                  {webgpuStreaming ? (
+                    <p className="compact-note">
+                      {webgpuStreamingKind === 'function'
+                        ? 'Streams one capped, genuinely chunked JSON response from the Vercel Function.'
+                        : <>Streams the selected {tableMode === 'multi' ? 'multiple-table' : 'single-table'} dataset from browser-local pages (IndexedDB when stored).</>}
+                    </p>
+                  ) : null}
                   <div
-                    aria-label="WebGPU histogram table mode"
+                    aria-label="WebGPU histogram dataset mode"
                     className="segmented-control scatter-webgpu-table-mode-control"
                     data-testid="histogram-webgpu-table-mode"
                   >
-                    {(['single', 'multi'] as const).map((mode) => (
+                    {(['single', 'multi', 'stream'] as const).map((mode) => (
                       <button
-                        aria-pressed={tableMode === mode}
-                        className={tableMode === mode ? 'is-active' : undefined}
+                        aria-pressed={mode === 'stream' ? webgpuStreaming : !webgpuStreaming && tableMode === mode}
+                        className={
+                          (mode === 'stream' ? webgpuStreaming : !webgpuStreaming && tableMode === mode)
+                            ? 'is-active'
+                            : undefined
+                        }
                         disabled={histMode === 'bar'}
                         key={mode}
-                        onClick={() => selectWebgpuTableMode(mode)}
+                        onClick={() => mode === 'stream'
+                          ? selectWebgpuStreaming()
+                          : selectWebgpuTableMode(mode)}
                         type="button"
                       >
-                        {mode === 'single' ? 'Single table' : 'Multiple tables'}
+                        {mode === 'single'
+                          ? 'Single table'
+                          : mode === 'multi' ? 'Multiple tables' : 'Streaming'}
                       </button>
                     ))}
                   </div>
+                  {webgpuStreaming ? (
+                    <div
+                      aria-label="WebGPU histogram streaming source"
+                      className="segmented-control scatter-webgpu-stream-source-control"
+                      data-testid="histogram-webgpu-stream-source"
+                    >
+                      {(['local', 'function'] as const).map((kind) => (
+                        <button
+                          aria-pressed={webgpuStreamingKind === kind}
+                          className={webgpuStreamingKind === kind ? 'is-active' : undefined}
+                          key={kind}
+                          onClick={() => selectWebgpuStreamKind(kind)}
+                          type="button"
+                        >
+                          {kind === 'local' ? 'Browser local' : 'Server function'}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
                   <details
                     className="control-disclosure scatter-webgpu-dataset-details"
                     data-testid="histogram-webgpu-dataset-details"
@@ -1762,9 +1927,11 @@ export function MHistogramPlotRoute({
                     <summary>Dataset details</summary>
                     <div className="control-disclosure-body">
                       <p className="compact-note">
-                        Uses the same locally generated, paged dataset as m-scatter
-                        WebGPU: process phase, acceptance, signal value, and the same
-                        per-record palette.
+                        {webgpuStreamingKind === 'function'
+                          ? 'The browser passes response.body to the incremental JSON-record decoder, maps each batch to histogram columns, and never materializes the complete HTTP payload first.'
+                          : webgpuStreaming
+                          ? 'Streaming uses the same renderer, axes, aggregation, and interactions. Batches come from the shared browser-local dataset; the seeded worker is used only when no stored copy exists.'
+                          : 'Uses the same locally generated, paged dataset as m-scatter WebGPU: process phase, acceptance, signal value, and the same per-record palette.'}
                       </p>
                       <p className="compact-note">
                         Every selected record contributes to aggregation at every size.
@@ -1772,6 +1939,22 @@ export function MHistogramPlotRoute({
                       </p>
                     </div>
                   </details>
+                  {streamProgress !== null ? (
+                    <dl
+                      className="metrics-grid"
+                      data-loaded-count={streamProgress.loadedCount}
+                      data-testid="histogram-webgpu-stream-progress"
+                    >
+                      <div>
+                        <dt>Streamed</dt>
+                        <dd>{streamProgress.loadedCount.toLocaleString()}</dd>
+                      </div>
+                      <div>
+                        <dt>Capacity</dt>
+                        <dd>{streamProgress.capacity.toLocaleString()}</dd>
+                      </div>
+                    </dl>
+                  ) : null}
                   <div className="scatter-fast-display-mode-control">
                     <span id="histogram-webgpu-input-mode-label">Input mode</span>
                     <div
@@ -1866,7 +2049,7 @@ export function MHistogramPlotRoute({
                   <dt>Records</dt>
                   <dd>
                     {datasetState.status === 'loaded'
-                      ? datasetState.metadata.recordCount.toLocaleString()
+                      ? (streamProgress?.loadedCount ?? datasetState.metadata.recordCount).toLocaleString()
                       : 'loading'}
                   </dd>
                 </div>
@@ -2023,6 +2206,15 @@ export function MHistogramPlotRoute({
       </section>
     </main>
   );
+}
+
+function parseHistogramWebgpuStreamKind(
+  searchParams: URLSearchParams,
+): 'function' | 'local' | null {
+  const value = searchParams.get('webgpuData');
+  if (value === 'stream-local') return 'local';
+  if (value === 'stream-function') return 'function';
+  return null;
 }
 
 function HistogramRouteOverlays(props: {

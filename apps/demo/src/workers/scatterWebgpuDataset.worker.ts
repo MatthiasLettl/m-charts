@@ -8,6 +8,8 @@ import {
 
 interface StartMessage {
   count: number;
+  pageSize?: number;
+  seed?: number;
   type: 'start';
 }
 
@@ -27,22 +29,30 @@ worker.addEventListener('message', (event: MessageEvent<IncomingMessage>) => {
     return;
   }
 
-  void generate(event.data.count);
+  void generate(event.data.count, event.data.pageSize, event.data.seed);
 });
 
-async function generate(count: number): Promise<void> {
+async function generate(
+  count: number,
+  pageSize = SCATTER_WEBGPU_DEFAULT_PAGE_SIZE,
+  seed = SCATTER_WEBGPU_DEFAULT_SEED,
+): Promise<void> {
   try {
     const generator = createScatterWebgpuDatasetGenerator({
       count,
-      pageSize: SCATTER_WEBGPU_DEFAULT_PAGE_SIZE,
-      seed: SCATTER_WEBGPU_DEFAULT_SEED,
+      pageSize,
+      seed,
     });
     for (let pageIndex = 0; pageIndex < generator.pageCount; pageIndex += 1) {
       const page = generator.createNextPage();
       if (page === null) break;
+      const x = new Uint32Array(page.manifest.count);
+      for (let localIndex = 0; localIndex < x.length; localIndex += 1) {
+        x[localIndex] = generatedOverlapXValue(page.manifest.startIndex + localIndex);
+      }
       worker.postMessage(
-        { page, pageCount: generator.pageCount, type: 'page' },
-        [page.coordinateBuffer, page.styleBuffer],
+        { page, pageCount: generator.pageCount, type: 'page', xBuffer: x.buffer },
+        [page.coordinateBuffer, page.styleBuffer, x.buffer],
       );
       await new Promise<void>((resolve) => {
         continueGeneration = resolve;
@@ -55,6 +65,14 @@ async function generate(count: number): Promise<void> {
       type: 'error',
     });
   }
+}
+
+function generatedOverlapXValue(index: number): number {
+  const blockStart = Math.floor(index / 24) * 24;
+  const offset = index - blockStart;
+  if (offset >= 2 && offset < 5) return blockStart + 2;
+  if (offset >= 14 && offset < 16) return blockStart + 14;
+  return index;
 }
 
 export {};

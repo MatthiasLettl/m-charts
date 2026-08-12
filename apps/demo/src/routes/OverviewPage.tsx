@@ -33,6 +33,21 @@ export function OverviewPage() {
     themeMode,
     { preserveKeys: ['points', 'tables'] },
   );
+  const mScatterWebgpuStreamingTarget = createThemeAwareTo(
+    '/m-scatter-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      webgpuData: 'stream-local',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'webgpuData'] },
+  );
+  const mScatterWebgpuServerStreamTarget = createThemeAwareTo(
+    '/m-scatter-webgpu',
+    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
+    themeMode,
+    { preserveKeys: ['webgpuData'] },
+  );
   const mParallelTarget = createThemeAwareTo(
     '/m-parallel',
     location.search,
@@ -58,6 +73,21 @@ export function OverviewPage() {
     }),
     themeMode,
     { preserveKeys: ['points', 'tables'] },
+  );
+  const mParallelWebgpuStreamingTarget = createThemeAwareTo(
+    '/m-parallel-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      webgpuData: 'stream-local',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'webgpuData'] },
+  );
+  const mParallelWebgpuServerStreamTarget = createThemeAwareTo(
+    '/m-parallel-webgpu',
+    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
+    themeMode,
+    { preserveKeys: ['webgpuData'] },
   );
   const mHistogramTarget = createThemeAwareTo(
     '/m-histogram',
@@ -87,6 +117,21 @@ export function OverviewPage() {
     appendSearchParams(location.search, { points: '1000000', tables: 'multi' }),
     themeMode,
     { preserveKeys: ['points', 'tables'] },
+  );
+  const mHistogramWebgpuStreamingTarget = createThemeAwareTo(
+    '/m-histogram-webgpu',
+    appendSearchParams(location.search, {
+      points: '1000000',
+      webgpuData: 'stream-local',
+    }),
+    themeMode,
+    { preserveKeys: ['points', 'webgpuData'] },
+  );
+  const mHistogramWebgpuServerStreamTarget = createThemeAwareTo(
+    '/m-histogram-webgpu',
+    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
+    themeMode,
+    { preserveKeys: ['webgpuData'] },
   );
   const mHistogramWebgpuBarTarget = createThemeAwareTo(
     '/m-histogram-webgpu',
@@ -157,6 +202,8 @@ export function OverviewPage() {
               <span className="prototype-card-actions">
                 <Link to={mScatterWebgpuTarget}>One table</Link>
                 <Link to={mScatterWebgpuMultiTarget}>Multiple tables</Link>
+                <Link to={mScatterWebgpuStreamingTarget}>Streaming</Link>
+                <Link to={mScatterWebgpuServerStreamTarget}>Server stream</Link>
               </span>
             </span>
           </article>
@@ -190,6 +237,8 @@ export function OverviewPage() {
               <span className="prototype-card-actions">
                 <Link to={mHistogramWebgpuTarget}>One table</Link>
                 <Link to={mHistogramWebgpuMultiTarget}>Multiple tables</Link>
+                <Link to={mHistogramWebgpuStreamingTarget}>Streaming</Link>
+                <Link to={mHistogramWebgpuServerStreamTarget}>Server stream</Link>
                 <Link to={mHistogramWebgpuBarTarget}>Pre-aggregated bars</Link>
               </span>
             </span>
@@ -223,6 +272,8 @@ export function OverviewPage() {
               <span className="prototype-card-actions">
                 <Link to={mParallelWebgpuTarget}>One table</Link>
                 <Link to={mParallelWebgpuMultiTarget}>Multiple tables</Link>
+                <Link to={mParallelWebgpuStreamingTarget}>Streaming</Link>
+                <Link to={mParallelWebgpuServerStreamTarget}>Server stream</Link>
               </span>
             </span>
           </article>

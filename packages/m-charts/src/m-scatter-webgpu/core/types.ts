@@ -1,5 +1,6 @@
 import type {
   FastScatterControllerOptions,
+  FastScatterDataDomain,
   FastScatterRendererOptions,
 } from '../../m-scatter/core/index.js';
 import type { FastScatterWebgpuWasmAggregationDiagnostics } from './wasmAggregation.js';
@@ -13,9 +14,13 @@ export interface FastScatterWebgpuRendererOptions
   extends FastScatterRendererOptions {
   /** Preferred built-in aggregate backend. Rust/WASM requests fall back to TypeScript if unavailable. */
   aggregationBackend?: FastScatterWebgpuAggregationBackend;
+  /** Optional prepared domain used for stable high-precision column encoding. */
+  dataDomain?: FastScatterDataDomain;
   indexedStyle?: boolean;
   lifecycle?: FastScatterWebgpuRendererLifecycle;
   packedStyles?: FastScatterWebgpuPackedStyles;
+  /** Optional initial allocation capacity for progressive append sources. */
+  pointCapacity?: number;
   requestTimestampQuery?: boolean;
 }
 
@@ -70,6 +75,7 @@ export interface FastScatterWebgpuDiagnostics {
   lodStride: number;
   overviewRepresentativeCount: number;
   pointCount: number;
+  pointCapacity: number;
   ready: boolean;
   residentBytes: number;
   requiredBufferSize: number;

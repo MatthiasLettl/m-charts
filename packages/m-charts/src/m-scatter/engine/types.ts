@@ -1,5 +1,6 @@
 import type { Disposable, Unsubscribe } from '../../plot-engine/core/index.js';
 import type {
+  FastScatterDataDomain,
   FastScatterAggregationSet,
   FastScatterController,
   FastScatterControllerOptions,
@@ -17,6 +18,8 @@ import type {
 } from './scatterEvents.js';
 
 export interface FastScatterRendererLike extends FastScatterController {
+  appendData?(options: FastScatterRendererAppendOptions): Promise<void> | void;
+  finishDataAppend?(): Promise<void> | void;
   getAggregation?(): FastScatterAggregationSet | null;
   isPointRendered?(pointIndex: number, plotId: string): boolean;
   playEasterEgg?(options?: FastScatterEasterEggPlaybackOptions): boolean;
@@ -24,6 +27,16 @@ export interface FastScatterRendererLike extends FastScatterController {
     viewport: FastScatterViewport,
     context: FastScatterRendererViewportUpdateContext,
   ): void;
+}
+
+/** Internal renderer handoff used by additive streaming adapters. */
+export interface FastScatterRendererAppendOptions {
+  readonly capacity: number;
+  readonly columns: FastScatterControllerOptions['columns'];
+  readonly maxPointSize?: number;
+  /** Packed style words for only the appended `[startPoint, columns.length)` range. */
+  readonly packedStyles?: Uint32Array;
+  readonly startPoint: number;
 }
 
 export interface FastScatterRendererViewportUpdateContext {
@@ -42,6 +55,8 @@ export interface FastScatterEngineOptions extends FastScatterControllerOptions {
   hostClassName?: string;
   navigatorCssPx?: number;
   overlayClassName?: string;
+  /** Optional prepared domain used to avoid rescanning appended columns. */
+  dataDomain?: FastScatterDataDomain;
 }
 
 export interface FastScatterEngineContextLifecycleHandlers {

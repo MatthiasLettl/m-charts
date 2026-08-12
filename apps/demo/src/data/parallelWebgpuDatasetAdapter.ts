@@ -6,6 +6,7 @@ import {
   type ParallelFastColumns,
   type ParallelWebgpuPackedData,
   type ParallelWebgpuPackedPage,
+  type ParallelWebgpuStreamSource,
 } from 'm-charts/m-parallel-webgpu';
 
 import type { FastRouteTableMode } from './fastRouteDataMode.ts';
@@ -106,6 +107,7 @@ export interface LoadedParallelWebgpuDataset {
   generated: boolean;
   loadMs: number;
   storedBytes: number;
+  streamingSource?: ParallelWebgpuStreamSource;
   tableNames: readonly string[];
   tableRecordCounts: Readonly<Record<string, number>>;
 }

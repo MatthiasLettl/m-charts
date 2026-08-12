@@ -22,11 +22,11 @@ as the default required source. Add `adapters`, scatter `workers`, or chart
 | Chart | Required source | Optional source |
 | --- | --- | --- |
 | Scatter | `packages/m-charts/src/m-scatter/core`, `packages/m-charts/src/m-scatter/engine` | Add `workers` for worker-backed aggregation/selection, `adapters` for dataset helpers, and `react` only for React helpers. |
-| Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for known-count record streams and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
+| Scatter WebGPU | The WebGL2 scatter `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-scatter-webgpu/core`, and `packages/m-charts/src/m-scatter-webgpu/engine` | Supports point, bubble, and heat-map modes. Add `m-scatter-webgpu/adapters` for live typed batches or streamed JSON records, and `@webgpu/types` when the TypeScript DOM library does not declare WebGPU. |
 | Histogram | `packages/m-charts/src/m-histogram/core`, `packages/m-charts/src/m-histogram/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
-| Histogram WebGPU | The histogram `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-histogram-webgpu/core`, and `packages/m-charts/src/m-histogram-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. The shared WebGPU folder contains the embedded Rust aggregation binary. |
+| Histogram WebGPU | The histogram `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-histogram-webgpu/core`, and `packages/m-charts/src/m-histogram-webgpu/engine` | Add `m-histogram-webgpu/adapters` for live typed batches and `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. The shared WebGPU folder contains the embedded Rust aggregation binary. |
 | Parallel | `packages/m-charts/src/m-parallel/core`, `packages/m-charts/src/m-parallel/engine` | Add `adapters` for dataset helpers and `react` only for React helpers. |
-| Parallel WebGPU | The parallel `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-parallel-webgpu/core`, and `packages/m-charts/src/m-parallel-webgpu/engine` | Add `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. Use `createParallelWebgpuBuffers` only when WebGL2 fallback is not required. |
+| Parallel WebGPU | The parallel `core` and `engine` contract above, plus `packages/m-charts/src/plot-engine-webgpu`, `packages/m-charts/src/m-parallel-webgpu/core`, and `packages/m-charts/src/m-parallel-webgpu/engine` | Add `m-parallel-webgpu/adapters` for live typed batches and `@webgpu/types` when the host TypeScript DOM library does not declare WebGPU. Use `createParallelWebgpuBuffers` only when WebGL2 fallback is not required. |
 
 The `core` and `engine` folders are framework-neutral. The `react` folders are
 optional helpers only. Full chart-folder copies are possible, but non-React
@@ -244,6 +244,43 @@ The WebGPU instance also adds `getWebgpuDiagnostics()`. The command surface is
 compatible, including renderer-owned `playEasterEgg()` playback and the default
 typed `future` sequence.
 
+To change an existing all-at-once WebGPU integration to live loading, keep the
+plot options and replace `columns`/`spec` with the streaming adapter source:
+
+```ts
+import {
+  createFastScatterJsonRecordBatchSource,
+  createFastScatterWebgpuStreamingPlot,
+  createFastScatterWebgpuStreamSourceFromRecordBatches,
+} from './vendor/m-charts/m-scatter-webgpu/adapters/index.js';
+
+const response = await fetch('/api/points');
+if (response.body === null) throw new Error('Missing response body');
+const records = createFastScatterJsonRecordBatchSource(response.body, {
+  schema,
+});
+const { columns: _columns, spec: _spec, ...streamOptions } = options;
+const plot = await createFastScatterWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: createFastScatterWebgpuStreamSourceFromRecordBatches(records),
+});
+await plot.streaming.done;
+```
+
+Add `count` when the server declares it to preallocate and validate the final
+total; it is optional for the live bridge. The plot is returned after the first
+non-empty batch, so bindings and interactions can start while later batches
+arrive. Typed-batch sources do not need a final count; `expectedCount` and
+`initialCapacity` are allocation hints.
+`plot.streaming.abort()`, `plot.dispose()`, and an optional `signal` cancel the
+load. A transport failure or abort rejects `plot.streaming.done` but leaves the
+loaded prefix in the normal settled render mode while the plot remains mounted.
+
+For a deployable example of that exact HTTP boundary—including a capped Vercel
+Function, protocol/count validation, cancellation, and mappings to all three
+WebGPU chart types—see the
+[server-function streaming demonstration](server-function-streaming.md).
+
 See [the copy-ready migration example](examples/scatter-webgpu-migration.md) and
 [the WebGPU scatter guide](../packages/m-charts/SCATTER_WEBGPU.md) for lifecycle,
 rendering, aggregation, diagnostics, streaming, demo, and benchmark details.
@@ -290,6 +327,36 @@ Rust/WASM implementation for supported typed columns and fall back to the
 TypeScript builder for unsupported shapes. Supported inputs materialize exact
 source membership in Rust/WASM. Pre-aggregated bar mode bypasses raw
 aggregation.
+
+To migrate an all-at-once raw histogram, keep the normal plot options and
+replace `columns`/`spec` with a typed batch source:
+
+```ts
+import {
+  createHistogramWebgpuStreamingPlot,
+} from './vendor/m-charts/m-histogram-webgpu/adapters/index.js';
+
+const { aggregation: _aggregation, columns: _columns, spec, ...streamOptions } = options;
+const plot = await createHistogramWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: {
+    batches, // AsyncIterable<{ columns: HistogramColumns }>
+    expectedCount,
+    spec,
+  },
+});
+plot.use(createDefaultHistogramBindings());
+await plot.streaming.done;
+```
+
+The constructor resolves after the first non-empty batch. Typed storage grows
+geometrically, progress is reported for every accepted batch, and exact chart
+prefixes are published at geometric thresholds and at completion so ingestion
+does not repeatedly rebuild every intermediate full prefix. A supplied
+`expectedCount` is validated at completion. Batch storage types and optional
+metadata must remain consistent; supplied `sourceIndex` values must be
+contiguous global row indices. A user-modified viewport and selection survive
+later prefix publications.
 
 Applications retaining WebGL2 support should diagnose WebGPU, attempt startup,
 dispose a failed WebGPU instance, and then create the original WebGL2 plot in
@@ -340,6 +407,43 @@ WebGPU adds the creation-only `aggregationBackend`, `binResolution`,
 to it without configuring the WebGPU surface. Recreate the plot to change
 creation-only options; continue using `plot.update(...)` for shared mutable
 state.
+
+To migrate an all-at-once WebGPU parallel plot, replace `buffers` with typed
+batches and prepared full-stream domains:
+
+```ts
+import {
+  createParallelWebgpuStreamingPlot,
+} from './vendor/m-charts/m-parallel-webgpu/adapters/index.js';
+
+const { buffers: _buffers, ...streamOptions } = options;
+const plot = await createParallelWebgpuStreamingPlot(host, {
+  ...streamOptions,
+  dataSource: {
+    batches, // AsyncIterable<{ columns: ParallelFastColumns, packedPage? }>
+    domainsByAxis,
+    expectedCount,
+  },
+});
+plot.use(createDefaultParallelBindings());
+await plot.streaming.done;
+```
+
+All batches must use the same axis order and either every batch supplies a
+decoder-prepared `packedPage` or none do. Packed pages append directly while
+capacity is available; an unknown stream grows capacity geometrically and
+rebuilds resident resources only when that capacity boundary is crossed.
+Non-packed sources publish geometrically growing replacement prefixes. Axis
+viewports, brushes, exact brush membership, selection, and preselection remain
+attached as rows arrive. Prepared domains are required because moving a domain
+would otherwise move every previously displayed polyline.
+
+For either streaming chart, creation/startup errors reject the async
+constructor; transport, validation, abort, and final-count errors reject
+`plot.streaming.done`. `signal`, `plot.streaming.abort()`, and `plot.dispose()`
+cancel ingestion. The loaded prefix stays usable after a post-startup failure.
+WebGL2 fallback after a stream failure requires a restartable source or retained
+columns because an arbitrary `AsyncIterable` may already have been consumed.
 
 Applications retaining WebGL2 support should use regular
 `createParallelBuffers`, diagnose WebGPU, attempt asynchronous startup, dispose
@@ -461,8 +565,10 @@ You can pass chart contracts directly or copy optional adapters:
   `ScatterViewport`, or copy `m-scatter/adapters` for supported dataset/table
   helpers.
 - Scatter WebGPU: pass the same scatter columns directly, or copy
-  `m-scatter-webgpu/adapters` for finite known-count JSON/application streams
-  that should be encoded into preallocated typed columns in bounded batches.
+  `m-scatter-webgpu/adapters` for unknown- or known-count live typed batches.
+  Streamed JSON records can optionally declare a count for preallocation and
+  final-total validation; the legacy materializing loader requires it when
+  rendering should wait for all records.
 - Histogram: pass `HistogramColumns`, `HistogramPlotSpec`, optional
   `HistogramAggregationSet`, and `HistogramViewport`, or copy
   `m-histogram/adapters`.

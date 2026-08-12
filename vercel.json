@@ -1,6 +1,13 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "pnpm build:vercel",
+  "fluid": true,
+  "functions": {
+    "api/webgpu-stream.ts": {
+      "maxDuration": 10,
+      "supportsCancellation": true
+    }
+  },
   "installCommand": "pnpm install --frozen-lockfile",
   "outputDirectory": "apps/demo/dist",
   "rewrites": [

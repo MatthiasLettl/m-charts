@@ -194,8 +194,9 @@ import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
 For WebGPU point, bubble, or heat-map scatter, keep the existing `m-scatter`
 contract modules and add `plot-engine-webgpu`, `m-scatter-webgpu/core`, and
 `m-scatter-webgpu/engine`. Include `m-scatter-webgpu/adapters` only when using
-known-count JSON/server record streams. Existing source-copy integrations keep
-their core imports and change the factory import:
+live typed batches, streamed JSON records, or the legacy preloading adapter.
+Existing source-copy integrations keep their core imports and change the factory
+import:
 
 ```diff
 - import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
@@ -230,11 +231,35 @@ The Rust/WASM path indexes continuous columns once, limits repeated aggregation
 to visible candidates, reuses unchanged subplots, and materializes exact
 source membership without switching backends.
 
+All three WebGPU chart entries provide opt-in live typed-batch constructors.
+Each creates an interactive plot after the first non-empty batch and exposes
+progress, completion, cancellation, and the current loaded prefix through
+`plot.streaming`; existing all-at-once constructors remain unchanged. See each
+package WebGPU guide for its source shape and prepared-domain requirements.
+
 The WebGPU demo generates its 1M, 10M, or 25M deterministic paged dataset in a
 Web Worker on first use and stores it in IndexedDB for later visits. This is the
 default in development and production; `?webgpuData=http` keeps the generated
-HTTP artifact loader available for diagnostics. Dataset-size changes reload the
-document so the previous large CPU and GPU allocations are released first.
+HTTP artifact loader available for diagnostics. The overview's `Streaming`
+actions instead use
+`?webgpuData=stream-local`, read the same stored pages incrementally, and feed
+them directly to the matching WebGPU streaming constructor. If that size has
+not been stored yet, the identical seeded browser worker supplies the batches
+without involving a server. The current
+`tables=single|multi` choice is retained, so streaming changes delivery rather
+than selecting a different dataset. No large demo dataset is uploaded to or
+proxied through Vercel.
+Dataset-size changes reload the document so the previous large CPU and GPU
+allocations are released first.
+
+For a real server-response integration example, all three WebGPU routes also
+support `?webgpuData=stream-function`. This opt-in mode fetches a fixed
+5,000-record JSON `ReadableStream` from `/api/webgpu-stream`, validates its
+protocol/count headers, and incrementally maps `response.body` to typed chart
+batches. Query parameters cannot increase the function payload. See the
+[server-function streaming guide](docs/server-function-streaming.md) for the
+protocol, cost boundary, local development, Vercel configuration, and
+post-deployment checks.
 
 Each plot needs a sized host element:
 
@@ -407,21 +432,35 @@ The demo routes are:
 - `/`: overview
 - `/m-scatter`, `/m-scatter?tables=multi`, `/m-scatter-fixture`
 - `/m-scatter-webgpu`, `/m-scatter-webgpu?tables=multi`,
-  `/m-scatter-webgpu-fixture` (`?points=1000000|10000000|25000000` selects
+  `/m-scatter-webgpu-fixture`, `/m-scatter-webgpu-streaming`
+  (`?points=1000000|10000000|25000000` selects
   the primary-table size; WebGPU dataset size, table mode, and X-axis/mode
   switches use a full page refresh to release the previous large CPU/GPU
-  resources)
+  resources; `?webgpuData=stream-local` pages the selected IndexedDB dataset,
+  preserves `tables=multi` when selected,
+  while `?webgpuData=stream-http` fetches a small paged binary sample and
+  exercises unknown-count geometric buffer growth;
+  `?webgpuData=stream-function` consumes the capped Vercel Function response.
+  The standalone streaming URL
+  is retained as a compatibility redirect.)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-parallel-webgpu`, `/m-parallel-webgpu?tables=multi`,
   `/m-parallel-webgpu-fixture`
   (`?points=1000000|10000000|25000000` selects the shared paged dataset;
+  `?webgpuData=stream-local` feeds the shared IndexedDB pages directly and
+  retains the selected single-/multiple-table input;
+  `?webgpuData=stream-function` consumes the capped Vercel Function response;
   committed axis ranges use `pf.<axis>.min`/`pf.<axis>.max` and survive reload)
 - `/m-histogram`, `/m-histogram?tables=multi`,
   `/m-histogram?histMode=bar`, `/m-histogram-fixture`
 - `/m-histogram-webgpu`, `/m-histogram-webgpu?tables=multi`,
   `/m-histogram-webgpu?histMode=bar`, `/m-histogram-webgpu-fixture`
-  (`?points=1000000|10000000|25000000`; dataset-size, table-mode, input-mode,
-  and aggregation-backend controls use full-document navigation)
+  (`?points=1000000|10000000|25000000`;
+  `?webgpuData=stream-local` maps the shared IndexedDB pages to typed batches
+  and retains the selected single-/multiple-table input;
+  `?webgpuData=stream-function` consumes the capped Vercel Function response;
+  dataset-size, table-mode, input-mode, and aggregation-backend controls use
+  full-document navigation)
 - `?theme=light|dark` works on demo routes
 
 Generated demo data lives under `apps/demo/public/data/`, is ignored by git, and

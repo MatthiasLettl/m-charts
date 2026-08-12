@@ -15,6 +15,7 @@ import {
   createFastScatterPointRef,
   formatFastScatterColumnValueForDisplay,
   type FastScatterControllerOptions,
+  type FastScatterDataDomain,
   type FastScatterAggregationSet,
   type FastScatterBubbleAggregationSet,
   type FastScatterHoverEvent,
@@ -59,6 +60,7 @@ import type {
   FastScatterPlotInstance,
   FastScatterPlotOptions,
   FastScatterRendererLike,
+  FastScatterRendererAppendOptions,
 } from './types.js';
 import type { FastScatterPlotCommands } from './scatterCommands.js';
 import type {
@@ -74,6 +76,28 @@ const DEFAULT_POINT_MARKER_SIZE_CSS_PX = 4;
 const MAX_POINT_MARKERS = 100;
 const PIN_GLYPH_VISUAL_CENTER_LOCAL_Y = 0.13153;
 const TRIANGLE_GLYPH_VISUAL_CENTER_LOCAL_Y = -1 / 3;
+const appendHandlers = new WeakMap<FastScatterPlotInstance, (
+  options: FastScatterRendererAppendOptions & { dataDomain: FastScatterDataDomain },
+) => Promise<void>>();
+const finishAppendHandlers = new WeakMap<FastScatterPlotInstance, () => Promise<void>>();
+
+/** @internal Streaming adapter handoff; not part of the public plot contract. */
+export async function appendFastScatterEngineData(
+  plot: FastScatterPlotInstance,
+  options: FastScatterRendererAppendOptions & { dataDomain: FastScatterDataDomain },
+): Promise<void> {
+  const append = appendHandlers.get(plot);
+  if (append === undefined) throw new Error('Fast scatter plot does not accept streamed data.');
+  await append(options);
+}
+
+/** @internal Streaming adapter handoff; not part of the public plot contract. */
+export async function finishFastScatterEngineData(
+  plot: FastScatterPlotInstance,
+): Promise<void> {
+  await finishAppendHandlers.get(plot)?.();
+}
+
 export function createFastScatterEngine(
   hostElement: HTMLElement,
   options: FastScatterEngineOptions,
@@ -108,7 +132,7 @@ export function createFastScatterEngine(
   let pointMarkerSourceIndices: readonly number[] = [];
   let pointIndexBySourceIndex: ReadonlyMap<number, number> | null = null;
   let viewportGeneration = 0;
-  let dataDomain = calculateFastScatterDomain(options.columns, options.spec);
+  let dataDomain = options.dataDomain ?? calculateFastScatterDomain(options.columns, options.spec);
 
   const previousHostClassName = hostElement.className;
   const previousHostInlinePosition = hostElement.style.position;
@@ -1479,8 +1503,12 @@ export function createFastScatterEngine(
         ...optionsState,
         ...partialOptions,
       };
-      if (partialOptions.columns !== undefined || partialOptions.spec !== undefined) {
-        dataDomain = calculateFastScatterDomain(optionsState.columns, optionsState.spec);
+      if (
+        partialOptions.columns !== undefined || partialOptions.spec !== undefined ||
+        partialOptions.dataDomain !== undefined
+      ) {
+        dataDomain = partialOptions.dataDomain ??
+          calculateFastScatterDomain(optionsState.columns, optionsState.spec);
       }
       if (
         partialOptions.selectedSourceIndices !== undefined &&
@@ -1534,6 +1562,31 @@ export function createFastScatterEngine(
     },
   };
 
+  appendHandlers.set(instance, async ({
+    capacity,
+    columns,
+    dataDomain: nextDomain,
+    maxPointSize,
+    packedStyles,
+    startPoint,
+  }) => {
+    if (disposed) return;
+    if (renderer?.appendData !== undefined) {
+      await renderer.appendData({ capacity, columns, maxPointSize, packedStyles, startPoint });
+    } else {
+      renderer?.update({ columns });
+    }
+    const domainChanged = !areFastScatterDataDomainsEqual(dataDomain, nextDomain);
+    optionsState = { ...optionsState, columns, dataDomain: nextDomain };
+    dataDomain = nextDomain;
+    pointIndexBySourceIndex = null;
+    if (domainChanged) refreshNavigatorOverlay();
+    if (pointMarkerSourceIndices.length > 0) refreshPointMarkerOverlays();
+  });
+  finishAppendHandlers.set(instance, async () => {
+    await renderer?.finishDataAppend?.();
+  });
+
   try {
     createRenderer();
     refreshNavigatorOverlay();
@@ -1542,6 +1595,20 @@ export function createFastScatterEngine(
   }
 
   return instance;
+
+  function areFastScatterDataDomainsEqual(
+    left: FastScatterDataDomain,
+    right: FastScatterDataDomain,
+  ): boolean {
+    if (
+      left.x.min !== right.x.min || left.x.max !== right.x.max ||
+      Object.keys(left.yByPlot).length !== Object.keys(right.yByPlot).length
+    ) return false;
+    return Object.entries(left.yByPlot).every(([plotId, range]) => {
+      const other = right.yByPlot[plotId];
+      return other !== undefined && range.min === other.min && range.max === other.max;
+    });
+  }
 
   function replaceOverlayKinds(
     kinds: readonly FastScatterOverlayKind[],
@@ -2001,6 +2068,7 @@ function buildRendererUpdateOptions(
   const controllerOptions = { ...partialOptions };
   delete controllerOptions.canvasClassName;
   delete controllerOptions.canvasLabel;
+  delete controllerOptions.dataDomain;
   delete controllerOptions.forceWebglUnavailable;
   delete controllerOptions.hostClassName;
   delete controllerOptions.navigatorCssPx;
