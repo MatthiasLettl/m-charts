@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import webgpuStreamHandler, {
+  config as webgpuStreamConfig,
   createWebgpuServerStreamResponse,
 } from '../../api/webgpu-stream.ts';
 import {
@@ -39,9 +40,10 @@ assert.deepEqual(vercelConfig.functions?.['api/webgpu-stream.ts'], {
   maxDuration: 10,
   supportsCancellation: true,
 });
+assert.deepEqual(webgpuStreamConfig, { useWebApi: true });
 
 const request = new Request('https://demo.example/api/webgpu-stream?count=1000000000');
-const response = webgpuStreamHandler.fetch(request);
+const response = webgpuStreamHandler(request);
 assert.equal(response.status, 200);
 assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0');
 assert.match(response.headers.get('content-type') ?? '', /^application\/json/u);

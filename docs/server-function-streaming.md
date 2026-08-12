@@ -12,6 +12,11 @@ body. The response is fixed at 5,000 deterministic records, sends 500 records
 per transport chunk, and cannot be enlarged with query parameters. It is an
 integration example, not a large-dataset transport.
 
+The function explicitly exports `config.useWebApi: true`. This makes Vercel
+invoke the plain `api/*.ts` entry point with the Web `Request`/`Response`
+interface required by its `ReadableStream` response rather than the legacy
+Node request/response bridge.
+
 The 1M, 10M, and 25M demonstrations never use this function. They remain
 browser-local: streaming reads their IndexedDB pages when present and falls
 back to the identical seeded browser worker when a stored copy is absent.

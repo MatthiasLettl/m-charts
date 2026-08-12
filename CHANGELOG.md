@@ -19,6 +19,9 @@ should remain unchanged.
   endpoint/protocol and three-chart integration tests, overview links, and a
   deployment/verification guide. Large 1M/10M/25M modes remain browser-local
   and never invoke the function.
+- Explicitly opted the plain Vercel Function into the Web API handler interface,
+  fixing production `FUNCTION_INVOCATION_FAILED` responses caused by the legacy
+  Node request/response bridge.
 
 ## WebGPU Histogram And Parallel Streaming
 

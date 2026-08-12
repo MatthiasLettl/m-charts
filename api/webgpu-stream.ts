@@ -16,11 +16,12 @@ const SHAPES = ['circle', 'rectangle', 'triangle', 'pin', 'arrow'] as const;
 const ACCEPTED_COLORS = ['#2563eb', '#059669', '#7c3aed', '#0891b2'] as const;
 const REJECTED_COLORS = ['#dc2626', '#ea580c'] as const;
 
-export default {
-  fetch(request: Request): Response {
-    return createWebgpuServerStreamResponse(request);
-  },
-};
+// Plain `api/*.ts` functions otherwise use Vercel's legacy Node req/res bridge.
+export const config = { useWebApi: true };
+
+export default function webgpuStreamHandler(request: Request): Response {
+  return createWebgpuServerStreamResponse(request);
+}
 
 export function createWebgpuServerStreamResponse(request: Request): Response {
   if (request.method === 'HEAD') {
