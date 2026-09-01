@@ -22,6 +22,14 @@ import type {
 import type { FastScatterOverlayDescriptor, FastScatterOverlayKind } from './scatterOverlays.js';
 import type { FastScatterBrushEvent } from './scatterEvents.js';
 import type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLineChangePhase,
+  FastScatterReferenceLineChangeSource,
+  FastScatterReferenceLineCreateRequestEvent,
+  FastScatterReferenceLineHit,
+  FastScatterReferenceLineHoverEvent,
+} from './scatterReferenceLines.js';
+import type {
   FastScatterCursorState,
   FastScatterRenderSnapshot,
   FastScatterStateSnapshot,
@@ -37,6 +45,13 @@ export interface FastScatterPlotCommands {
   getHostElement(): HTMLElement;
   getOverlayElement(): HTMLDivElement;
   getOverlays(): readonly FastScatterOverlayDescriptor[];
+  getReferenceLineAtPoint(request: {
+    draggableOnly?: boolean;
+    hitToleranceCssPx?: number;
+    pointerCssX: number;
+    pointerCssY: number;
+  }): FastScatterReferenceLineHit | null;
+  getReferenceLines(): readonly FastScatterReferenceLine[];
   getPlotRectAtPoint(pointerCssX: number, pointerCssY: number): FastScatterPlotRect | null;
   getPlotXKey(): string | null;
   getPlotYKey(plotId: string): string | null;
@@ -74,6 +89,26 @@ export interface FastScatterPlotCommands {
     overlays: readonly FastScatterOverlayDescriptor[],
     reason?: 'replace' | 'set',
   ): void;
+  requestReferenceLineCreate(request: {
+    pointerCssX: number;
+    pointerCssY: number;
+    source?: 'pointer' | 'programmatic';
+  }): FastScatterReferenceLineCreateRequestEvent | null;
+  setReferenceLineHover(request: {
+    detailsVisible?: boolean;
+    hit: FastScatterReferenceLineHit;
+    pointerCssX: number;
+    pointerCssY: number;
+  } | null): FastScatterReferenceLineHoverEvent | null;
+  setReferenceLines(lines: readonly FastScatterReferenceLine[]): void;
+  setReferenceLineValue(request: {
+    emit?: boolean;
+    id: string;
+    phase?: FastScatterReferenceLineChangePhase;
+    previousValue?: number;
+    source?: FastScatterReferenceLineChangeSource;
+    value: number;
+  }): boolean;
   togglePointMarker(request: { sourceIndex: number }): boolean;
   setViewport(
     viewport: FastScatterViewport,

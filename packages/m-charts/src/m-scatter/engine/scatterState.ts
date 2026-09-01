@@ -7,10 +7,19 @@ import type {
   FastScatterVisualizationMode,
 } from '../core/index.js';
 import type { FastScatterOverlayDescriptor } from './scatterOverlays.js';
+import type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLineHoverEvent,
+} from './scatterReferenceLines.js';
 
 export type FastScatterRenderState = 'idle' | 'rendering' | 'ready' | 'error';
 
-export type FastScatterCursorState = 'crosshair' | 'default' | 'grabbing' | 'help';
+export type FastScatterCursorState =
+  | 'col-resize'
+  | 'crosshair'
+  | 'default'
+  | 'grabbing'
+  | 'help';
 
 export interface FastScatterRenderSnapshot {
   aggregation: FastScatterAggregationSet | null;
@@ -35,6 +44,8 @@ export interface FastScatterStateSnapshot {
   overlays: readonly FastScatterOverlayDescriptor[];
   pointMarkerSourceIndices: readonly number[];
   pointSizeScale?: number;
+  referenceLineHover: FastScatterReferenceLineHoverEvent | null;
+  referenceLines: readonly FastScatterReferenceLine[];
   render: FastScatterRenderSnapshot;
   selectionFilters: readonly FastScatterSelectionFilter[];
   selectedSourceIndices: Uint32Array;

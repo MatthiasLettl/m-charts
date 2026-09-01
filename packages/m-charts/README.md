@@ -82,6 +82,15 @@ when changed. The WebGPU host/canvas also retain the shared engine CSS classes.
 The renderer-owned `playEasterEgg()` command and its default typed `future`
 sequence work on both backends.
 
+Scatter also exposes application-owned X reference lines through the shared
+engine contract. Lines use arbitrary encoded X-axis coordinates, can span all
+or selected subplots, support configurable creation/hover/drag gestures, and
+emit typed create/change/hover events. Imperative line-value updates stay in
+the overlay layer and do not redraw either WebGL2 or WebGPU point data. The demo
+keeps canonical timestamp records across compatible time axes and hides them
+without deletion on incompatible axes. See
+[SCATTER.md](./SCATTER.md#x-reference-lines).
+
 Because external adoption currently uses source-copy rather than package
 imports, existing consumers should keep their `m-scatter/core` imports, add the
 WebGPU folders above, and change the factory import to

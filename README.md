@@ -65,7 +65,9 @@ when integrating into another application.
   `commands.*`, observe `plot.on(...)`, attach optional bindings with `use(...)`,
   and release resources with `dispose()`.
 - Host-rendered overlay descriptors for brushes, hover guides, measurement
-  guides, navigator state, and inspection UI.
+  guides, navigator state, point markers, application-owned draggable X
+  reference lines, and inspection UI. Reference-line interaction is
+  overlay-only and independent of scatter point count.
 
 ## Rendering Backends And Browser Support
 
@@ -441,7 +443,13 @@ The demo routes are:
   while `?webgpuData=stream-http` fetches a small paged binary sample and
   exercises unknown-count geometric buffer growth;
   `?webgpuData=stream-function` consumes the capped Vercel Function response.
-  The standalone streaming URL
+  The main WebGPU scatter route also demonstrates multiple draggable X
+  reference lines: `Alt`/`Option` + double-click creates one through a
+  host-owned naming flow, `Escape` cancels naming or renaming, `Shift` + hover
+  inspects it, and the sidebar supports rename, individual deletion, and
+  clear-all. Canonical timestamp references
+  survive compatible time-axis changes and remain stored but hidden on
+  incompatible X axes. The standalone streaming URL
   is retained as a compatibility redirect.)
 - `/m-parallel`, `/m-parallel?tables=multi`, `/m-parallel-fixture`
 - `/m-parallel-webgpu`, `/m-parallel-webgpu?tables=multi`,

@@ -699,6 +699,14 @@ Scatter:
   marker. Aggregate hits do not toggle markers. Markers survive pan, zoom,
   focused subplot changes, and X value/index changes; non-finite subplots are
   skipped.
+- Configured X reference-line gestures are independent of point markers. The
+  WebGPU demo uses `Alt`/`Option` + double-click to emit a create request,
+  unmodified left drag near a draggable line to move it, and `Shift` + hover
+  for details. Creation does not invent an application ID: the host accepts the
+  request, optionally runs a naming/database flow, then supplies the line.
+- A reference-line drag takes priority only when it starts inside its hit
+  corridor. Rectangle zoom/selection gestures started elsewhere may cross the
+  line without interruption. `Escape` does not remove application-owned lines.
 - When `easterEgg` is configured on the binding, typing the sequence, default
   `future`, calls `playEasterEgg`. Repeated, prevented, modified, or editable
   target key events are ignored by that sequence handler.
@@ -1237,6 +1245,7 @@ interface FastScatterPlotOptions {
   aggregation?: FastScatterAggregationSet | null;
   selectedSourceIndices?: Uint32Array;
   hoverSourceIndex?: number | null;
+  referenceLines?: readonly FastScatterReferenceLine[];
   onViewportChange?: (
     viewport: FastScatterViewport,
     reason: FastScatterViewportChangeReason,
@@ -1245,6 +1254,9 @@ interface FastScatterPlotOptions {
   onSelectionChange?: (selection: FastScatterSelectionEvent) => void;
   onHoverChange?: (hover: FastScatterHoverEvent | null) => void;
   onMeasurementChange?: (measurement: FastScatterMeasurementEvent | null) => void;
+  onReferenceLineChange?: (event: FastScatterReferenceLineChangeEvent) => void;
+  onReferenceLineCreateRequest?: (event: FastScatterReferenceLineCreateRequestEvent) => void;
+  onReferenceLineHoverChange?: (event: FastScatterReferenceLineHoverEvent | null) => void;
   onMetrics?: (metrics: FastScatterMetricsEvent) => void;
   canvasClassName?: string;
   canvasLabel?: string;
@@ -1256,6 +1268,43 @@ interface FastScatterPlotOptions {
   rendererFactory?: FastScatterRendererFactory;
 }
 ```
+
+Reference-line semantic shape:
+
+```ts
+interface FastScatterReferenceLine {
+  axis: 'x';
+  draggable?: boolean;
+  id: string;
+  label?: string;
+  plotIds?: readonly string[];
+  style?: {
+    color?: string;
+    dash?: readonly number[];
+    opacity?: number;
+    widthCssPx?: number;
+  };
+  value: number;
+}
+```
+
+`value` is a finite value in the same encoded coordinate space as `columns.x`
+and `viewport.x`. For `datetime-ns`, this is the schema encoder's millisecond
+offset from `datetimeOriginNs`, not an ambiguous raw epoch number. Numeric,
+categorical, and boolean axes retain their existing encoded coordinates. Use
+`formatFastScatterAxisValue` for display. `setReferenceLineValue` is the hot
+path for video playheads and other frequent programmatic updates; unless
+`emit: true` is requested it changes only overlay state and emits no user
+change callback.
+
+For database-backed references that can appear on more than one X column,
+persist a canonical typed value and an application semantic-dimension ID. At
+render time, project compatible records into the active encoded coordinate
+space and omit incompatible records without deleting them. A canonical
+`datetime-ns` instant must be re-encoded using the active axis's
+`datetimeOriginNs` and `encodedScaleMs`; a stored encoded offset is not an
+absolute timestamp. Do not assume either a matching physical column name or a
+shared timestamp kind alone proves semantic compatibility.
 
 Style ranges:
 
@@ -1431,6 +1480,9 @@ Important commands:
 - Hover/measurement/markers: `hoverAtPoint`, `clearHover`,
   `setHoverSourceIndex`, `setMeasurement`, `togglePointMarker`,
   `clearPointMarkers`.
+- Reference lines: `getReferenceLines`, `setReferenceLines`,
+  `setReferenceLineValue`, `getReferenceLineAtPoint`,
+  `requestReferenceLineCreate`, and `setReferenceLineHover`.
 - Overlays/cursor: `setOverlays`, `clearOverlays`, `getOverlays`,
   `setCursorState`, `setActivePlot`.
 - Adjustment requests: `requestPointSizeAdjust`,
@@ -1451,6 +1503,13 @@ interface FastScatterPlotCommands {
   getHostElement(): HTMLElement;
   getOverlayElement(): HTMLDivElement;
   getOverlays(): readonly FastScatterOverlayDescriptor[];
+  getReferenceLineAtPoint(request: {
+    draggableOnly?: boolean;
+    hitToleranceCssPx?: number;
+    pointerCssX: number;
+    pointerCssY: number;
+  }): FastScatterReferenceLineHit | null;
+  getReferenceLines(): readonly FastScatterReferenceLine[];
   getPlotRectAtPoint(pointerCssX: number, pointerCssY: number): FastScatterPlotRect | null;
   getPlotXKey(): string | null;
   getPlotYKey(plotId: string): string | null;
@@ -1474,11 +1533,31 @@ interface FastScatterPlotCommands {
     source?: 'command' | 'keyboard' | 'wheel';
   }): void;
   requestViewportUndo(source?: 'command' | 'keyboard' | 'pointer'): void;
+  requestReferenceLineCreate(request: {
+    pointerCssX: number;
+    pointerCssY: number;
+    source?: 'pointer' | 'programmatic';
+  }): FastScatterReferenceLineCreateRequestEvent | null;
   resize(): void;
   setActivePlot(plotId: string | null, reason?: 'binding' | 'command' | 'pointer' | 'programmatic'): void;
   setCursorState(cursor: FastScatterCursorState, reason?: 'binding' | 'command' | 'pointer' | 'programmatic'): void;
   setHoverSourceIndex(sourceIndex: number | null): void;
   setOverlays(overlays: readonly FastScatterOverlayDescriptor[], reason?: 'replace' | 'set'): void;
+  setReferenceLines(lines: readonly FastScatterReferenceLine[]): void;
+  setReferenceLineHover(request: {
+    detailsVisible?: boolean;
+    hit: FastScatterReferenceLineHit;
+    pointerCssX: number;
+    pointerCssY: number;
+  } | null): FastScatterReferenceLineHoverEvent | null;
+  setReferenceLineValue(request: {
+    emit?: boolean;
+    id: string;
+    phase?: 'start' | 'preview' | 'commit' | 'cancel';
+    previousValue?: number;
+    source?: 'pointer' | 'programmatic';
+    value: number;
+  }): boolean;
   togglePointMarker(request: { sourceIndex: number }): boolean;
   setViewport(
     viewport: FastScatterViewport,
@@ -1557,6 +1636,18 @@ interface DefaultScatterBindingsOptions {
     defaultAction: 'none' | 'zoom';
     modifiers?: Partial<InputModifiers>;
   }[];
+  referenceLineGestures?: false | {
+    create?: false | { button: 0 | 1 | 2; modifiers?: Partial<InputModifiers> };
+    drag?: false | {
+      button: 0 | 1 | 2;
+      hitToleranceCssPx?: number;
+      modifiers?: Partial<InputModifiers>;
+    };
+    hover?: false | {
+      hitToleranceCssPx?: number;
+      modifiers?: Partial<InputModifiers>;
+    };
+  };
   suppressContextMenu?: boolean;
 }
 ```
@@ -1566,6 +1657,11 @@ binding uses the plot host's parent element or the host itself. Use
 `rectangleBrushGestures` to add product-specific left/right rectangle gestures
 without changing renderer code. A gesture with `defaultAction: 'none'` emits
 brush events and overlays but does not select or zoom.
+
+Reference-line gestures are opt-in. When enabled, drag defaults to an
+unmodified left drag and hover defaults to direct details; both can be disabled
+or given exact modifier requirements. Proximity still highlights a draggable
+line and reports `col-resize` even when the detail gesture requires `Shift`.
 
 ### Scatter Easter Egg Setup
 
@@ -1628,6 +1724,8 @@ Events:
 - `viewportchange`
 - `selectionchange`
 - `hoverchange`, `measurementchange`
+- `referencelinecreaterequest`, `referencelinechange`,
+  `referencelinehoverchange`
 - `brushstart`, `brushpreview`, `brushcommit`, `brushcancel`
 - `overlaychange`, `activeplotchange`, `cursorchange`
 - `pointsizeadjustrequest`, `heatmapbinsizeadjustrequest`
@@ -1641,6 +1739,18 @@ and optional provenance `source: { datasetKey?, tableKey?, fieldKey? }`.
 Translate filters into backend queries in the host; do not scrape overlay DOM.
 
 Scatter event payload details:
+
+- `referencelinecreaterequest` reports the proposed encoded/formatted X value,
+  X key, subplot, canvas point, and source. It does not invent an ID or mutate
+  persistent host state.
+- `referencelinechange` reports `start`, RAF-coalesced `preview`, `commit`, or
+  `cancel`, previous/current values, semantic line, and source. Persist pointer
+  edits on `commit`, not each preview.
+- `referencelinehoverchange` reports the semantic line, encoded/formatted
+  value, subplot, anchor, and `detailsVisible`, or `null` on leave.
+  Replacing `referenceLines` through commands or `plot.update(...)` republishes
+  changed hovered-line values/labels and clears hover when that line is removed,
+  outside the viewport, or no longer scoped to the hovered subplot.
 
 ```ts
 interface FastScatterViewportChangeEvent {
@@ -2612,6 +2722,7 @@ Scatter overlay kinds:
 - `navigator`
 - `out-of-range-markers`
 - `point-marker`
+- `reference-line`
 
 Histogram overlay kinds:
 
@@ -2649,6 +2760,10 @@ All overlay descriptors have at least `id` and `kind`. Common descriptor shapes:
   CSS anchors/line positions. `navigator` carries `domain`, `window`,
   `windowLabel`, `rect`, and `viewportRect`. `out-of-range-markers` carries
   precomputed marker descriptors.
+- Scatter `reference-line` overlays carry the semantic line, encoded/formatted
+  value, hover/drag flags, style, and one projected segment per visible scoped
+  subplot. They are overlay-only: updating them does not scan points, rebuild
+  aggregation, upload buffers, or schedule a renderer draw.
 - Histogram `hover-guide` and `cursor-tooltip` carry a `bin` descriptor when a
   bin is known. `measurement-guide` carries current/reference canvas points.
   `custom` is reserved for host-specific descriptors.

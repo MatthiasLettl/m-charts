@@ -3,6 +3,10 @@ import type {
   FastScatterRange,
   FastScatterSelectionKind,
 } from '../core/index.js';
+import type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLineStyle,
+} from './scatterReferenceLines.js';
 
 export interface FastScatterCssPoint {
   xCssPx: number;
@@ -110,6 +114,24 @@ export interface FastScatterPointMarkerOverlay extends FastScatterOverlayBase {
   yKey: string;
 }
 
+export interface FastScatterReferenceLineOverlay extends FastScatterOverlayBase {
+  dragging: boolean;
+  formattedValue: string;
+  hovered: boolean;
+  kind: 'reference-line';
+  label?: string;
+  line: FastScatterReferenceLine;
+  referenceLineId: string;
+  segments: readonly {
+    plotId: string;
+    xCssPx: number;
+    y1CssPx: number;
+    y2CssPx: number;
+  }[];
+  style?: FastScatterReferenceLineStyle;
+  value: number;
+}
+
 export type FastScatterOverlayDescriptor =
   | FastScatterRectangleZoomOverlay
   | FastScatterColorRuleBrushOverlay
@@ -121,6 +143,7 @@ export type FastScatterOverlayDescriptor =
   | FastScatterCursorTooltipOverlay
   | FastScatterNavigatorOverlay
   | FastScatterOutOfRangeMarkersOverlay
-  | FastScatterPointMarkerOverlay;
+  | FastScatterPointMarkerOverlay
+  | FastScatterReferenceLineOverlay;
 
 export type FastScatterOverlayKind = FastScatterOverlayDescriptor['kind'];

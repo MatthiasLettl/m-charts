@@ -695,6 +695,175 @@ assert.equal(markerPlot.commands.togglePointMarker({ sourceIndex: 1 }), false);
 assert.deepEqual(markerPlot.commands.getStateSnapshot().pointMarkerSourceIndices, []);
 markerPlot.dispose();
 
+const referenceHost = new FakeElement(document);
+referenceHost.setRect(480, 280);
+let referenceRenderer: MockRenderer | null = null;
+const referencePlot = createFastScatterPlot(
+  referenceHost as unknown as HTMLElement,
+  {
+    ...createOptions((rendererOptions) => {
+      referenceRenderer = new MockRenderer(rendererOptions.onMetrics ?? (() => {}));
+      return referenceRenderer;
+    }),
+    referenceLines: [
+      {
+        axis: 'x',
+        draggable: true,
+        id: 'threshold',
+        label: 'Threshold',
+        style: { color: '#ef4444', dash: [6, 4], widthCssPx: 2 },
+        value: 0,
+      },
+      {
+        axis: 'x',
+        id: 'scoped',
+        plotIds: ['plot-y'],
+        value: 0.5,
+      },
+    ],
+  },
+);
+assert.equal(referencePlot.commands.getReferenceLines().length, 2);
+const referenceOverlays = referencePlot.commands.getOverlays().filter(
+  (overlay) => overlay.kind === 'reference-line',
+);
+assert.equal(referenceOverlays.length, 2);
+assert.equal(referenceOverlays[0]?.segments.length, 1);
+assert.equal(referenceOverlays[1]?.segments.length, 1);
+assert.deepEqual(referenceOverlays[0]?.style, {
+  color: '#ef4444',
+  dash: [6, 4],
+  widthCssPx: 2,
+});
+const referenceSegment = referenceOverlays[0]?.segments[0];
+assert.notEqual(referenceSegment, undefined);
+const referenceHit = referencePlot.commands.getReferenceLineAtPoint({
+  draggableOnly: true,
+  pointerCssX: referenceSegment!.xCssPx + 3,
+  pointerCssY: (referenceSegment!.y1CssPx + referenceSegment!.y2CssPx) / 2,
+});
+assert.equal(referenceHit?.id, 'threshold');
+assert.equal(referenceHit?.distanceCssPx, 3);
+const referenceRendererUpdateCount = referenceRenderer!.updates.length;
+const referenceChangePhases: string[] = [];
+referencePlot.on('referencelinechange', (event) => {
+  referenceChangePhases.push(`${event.phase}:${event.previousValue}:${event.value}`);
+});
+assert.equal(referencePlot.commands.setReferenceLineValue({
+  id: 'threshold',
+  value: 0.25,
+}), true);
+assert.equal(referenceRenderer!.updates.length, referenceRendererUpdateCount);
+assert.deepEqual(referenceChangePhases, []);
+assert.equal(referencePlot.commands.setReferenceLineValue({
+  emit: true,
+  id: 'threshold',
+  phase: 'commit',
+  previousValue: 0,
+  source: 'pointer',
+  value: 0.4,
+}), true);
+assert.deepEqual(referenceChangePhases, ['commit:0:0.4']);
+assert.equal(referenceRenderer!.updates.length, referenceRendererUpdateCount);
+const createRequests: number[] = [];
+referencePlot.on('referencelinecreaterequest', (event) => createRequests.push(event.value));
+const createRect = referencePlot.commands.getPlotRectAtPoint(
+  referenceSegment!.xCssPx,
+  (referenceSegment!.y1CssPx + referenceSegment!.y2CssPx) / 2,
+);
+assert.notEqual(createRect, null);
+const createRequest = referencePlot.commands.requestReferenceLineCreate({
+  pointerCssX: createRect!.xCssPx + createRect!.widthCssPx * 0.75,
+  pointerCssY: createRect!.yCssPx + createRect!.heightCssPx / 2,
+  source: 'pointer',
+});
+assert.equal(createRequest?.value, 0.75);
+assert.deepEqual(createRequests, [0.75]);
+const referenceHoverEvents: Array<string | null> = [];
+referencePlot.on('referencelinehoverchange', (event) => {
+  referenceHoverEvents.push(event === null ? null : `${event.id}:${event.detailsVisible}`);
+});
+referencePlot.commands.setReferenceLineHover({
+  detailsVisible: false,
+  hit: referenceHit!,
+  pointerCssX: referenceSegment!.xCssPx,
+  pointerCssY: referenceSegment!.y1CssPx + 4,
+});
+referencePlot.commands.setReferenceLineHover(null);
+assert.deepEqual(referenceHoverEvents, ['threshold:false', null]);
+const currentReferenceOverlay = referencePlot.commands.getOverlays().find(
+  (overlay) => overlay.kind === 'reference-line' && overlay.referenceLineId === 'threshold',
+);
+const currentReferenceSegment = currentReferenceOverlay?.segments[0];
+assert.notEqual(currentReferenceSegment, undefined);
+const currentReferenceHit = referencePlot.commands.getReferenceLineAtPoint({
+  pointerCssX: currentReferenceSegment!.xCssPx,
+  pointerCssY: (currentReferenceSegment!.y1CssPx + currentReferenceSegment!.y2CssPx) / 2,
+});
+assert.notEqual(currentReferenceHit, null);
+referencePlot.commands.setReferenceLineHover({
+  hit: currentReferenceHit!,
+  pointerCssX: currentReferenceSegment!.xCssPx,
+  pointerCssY: currentReferenceSegment!.y1CssPx + 4,
+});
+referencePlot.commands.setReferenceLines([
+  {
+    axis: 'x',
+    draggable: true,
+    id: 'threshold',
+    label: 'Renamed threshold',
+    value: 0.5,
+  },
+]);
+assert.equal(referencePlot.commands.getStateSnapshot().referenceLineHover?.line.label, 'Renamed threshold');
+assert.equal(referencePlot.commands.getStateSnapshot().referenceLineHover?.value, 0.5);
+assert.equal(referenceHoverEvents.at(-1), 'threshold:true');
+referencePlot.update({
+  referenceLines: [{ axis: 'x', draggable: true, id: 'threshold', value: 0.6 }],
+});
+assert.equal(referencePlot.commands.getStateSnapshot().referenceLineHover?.value, 0.6);
+referencePlot.update({ referenceLines: [] });
+assert.equal(referencePlot.commands.getStateSnapshot().referenceLineHover, null);
+assert.equal(referenceHoverEvents.at(-1), null);
+referencePlot.update({
+  referenceLines: [{ axis: 'x', draggable: true, id: 'threshold', value: 0.6 }],
+});
+const readdedReferenceOverlay = referencePlot.commands.getOverlays().find(
+  (overlay) => overlay.kind === 'reference-line',
+);
+assert.equal(
+  readdedReferenceOverlay?.dragging,
+  false,
+);
+const readdedReferenceSegment = readdedReferenceOverlay?.segments[0];
+assert.notEqual(readdedReferenceSegment, undefined);
+const readdedReferenceHit = referencePlot.commands.getReferenceLineAtPoint({
+  pointerCssX: readdedReferenceSegment!.xCssPx,
+  pointerCssY: (readdedReferenceSegment!.y1CssPx + readdedReferenceSegment!.y2CssPx) / 2,
+});
+referencePlot.commands.setReferenceLineHover({
+  hit: readdedReferenceHit!,
+  pointerCssX: readdedReferenceSegment!.xCssPx,
+  pointerCssY: readdedReferenceSegment!.y1CssPx + 4,
+});
+referencePlot.commands.setViewport({
+  ...referencePlot.commands.getStateSnapshot().viewport,
+  x: { max: 2, min: 1 },
+});
+assert.equal(referencePlot.commands.getStateSnapshot().referenceLineHover, null);
+assert.equal(
+  referencePlot.commands.getOverlays().some((overlay) => overlay.kind === 'reference-line'),
+  false,
+);
+assert.throws(
+  () => referencePlot.commands.setReferenceLines([
+    { axis: 'x', id: 'duplicate', value: 1 },
+    { axis: 'x', id: 'duplicate', value: 2 },
+  ]),
+  /Duplicate fast scatter reference line ID/,
+);
+referencePlot.dispose();
+
 plot.update({ pointSizeScale: 2 });
 assert.equal(
   (renderers[0]!.updates.at(-1) as { pointSizeScale?: number }).pointSizeScale,

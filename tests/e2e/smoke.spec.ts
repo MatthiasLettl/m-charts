@@ -495,6 +495,89 @@ test('m-scatter WebGPU route exposes the dedicated backend or a useful availabil
   }
 });
 
+test('m-scatter WebGPU reference lines create, rename, inspect, drag, and delete', async ({
+  page,
+}) => {
+  await page.goto('/m-scatter-webgpu?points=1000&webgpuData=http');
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect(chart).toBeVisible();
+  const hitRegion = page.getByTestId('scatter-fast-hit-region').first();
+  const box = await hitRegion.boundingBox();
+  if (box === null) throw new Error('WebGPU scatter hit region is unavailable.');
+
+  await page.keyboard.down('Alt');
+  await page.mouse.dblclick(box.x + box.width * 0.4, box.y + box.height * 0.5);
+  await page.keyboard.up('Alt');
+  await expect(page.getByTestId('scatter-reference-line-dialog')).toBeVisible();
+  await page.getByTestId('scatter-reference-line-name-input').fill('Video cue');
+  await page.getByTestId('scatter-reference-line-dialog').getByRole('button', {
+    name: 'Save',
+  }).click();
+  const controls = page.getByTestId('scatter-reference-line-controls');
+  await expect(controls).toHaveAttribute('data-reference-line-count', '1');
+  await expect(controls).toContainText('Video cue');
+  await expect(page.getByTestId('scatter-reference-line')).toHaveCount(3);
+
+  const firstLine = page.getByTestId('scatter-reference-line').first();
+  const originalX = Number(await firstLine.getAttribute('x1'));
+  const overlayBox = await page.getByTestId('scatter-reference-line-layer').boundingBox();
+  if (overlayBox === null) throw new Error('Reference-line overlay is unavailable.');
+  await page.keyboard.down('Shift');
+  await page.mouse.move(overlayBox.x + originalX, box.y + box.height * 0.55);
+  await expect(page.getByTestId('scatter-reference-line-tooltip')).toContainText('Video cue');
+  await page.keyboard.up('Shift');
+  await expect(page.getByTestId('scatter-reference-line-tooltip')).toHaveCount(0);
+
+  await page.mouse.move(overlayBox.x + originalX, box.y + box.height * 0.55);
+  await expect(chart).toHaveCSS('cursor', 'col-resize');
+  await page.mouse.down();
+  await page.mouse.move(overlayBox.x + originalX + 70, box.y + box.height * 0.55, {
+    steps: 5,
+  });
+  await page.mouse.up();
+  await expect.poll(async () => Number(await firstLine.getAttribute('x1'))).toBeGreaterThan(
+    originalX + 50,
+  );
+
+  await page.getByTestId('scatter-fast-x-axis').selectOption('signalValue');
+  await expect(controls).toHaveAttribute('data-reference-line-count', '1');
+  await expect(controls).toHaveAttribute('data-visible-reference-line-count', '0');
+  await expect(controls).toContainText('Hidden on current X axis');
+  await expect(page.getByTestId('scatter-reference-line-layer')).toHaveCount(0);
+  await page.getByTestId('scatter-fast-x-axis').selectOption('timestampNs');
+  await expect(controls).toHaveAttribute('data-visible-reference-line-count', '1');
+  await expect(page.getByTestId('scatter-reference-line')).toHaveCount(3);
+
+  const renameVideoCue = controls.getByRole('button', { name: 'Rename Video cue' });
+  await renameVideoCue.click();
+  await page.getByTestId('scatter-reference-line-name-input').fill('Discarded rename');
+  await page.getByTestId('scatter-reference-line-name-input').press('Escape');
+  await expect(page.getByTestId('scatter-reference-line-dialog')).toHaveCount(0);
+  await expect(controls).toContainText('Video cue');
+  await expect(controls).not.toContainText('Discarded rename');
+  await expect(renameVideoCue).toBeFocused();
+
+  await page.keyboard.down('Alt');
+  await page.mouse.dblclick(box.x + box.width * 0.65, box.y + box.height * 0.5);
+  await page.keyboard.up('Alt');
+  await page.getByTestId('scatter-reference-line-name-input').press('Escape');
+  await expect(controls).toHaveAttribute('data-reference-line-count', '1');
+  await expect(page.getByTestId('scatter-fast-interaction-surface')).toBeFocused();
+
+  await page.keyboard.down('Alt');
+  await page.mouse.dblclick(box.x + box.width * 0.7, box.y + box.height * 0.5);
+  await page.keyboard.up('Alt');
+  await page.getByTestId('scatter-reference-line-dialog').getByRole('button', {
+    name: 'Save',
+  }).click();
+  await expect(controls).toHaveAttribute('data-reference-line-count', '2');
+  await controls.getByRole('button', { name: 'Delete Video cue' }).click();
+  await expect(controls).toHaveAttribute('data-reference-line-count', '1');
+  await page.getByTestId('scatter-reference-line-clear-all').click();
+  await expect(controls).toHaveAttribute('data-reference-line-count', '0');
+  await expect(page.getByTestId('scatter-reference-line-layer')).toHaveCount(0);
+});
+
 test('m-scatter WebGPU streaming is integrated and preserves its viewport', async ({
   page,
 }) => {

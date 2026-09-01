@@ -37,7 +37,28 @@ export interface DefaultScatterBindingsOptions {
   easterEgg?: false | ScatterEasterEggBindingOptions;
   inputElement?: HTMLElement;
   rectangleBrushGestures?: readonly ScatterRectangleBrushGesture[];
+  referenceLineGestures?: false | ScatterReferenceLineGestures;
   suppressContextMenu?: boolean;
+}
+
+export interface ScatterReferenceLinePointerGesture {
+  button: 0 | 1 | 2;
+  hitToleranceCssPx?: number;
+  modifiers?: Partial<InputModifiers>;
+}
+
+export interface ScatterReferenceLineHoverGesture {
+  hitToleranceCssPx?: number;
+  modifiers?: Partial<InputModifiers>;
+}
+
+export interface ScatterReferenceLineGestures {
+  /** A double-click gesture. Omit or set to false to disable in-chart creation. */
+  create?: false | Omit<ScatterReferenceLinePointerGesture, 'hitToleranceCssPx'>;
+  /** Defaults to an unmodified left drag when reference-line gestures are enabled. */
+  drag?: false | ScatterReferenceLinePointerGesture;
+  /** Controls when hover details are visible; proximity highlighting remains direct. */
+  hover?: false | ScatterReferenceLineHoverGesture;
 }
 
 export interface ScatterEasterEggBindingOptions extends FastScatterEasterEggPlaybackOptions {
@@ -90,6 +111,20 @@ export function createDefaultScatterBindings(
         handleWheel(plot, event, 'preview');
       });
       disposables.add(wheelScheduler);
+      const referenceLinePreviewScheduler = createLatestRafScheduler<{
+        drag: ReferenceLineDrag;
+        value: number;
+      }>(({ drag, value }) => {
+        plot.commands.setReferenceLineValue({
+          emit: true,
+          id: drag.id,
+          phase: 'preview',
+          previousValue: drag.startValue,
+          source: 'pointer',
+          value,
+        });
+      });
+      disposables.add(referenceLinePreviewScheduler);
 
       input.on('wheel', (event) => {
         if (resolveWheelZoomAxisMode(event) === null) {
@@ -131,7 +166,14 @@ export function createDefaultScatterBindings(
           if (pointerDrag !== null) {
             return;
           }
-          handleDoubleClick(plot, event);
+          handleDoubleClick(plot, event, options);
+        }),
+      );
+      disposables.add(
+        addEventListenerDisposable(inputTarget, 'pointerleave', () => {
+          if (pointerDrag !== null) return;
+          plot.commands.setReferenceLineHover(null);
+          plot.commands.setCursorState('default', 'pointer');
         }),
       );
       input.on('pointer', (event) => {
@@ -145,6 +187,7 @@ export function createDefaultScatterBindings(
           pointerDrag,
           spaceHeld,
           hoverScheduler,
+          referenceLinePreviewScheduler,
           options,
         );
       });
@@ -171,6 +214,7 @@ export function createDefaultScatterBindings(
             pointerDrag,
             spaceHeld,
             hoverScheduler,
+            referenceLinePreviewScheduler,
             options,
           );
         };
@@ -210,6 +254,7 @@ export function createDefaultScatterBindings(
                 pointerDrag,
                 spaceHeld,
                 hoverScheduler,
+                referenceLinePreviewScheduler,
                 options,
               );
               return;
@@ -231,6 +276,7 @@ export function createDefaultScatterBindings(
               pointerDrag,
               spaceHeld,
               hoverScheduler,
+              referenceLinePreviewScheduler,
               options,
             );
           }),
@@ -276,6 +322,7 @@ export function createDefaultScatterBindings(
             }
             if (event.key === 'Shift') {
               shiftHeld = false;
+              plot.commands.setReferenceLineHover(null);
             }
             handleKey(plot, {
               code: event.code,
@@ -306,14 +353,15 @@ export function createDefaultScatterBindings(
               shiftHeld = true;
               if (lastPointerEvent !== null && pointerDrag === null) {
                 const shiftedEvent = withHeldShiftModifier(lastPointerEvent, true);
-                const plotRect = plot.commands.getPlotRectAtPoint(
-                  shiftedEvent.host.x,
-                  shiftedEvent.host.y,
+                pointerDrag = handlePointer(
+                  plot,
+                  shiftedEvent,
+                  pointerDrag,
+                  spaceHeld,
+                  hoverScheduler,
+                  referenceLinePreviewScheduler,
+                  options,
                 );
-                plot.commands.setCursorState('default', 'pointer');
-                if (plotRect !== null) {
-                  hoverScheduler.schedule(shiftedEvent);
-                }
               }
             }
             if (!easterEggHandledKeyEvents.has(event)) {
@@ -329,6 +377,7 @@ export function createDefaultScatterBindings(
       }
       input.on('blur', () => {
         clearTransientInspection(plot, hoverScheduler);
+        plot.commands.setReferenceLineHover(null);
       });
 
       return disposables;
@@ -353,13 +402,23 @@ function withHeldShiftModifier(
   };
 }
 
-	type ScatterPointerDrag =
+type ScatterPointerDrag =
   | PendingMiddleDrag
   | RectangleZoomDrag
   | RectangleSelectionDrag
   | LassoSelectionDrag
   | MeasurementDrag
-  | NavigatorDrag;
+  | NavigatorDrag
+  | ReferenceLineDrag;
+
+interface ReferenceLineDrag {
+  currentValue: number;
+  id: string;
+  kind: 'reference-line';
+  plotRect: FastScatterPlotRect;
+  pointerId: number;
+  startValue: number;
+}
 
 interface PendingMiddleDrag {
   kind: 'middle';
@@ -482,13 +541,32 @@ function handlePointer(
   pointerDrag: ScatterPointerDrag | null,
   lassoHeld: boolean,
   hoverScheduler?: ReturnType<typeof createLatestRafScheduler<NormalizedPointerEvent>>,
-  options: Pick<DefaultScatterBindingsOptions, 'rectangleBrushGestures'> = {},
+  referenceLinePreviewScheduler?: ReturnType<typeof createLatestRafScheduler<{
+    drag: ReferenceLineDrag;
+    value: number;
+  }>>,
+  options: Pick<
+    DefaultScatterBindingsOptions,
+    'rectangleBrushGestures' | 'referenceLineGestures'
+  > = {},
 ): ScatterPointerDrag | null {
   if (event.type === 'pointerdown' && !(event.button === 2 && event.modifiers.shiftKey)) {
     hoverScheduler?.cancel();
     if (plot.commands.getStateSnapshot().hoverSourceIndex !== null) {
       plot.commands.clearHover('pointer');
     }
+  }
+
+  if (
+    pointerDrag?.kind === 'reference-line' &&
+    event.pointerId === pointerDrag.pointerId
+  ) {
+    return updateReferenceLineDrag(
+      plot,
+      event,
+      pointerDrag,
+      referenceLinePreviewScheduler,
+    );
   }
 
   if (event.type === 'pointerdown' && event.button === 2 && event.modifiers.shiftKey) {
@@ -523,6 +601,51 @@ function handlePointer(
       capturePointer(event.originalEvent, event.pointerId);
       plot.commands.setCursorState('default', 'pointer');
       return navigatorDrag;
+    }
+  }
+
+  if (event.type === 'pointerdown') {
+    const dragGesture = resolveReferenceLineDragGesture(options.referenceLineGestures);
+    if (
+      dragGesture !== null &&
+      event.button === dragGesture.button &&
+      modifiersMatch(event.modifiers, dragGesture.modifiers)
+    ) {
+      const hit = plot.commands.getReferenceLineAtPoint({
+        draggableOnly: true,
+        hitToleranceCssPx: dragGesture.hitToleranceCssPx,
+        pointerCssX: event.host.x,
+        pointerCssY: event.host.y,
+      });
+      const plotRect = hit === null
+        ? null
+        : plot.commands.getPlotRectAtPoint(event.host.x, event.host.y);
+      if (hit !== null && plotRect !== null) {
+        consumeNativeInteraction(event.originalEvent);
+        capturePointer(event.originalEvent, event.pointerId);
+        if (plot.commands.getStateSnapshot().hoverSourceIndex !== null) {
+          plot.commands.clearHover('pointer');
+        }
+        plot.commands.setReferenceLineHover(null);
+        plot.commands.setActivePlot(hit.plotId, 'pointer');
+        plot.commands.setCursorState('col-resize', 'pointer');
+        plot.commands.setReferenceLineValue({
+          emit: true,
+          id: hit.id,
+          phase: 'start',
+          previousValue: hit.value,
+          source: 'pointer',
+          value: hit.value,
+        });
+        return {
+          currentValue: hit.value,
+          id: hit.id,
+          kind: 'reference-line',
+          plotRect,
+          pointerId: event.pointerId,
+          startValue: hit.value,
+        };
+      }
     }
   }
 
@@ -682,6 +805,32 @@ function handlePointer(
     return pointerDrag;
   }
 
+
+  const referenceLineHit = getReferenceLineHoverHit(
+    plot,
+    event,
+    options.referenceLineGestures,
+  );
+  if (referenceLineHit !== null) {
+    hoverScheduler?.cancel();
+    if (plot.commands.getStateSnapshot().hoverSourceIndex !== null) {
+      plot.commands.clearHover('pointer');
+    }
+    plot.commands.setReferenceLineHover({
+      detailsVisible: referenceLineHit.detailsVisible,
+      hit: referenceLineHit.hit,
+      pointerCssX: event.host.x,
+      pointerCssY: event.host.y,
+    });
+    plot.commands.setActivePlot(referenceLineHit.hit.plotId, 'pointer');
+    plot.commands.setCursorState(
+      referenceLineHit.hit.line.draggable === true ? 'col-resize' : 'default',
+      'pointer',
+    );
+    return pointerDrag;
+  }
+  plot.commands.setReferenceLineHover(null);
+
   if (event.modifiers.shiftKey) {
     plot.commands.setCursorState('default', 'pointer');
     hoverScheduler?.schedule(event);
@@ -701,7 +850,29 @@ function handlePointer(
   return pointerDrag;
 }
 
-function handleDoubleClick(plot: FastScatterPlotInstance, event: MouseEvent): void {
+function handleDoubleClick(
+  plot: FastScatterPlotInstance,
+  event: MouseEvent,
+  options: Pick<DefaultScatterBindingsOptions, 'referenceLineGestures'>,
+): void {
+  const normalized = normalizePointerEvent(plot.hostElement, event, 'pointermove');
+  const createGesture = options.referenceLineGestures === false
+    ? false
+    : options.referenceLineGestures?.create;
+  if (
+    createGesture !== undefined &&
+    createGesture !== false &&
+    event.button === createGesture.button &&
+    modifiersMatch(normalized.modifiers, createGesture.modifiers)
+  ) {
+    const request = plot.commands.requestReferenceLineCreate({
+      pointerCssX: normalized.host.x,
+      pointerCssY: normalized.host.y,
+      source: 'pointer',
+    });
+    if (request !== null) consumeNativeInteraction(event);
+    return;
+  }
   if (
     event.button !== 0 ||
     (plot.commands.getStateSnapshot().visualizationMode ?? 'points') !== 'points'
@@ -709,7 +880,6 @@ function handleDoubleClick(plot: FastScatterPlotInstance, event: MouseEvent): vo
     return;
   }
 
-  const normalized = normalizePointerEvent(plot.hostElement, event, 'pointermove');
   const plotRect = plot.commands.getPlotRectAtPoint(normalized.host.x, normalized.host.y);
   if (plotRect === null) {
     return;
@@ -730,11 +900,84 @@ function handleDoubleClick(plot: FastScatterPlotInstance, event: MouseEvent): vo
   plot.commands.clearHover('binding');
 }
 
+function updateReferenceLineDrag(
+  plot: FastScatterPlotInstance,
+  event: NormalizedPointerEvent,
+  drag: ReferenceLineDrag,
+  previewScheduler?: ReturnType<typeof createLatestRafScheduler<{
+    drag: ReferenceLineDrag;
+    value: number;
+  }>>,
+): ReferenceLineDrag | null {
+  const value = referenceLineValueAtPointer(drag.plotRect, plot, event.host.x);
+  if (event.type === 'pointermove') {
+    consumeNativeInteraction(event.originalEvent);
+    drag.currentValue = value;
+    previewScheduler?.schedule({ drag, value });
+    if (previewScheduler === undefined) {
+      plot.commands.setReferenceLineValue({
+        emit: true,
+        id: drag.id,
+        phase: 'preview',
+        previousValue: drag.startValue,
+        source: 'pointer',
+        value,
+      });
+    }
+    return drag;
+  }
+
+  previewScheduler?.cancel();
+  consumeNativeInteraction(event.originalEvent);
+  if (event.type === 'pointercancel') {
+    plot.commands.setReferenceLineValue({
+      emit: true,
+      id: drag.id,
+      phase: 'cancel',
+      previousValue: drag.startValue,
+      source: 'pointer',
+      value: drag.startValue,
+    });
+  } else {
+    drag.currentValue = value;
+    plot.commands.setReferenceLineValue({
+      emit: true,
+      id: drag.id,
+      phase: 'commit',
+      previousValue: drag.startValue,
+      source: 'pointer',
+      value,
+    });
+  }
+  plot.commands.setCursorState('default', 'pointer');
+  return null;
+}
+
+function referenceLineValueAtPointer(
+  plotRect: FastScatterPlotRect,
+  plot: FastScatterPlotInstance,
+  pointerCssX: number,
+): number {
+  const clampedX = Math.max(
+    plotRect.xCssPx,
+    Math.min(plotRect.xCssPx + plotRect.widthCssPx, pointerCssX),
+  );
+  return pixelToAxis(
+    clampedX,
+    plot.commands.getStateSnapshot().viewport.x,
+    plotRect.xCssPx,
+    plotRect.xCssPx + plotRect.widthCssPx,
+  );
+}
+
 function updatePointerDrag(
   plot: FastScatterPlotInstance,
   event: NormalizedPointerEvent,
   drag: ScatterPointerDrag,
 ): ScatterPointerDrag | null {
+  if (drag.kind === 'reference-line') {
+    return updateReferenceLineDrag(plot, event, drag);
+  }
   if (drag.kind === 'rectangle-zoom') {
     if (event.type === 'pointermove') {
       consumeNativeInteraction(event.originalEvent);
@@ -1526,6 +1769,39 @@ function resolveRectangleBrushGesture(
         modifiersMatch(event.modifiers, gesture.modifiers),
     ) ?? null
   );
+}
+
+function resolveReferenceLineDragGesture(
+  gestures: DefaultScatterBindingsOptions['referenceLineGestures'],
+): ScatterReferenceLinePointerGesture | null {
+  if (gestures === false) return null;
+  if (gestures?.drag === false) return null;
+  return gestures === undefined
+    ? null
+    : gestures.drag ?? { button: 0, hitToleranceCssPx: 6 };
+}
+
+function getReferenceLineHoverHit(
+  plot: FastScatterPlotInstance,
+  event: NormalizedPointerEvent,
+  gestures: DefaultScatterBindingsOptions['referenceLineGestures'],
+): {
+  detailsVisible: boolean;
+  hit: NonNullable<ReturnType<FastScatterPlotInstance['commands']['getReferenceLineAtPoint']>>;
+} | null {
+  if (gestures === false || gestures === undefined || gestures.hover === false) return null;
+  const hoverGesture = gestures.hover ?? {};
+  const hit = plot.commands.getReferenceLineAtPoint({
+    hitToleranceCssPx: hoverGesture.hitToleranceCssPx ?? 6,
+    pointerCssX: event.host.x,
+    pointerCssY: event.host.y,
+  });
+  return hit === null
+    ? null
+    : {
+        detailsVisible: modifiersMatch(event.modifiers, hoverGesture.modifiers),
+        hit,
+      };
 }
 
 function resolveRectangleBrushGestureAxisMode(

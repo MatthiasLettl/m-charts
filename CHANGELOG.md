@@ -4,6 +4,32 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Scatter X Reference Lines
+
+- Added application-owned, multi-line X reference annotations to the shared
+  scatter engine and WebGPU entry point. Lines use arbitrary finite encoded X
+  coordinates, can span all or selected subplots, retain point/bubble/heat-map
+  compatibility, and remain distinct from double-click source-index point
+  markers.
+- Added overlay-only commands, typed create/change/hover events and callbacks,
+  programmatic video-playhead updates, configurable create/drag/hover gestures,
+  proximity highlighting, `col-resize` feedback, RAF-coalesced live dragging,
+  and customizable stroke/dash/opacity/width presentation. Reference-line
+  interaction never scans points, rebuilds aggregation, uploads GPU buffers, or
+  schedules WebGL2/WebGPU drawing.
+- Added the WebGPU scatter demo workflow: `Alt`/`Option` + double-click creates
+  an optimistic line through a host-owned naming dialog, direct line dragging
+  moves it, `Shift` + hover shows its formatted value, and the sidebar supports
+  rename, individual deletion, and clear-all. Canonical datetime reference
+  records persist for the browser session, re-encode across compatible time X
+  columns, and remain stored but hidden on incompatible axes. The naming dialog
+  supports `Escape` cancellation with opener-focus restoration and preserves
+  create-versus-rename cancellation semantics.
+- Reference-line replacement and plot updates now reconcile active hover state,
+  publishing changed labels/values and clearing removed, out-of-range, or
+  no-longer-scoped hovered lines. Added engine/binding/projection/E2E coverage
+  and updated the scatter, WebGPU, README, migration, and LLM API documentation.
+
 ## Vercel Function Streaming Demonstration
 
 - Added a real, opt-in `/api/webgpu-stream` Vercel Function that returns one

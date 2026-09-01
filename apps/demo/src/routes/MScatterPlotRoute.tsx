@@ -53,6 +53,14 @@ import {
   SCATTER_WEBGPU_DEMO_POINT_COUNTS,
 } from '../data/scatterWebgpuDatasetStore.ts';
 import {
+  createScatterReferenceLineCoordinate,
+  parseScatterReferenceLineRecords,
+  projectScatterReferenceLine,
+  updateScatterReferenceLineCoordinate,
+  type ScatterReferenceLineAxisContext,
+  type ScatterReferenceLineRecord,
+} from '../data/scatterReferenceLines.ts';
+import {
   prepareScatterWebgpuDemoStream,
   type ScatterWebgpuDemoStreamKind,
 } from '../data/scatterWebgpuStreaming.ts';
@@ -108,6 +116,7 @@ import {
   formatOpacityScaleParam,
   formatPointSizeScaleParam,
   formatFastScatterPointForDisplay,
+  formatFastScatterAxisValue,
   getNextOpacityScale,
   getNextPointSizeScale,
   getPreviousOpacityScale,
@@ -138,6 +147,10 @@ import {
   type FastScatterPointColumns,
   type FastScatterPlotRect,
   type FastScatterRange,
+  type FastScatterReferenceLine,
+  type FastScatterReferenceLineChangeEvent,
+  type FastScatterReferenceLineCreateRequestEvent,
+  type FastScatterReferenceLineHoverEvent,
   type FastScatterRenderingMode,
   type FastScatterSelectionEvent,
   type FastScatterSelectionState,
@@ -343,6 +356,16 @@ const SCATTER_SHORTCUT_GROUPS = [
   },
 ] as const;
 
+const SCATTER_REFERENCE_LINE_SHORTCUT_GROUP = {
+  items: [
+    { keys: ['Alt', 'Double click'], action: 'Create x reference line' },
+    { keys: ['Left drag line'], action: 'Move x reference line' },
+    { keys: ['Shift', 'Hover line'], action: 'Inspect x reference line' },
+    { keys: ['Escape'], action: 'Cancel reference-line dialog' },
+  ],
+  label: 'Reference lines',
+} as const;
+
 const SCATTER_TRY_THIS_ITEMS = [
   {
     label: 'Zoom',
@@ -354,7 +377,7 @@ const SCATTER_TRY_THIS_ITEMS = [
   },
   {
     label: 'Inspect',
-    detail: 'Hold Shift over points or heat aggregates to inspect the nearest record.',
+    detail: 'Hold Shift over points, heat aggregates, or reference lines to inspect.',
   },
   {
     label: 'Measure',
@@ -368,6 +391,7 @@ const SCATTER_TRY_THIS_ITEMS = [
 const DEFAULT_FAST_SCATTER_X_MODE: FastScatterXMode = 'value';
 const FAST_SCATTER_X_MODE_PARAM = 'xMode';
 const FAST_SCATTER_X_AXIS_PARAM = 'xAxis';
+const FAST_SCATTER_REFERENCE_LINE_STORAGE_KEY = 'm-charts:scatter-webgpu:reference-lines';
 const FAST_SCATTER_HEATMAP_PALETTE_PARAM = 'heatPalette';
 const FAST_SCATTER_HEATMAP_PALETTES = ['mono', 'viridis', 'magma', 'turbo'] as const;
 const FAST_SCATTER_HEATMAP_BIN_SIZE_STEP_PX = 2;
@@ -825,6 +849,135 @@ export function MScatterPlotRoute({
       xMode,
     );
   }, [datasetState, xAxisKey, xMode]);
+  const referenceLineAxisContext = useMemo<ScatterReferenceLineAxisContext>(() => {
+    const columns = plottedDataset?.columns;
+    const plottedXKey = columns?.xKey ?? null;
+    return {
+      axis: plottedXKey === null ? undefined : columns?.axisByColumn?.[plottedXKey],
+      xKey: plottedXKey,
+      xMode,
+    };
+  }, [plottedDataset, xMode]);
+  const [referenceLineRecords, setReferenceLineRecords] =
+    useState<readonly ScatterReferenceLineRecord[]>(() =>
+      rendererBackend === 'webgpu' ? readStoredRouteReferenceLines() : [],
+    );
+  const referenceLines = useMemo(
+    () => referenceLineRecords.flatMap((record) => {
+      const line = projectScatterReferenceLine(record, referenceLineAxisContext);
+      return line === null ? [] : [line];
+    }),
+    [referenceLineAxisContext, referenceLineRecords],
+  );
+  const referenceLineById = useMemo(
+    () => new Map(referenceLines.map((line) => [line.id, line])),
+    [referenceLines],
+  );
+  const referenceLineSequenceRef = useRef(getRouteReferenceLineSequence(referenceLineRecords));
+  const [referenceLineEditor, setReferenceLineEditor] = useState<{
+    id: string;
+    isNew: boolean;
+    name: string;
+  } | null>(null);
+  const referenceLineEditorTriggerRef = useRef<HTMLElement | null>(null);
+  const [referenceLineHover, setReferenceLineHover] =
+    useState<FastScatterReferenceLineHoverEvent | null>(null);
+
+  const openReferenceLineEditor = useCallback((editor: {
+    id: string;
+    isNew: boolean;
+    name: string;
+  }) => {
+    referenceLineEditorTriggerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setReferenceLineEditor(editor);
+  }, []);
+
+  const closeReferenceLineEditor = useCallback(() => {
+    setReferenceLineEditor(null);
+    const trigger = referenceLineEditorTriggerRef.current;
+    referenceLineEditorTriggerRef.current = null;
+    window.requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (rendererBackend !== 'webgpu') return;
+    try {
+      globalThis.sessionStorage?.setItem(
+        FAST_SCATTER_REFERENCE_LINE_STORAGE_KEY,
+        JSON.stringify(referenceLineRecords),
+      );
+    } catch {
+      // The demo remains usable when browser storage is disabled or unavailable.
+    }
+  }, [referenceLineRecords, rendererBackend]);
+
+  const handleReferenceLineCreateRequest = useCallback((
+    request: FastScatterReferenceLineCreateRequestEvent,
+  ) => {
+    referenceLineSequenceRef.current += 1;
+    const sequence = referenceLineSequenceRef.current;
+    const id = `demo-reference-${sequence}`;
+    const name = `Reference ${sequence}`;
+    setReferenceLineRecords((current) => [
+      ...current,
+      {
+        axis: 'x',
+        coordinate: createScatterReferenceLineCoordinate(
+          request.value,
+          referenceLineAxisContext,
+        ),
+        draggable: true,
+        id,
+        label: name,
+      },
+    ]);
+    openReferenceLineEditor({ id, isNew: true, name });
+  }, [openReferenceLineEditor, referenceLineAxisContext]);
+
+  const handleReferenceLineChange = useCallback((
+    event: FastScatterReferenceLineChangeEvent,
+  ) => {
+    if (event.phase !== 'commit' && event.phase !== 'cancel') return;
+    setReferenceLineRecords((current) => current.map((record) =>
+      record.id === event.id
+        ? {
+            ...record,
+            coordinate: updateScatterReferenceLineCoordinate(
+              record.coordinate,
+              event.value,
+              referenceLineAxisContext,
+            ),
+          }
+        : record,
+    ));
+  }, [referenceLineAxisContext]);
+
+  const removeReferenceLine = useCallback((id: string) => {
+    setReferenceLineRecords((current) => current.filter((line) => line.id !== id));
+    setReferenceLineEditor((current) => current?.id === id ? null : current);
+    setReferenceLineHover((current) => current?.id === id ? null : current);
+  }, []);
+
+  const cancelReferenceLineEditor = useCallback(() => {
+    if (referenceLineEditor?.isNew === true) {
+      setReferenceLineRecords((current) =>
+        current.filter((record) => record.id !== referenceLineEditor.id),
+      );
+      setReferenceLineHover((current) =>
+        current?.id === referenceLineEditor.id ? null : current,
+      );
+    }
+    closeReferenceLineEditor();
+  }, [closeReferenceLineEditor, referenceLineEditor]);
+
+  const clearReferenceLines = useCallback(() => {
+    setReferenceLineRecords([]);
+    setReferenceLineEditor(null);
+    setReferenceLineHover(null);
+  }, []);
   const xAxisOptions = useMemo(
     () =>
       datasetState.status === 'loaded'
@@ -2035,6 +2188,9 @@ export function MScatterPlotRoute({
                 onMeasurementChange={handleFastMeasurementChange}
                 onHeatmapBinSizeWheelAdjust={handleHeatmapBinWheelAdjust}
                 onPointSizeWheelAdjust={handlePointSizeWheelAdjust}
+                onReferenceLineChange={handleReferenceLineChange}
+                onReferenceLineCreateRequest={handleReferenceLineCreateRequest}
+                onReferenceLineHoverChange={setReferenceLineHover}
                 plottedDataset={plottedDataset}
                 plotInteractionGate={plotInteractionGate}
                 opacityScale={opacityScale}
@@ -2043,6 +2199,8 @@ export function MScatterPlotRoute({
                 onPlotInteractionHoverChange={handlePlotInteractionHoverChange}
                 onPlotInteractionSurfacePointerDown={focusPlotInteractionSurface}
                 renderingMode={renderingMode}
+                referenceLineHover={referenceLineHover}
+                referenceLines={referenceLines}
                 selectedSourceIndices={selectedState?.sourceIndices}
                 onSelectionChange={handleFastSelectionChange}
                 urlState={urlState}
@@ -2901,8 +3059,84 @@ export function MScatterPlotRoute({
                 </div>
               </div>
             </section>
+            {rendererBackend === 'webgpu' ? (
+              <section
+                className="control-section scatter-reference-line-controls"
+                data-reference-line-count={referenceLineRecords.length}
+                data-testid="scatter-reference-line-controls"
+                data-visible-reference-line-count={referenceLines.length}
+              >
+                <div className="scatter-reference-line-heading">
+                  <h2>X reference lines</h2>
+                  {referenceLineRecords.length === 0 ? null : (
+                    <button
+                      className="secondary-link"
+                      data-testid="scatter-reference-line-clear-all"
+                      onClick={clearReferenceLines}
+                      type="button"
+                    >
+                      Clear all
+                    </button>
+                  )}
+                </div>
+                {referenceLineRecords.length === 0 ? (
+                  <p className="compact-note">
+                    Alt/Option-double-click inside a subplot to add a draggable line.
+                  </p>
+                ) : (
+                  <ul className="scatter-reference-line-list">
+                    {referenceLineRecords.map((record) => {
+                      const line = referenceLineById.get(record.id);
+                      return (
+                        <li
+                          data-reference-line-id={record.id}
+                          data-reference-line-visible={line === undefined ? 'false' : 'true'}
+                          key={record.id}
+                        >
+                          <div>
+                            <strong>{record.label ?? record.id}</strong>
+                            <span>
+                              {line === undefined
+                                ? 'Hidden on current X axis'
+                                : formatRouteReferenceLineValue(plottedDataset, line.value)}
+                            </span>
+                          </div>
+                          <div className="scatter-reference-line-actions">
+                            <button
+                              aria-label={`Rename ${record.label ?? record.id}`}
+                              className="secondary-link"
+                              onClick={() => openReferenceLineEditor({
+                                id: record.id,
+                                isNew: false,
+                                name: record.label ?? record.id,
+                              })}
+                              type="button"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              aria-label={`Delete ${record.label ?? record.id}`}
+                              className="secondary-link danger-link"
+                              data-testid="scatter-reference-line-delete"
+                              onClick={() => removeReferenceLine(record.id)}
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </section>
+            ) : null}
             <InteractionCheatSheet
-              groups={SCATTER_SHORTCUT_GROUPS}
+              groups={
+                rendererBackend === 'webgpu'
+                  ? [...SCATTER_SHORTCUT_GROUPS, SCATTER_REFERENCE_LINE_SHORTCUT_GROUP]
+                  : SCATTER_SHORTCUT_GROUPS
+              }
               tryItems={SCATTER_TRY_THIS_ITEMS}
             />
             <section className="control-section">
@@ -3535,6 +3769,68 @@ export function MScatterPlotRoute({
           </aside>
         </div>
       </section>
+      {rendererBackend !== 'webgpu' || referenceLineEditor === null ? null : (
+        <div className="scatter-reference-line-dialog-backdrop">
+          <section
+            aria-labelledby="scatter-reference-line-dialog-title"
+            aria-modal="true"
+            className="scatter-reference-line-dialog"
+            data-testid="scatter-reference-line-dialog"
+            onKeyDownCapture={(event) => {
+              if (event.key !== 'Escape') return;
+              event.preventDefault();
+              event.stopPropagation();
+              cancelReferenceLineEditor();
+            }}
+            role="dialog"
+          >
+            <h2 id="scatter-reference-line-dialog-title">
+              {referenceLineEditor.isNew ? 'Name reference line' : 'Rename reference line'}
+            </h2>
+            <p>
+              The surrounding application owns this name and can persist it with the line ID.
+            </p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                const nextName = referenceLineEditor.name.trim();
+                if (nextName.length === 0) return;
+                setReferenceLineRecords((current) => current.map((record) =>
+                  record.id === referenceLineEditor.id
+                    ? { ...record, label: nextName }
+                    : record,
+                ));
+                closeReferenceLineEditor();
+              }}
+            >
+              <label>
+                <span>Name</span>
+                <input
+                  autoFocus
+                  data-testid="scatter-reference-line-name-input"
+                  onChange={(event) => {
+                    const name = event.currentTarget.value;
+                    setReferenceLineEditor((current) =>
+                      current === null ? null : { ...current, name },
+                    );
+                  }}
+                  value={referenceLineEditor.name}
+                />
+              </label>
+              <div className="button-row">
+                <button type="submit">Save</button>
+                <button
+                  className="secondary-link"
+                  onClick={cancelReferenceLineEditor}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -6128,6 +6424,9 @@ function PlaceholderChartShell({
   onHeatmapBinSizeWheelAdjust,
   onMeasurementChange,
   onPointSizeWheelAdjust,
+  onReferenceLineChange,
+  onReferenceLineCreateRequest,
+  onReferenceLineHoverChange,
   onPlotInteractionFocusChange,
   onPlotInteractionHoverChange,
   onPlotInteractionSurfacePointerDown,
@@ -6141,6 +6440,8 @@ function PlaceholderChartShell({
   plottedDataset,
   plotInteractionGate,
   renderingMode,
+  referenceLineHover,
+  referenceLines,
   selectedSourceIndices,
   urlState,
   theme,
@@ -6171,6 +6472,13 @@ function PlaceholderChartShell({
   onHeatmapBinSizeWheelAdjust: (direction: 'decrease' | 'increase') => void;
   onMeasurementChange: (measurement: FastScatterMeasurementEvent | null) => void;
   onPointSizeWheelAdjust: (direction: 'decrease' | 'increase') => void;
+  onReferenceLineChange: (event: FastScatterReferenceLineChangeEvent) => void;
+  onReferenceLineCreateRequest: (
+    event: FastScatterReferenceLineCreateRequestEvent,
+  ) => void;
+  onReferenceLineHoverChange: (
+    event: FastScatterReferenceLineHoverEvent | null,
+  ) => void;
   onPlotInteractionFocusChange: (hasFocusWithin: boolean) => void;
   onPlotInteractionHoverChange: (isHovered: boolean) => void;
   onPlotInteractionSurfacePointerDown: (element: HTMLDivElement | null) => void;
@@ -6188,6 +6496,8 @@ function PlaceholderChartShell({
   plottedDataset: LoadedFastScatterDataset | null;
   plotInteractionGate: PlotInteractionGateState;
   renderingMode: FastScatterRenderingMode;
+  referenceLineHover: FastScatterReferenceLineHoverEvent | null;
+  referenceLines: readonly FastScatterReferenceLine[];
   selectedSourceIndices: Uint32Array | undefined;
   urlState: PrototypeSearchState | null;
   theme: ReturnType<typeof getFastScatterTheme>;
@@ -6362,6 +6672,7 @@ function PlaceholderChartShell({
       pointSizeScale,
       preserveDrawingBuffer: isDemoTestControlEnabled(query, '__e2ePreserveDrawingBuffer'),
       renderingMode,
+      referenceLines,
       selectedSourceIndices,
       spec: plottedDataset.spec,
       theme,
@@ -6380,6 +6691,7 @@ function PlaceholderChartShell({
     plottedDataset,
     pointSizeScale,
     renderingMode,
+    referenceLines,
     selectedSourceIndices,
     theme,
     urlState?.axis,
@@ -6394,6 +6706,9 @@ function PlaceholderChartShell({
     onMeasurementChange,
     onMetrics,
     onPointSizeWheelAdjust,
+    onReferenceLineChange,
+    onReferenceLineCreateRequest,
+    onReferenceLineHoverChange,
     onRendererMetrics,
     onRenderStateChange,
     onSelectionChange,
@@ -6413,6 +6728,9 @@ function PlaceholderChartShell({
       onMeasurementChange,
       onMetrics,
       onPointSizeWheelAdjust,
+      onReferenceLineChange,
+      onReferenceLineCreateRequest,
+      onReferenceLineHoverChange,
       onRendererMetrics,
       onRenderStateChange,
       onSelectionChange,
@@ -6426,6 +6744,9 @@ function PlaceholderChartShell({
     onMeasurementChange,
     onMetrics,
     onPointSizeWheelAdjust,
+    onReferenceLineChange,
+    onReferenceLineCreateRequest,
+    onReferenceLineHoverChange,
     onRendererMetrics,
     onRenderStateChange,
     onSelectionChange,
@@ -6493,6 +6814,16 @@ function PlaceholderChartShell({
       createDefaultScatterBindings({
         easterEgg: { sequence: 'future' },
         inputElement: host.parentElement ?? host,
+        referenceLineGestures: rendererBackend === 'webgpu'
+          ? {
+              create: { button: 0, modifiers: { altKey: true } },
+              drag: { button: 0, hitToleranceCssPx: 7 },
+              hover: {
+                hitToleranceCssPx: 7,
+                modifiers: { shiftKey: true },
+              },
+            }
+          : false,
         suppressContextMenu: true,
       }),
     );
@@ -6529,16 +6860,31 @@ function PlaceholderChartShell({
         latestEngineHandlersRef.current.onSelectionChange(selection);
       }),
       plot.on('hoverchange', (hover) => {
-        flushSync(() => setImmediateHoverInspection(hover));
+        queueMicrotask(() => {
+          if (plotRef.current !== plot) return;
+          flushSync(() => setImmediateHoverInspection(hover));
+        });
         startTransition(() => {
           latestEngineHandlersRef.current.onHoverChange(hover);
         });
       }),
       plot.on('measurementchange', (measurement) => {
-        flushSync(() => setImmediateMeasurementInspection(measurement));
+        queueMicrotask(() => {
+          if (plotRef.current !== plot) return;
+          flushSync(() => setImmediateMeasurementInspection(measurement));
+        });
         startTransition(() => {
           latestEngineHandlersRef.current.onMeasurementChange(measurement);
         });
+      }),
+      plot.on('referencelinechange', (event) => {
+        latestEngineHandlersRef.current.onReferenceLineChange(event);
+      }),
+      plot.on('referencelinecreaterequest', (event) => {
+        latestEngineHandlersRef.current.onReferenceLineCreateRequest(event);
+      }),
+      plot.on('referencelinehoverchange', (event) => {
+        latestEngineHandlersRef.current.onReferenceLineHoverChange(event);
       }),
       plot.on('activeplotchange', ({ plotId }) => {
         latestEngineHandlersRef.current.onActivePlotChange(plotId);
@@ -6775,6 +7121,10 @@ function PlaceholderChartShell({
     webgpuStreamingSource,
   ]);
 
+  useEffect(() => {
+    plotRef.current?.commands.setReferenceLines(referenceLines);
+  }, [plotRef, referenceLines]);
+
   const engineLayout = useMemo(() => {
     if (
       plottedDataset === null ||
@@ -6970,6 +7320,7 @@ function PlaceholderChartShell({
           onPointerLeave={() => {
             onPlotInteractionHoverChange(false);
           }}
+          style={{ cursor: engineCursor }}
           tabIndex={0}
         >
           <div
@@ -7030,6 +7381,7 @@ function PlaceholderChartShell({
               navigatorSummary={navigatorSummary}
               overlays={routeEngineOverlays}
               plotRects={engineLayout.plotRects}
+              referenceLineHover={referenceLineHover}
               spec={plottedDataset.spec}
               viewport={previewViewport ?? fastViewport}
               widthCssPx={engineLayout.widthCssPx}
@@ -7187,6 +7539,7 @@ function MScatterEngineOverlayLayer({
   navigatorSummary,
   overlays,
   plotRects,
+  referenceLineHover,
   spec,
   viewport,
   widthCssPx,
@@ -7198,6 +7551,7 @@ function MScatterEngineOverlayLayer({
   navigatorSummary: FastScatterNavigatorSummary | null;
   overlays: readonly ScatterOverlayDescriptor[];
   plotRects: readonly FastScatterPlotRect[];
+  referenceLineHover: FastScatterReferenceLineHoverEvent | null;
   spec: FastScatterPlotSpec;
   viewport: FastScatterViewport;
   widthCssPx: number;
@@ -7217,6 +7571,9 @@ function MScatterEngineOverlayLayer({
     (overlay) => overlay.kind === 'measurement-guide',
   );
   const pointMarkers = overlays.filter((overlay) => overlay.kind === 'point-marker');
+  const referenceLineOverlays = overlays.filter(
+    (overlay) => overlay.kind === 'reference-line',
+  );
   const cursorTooltip = overlays.find((overlay) => overlay.kind === 'cursor-tooltip');
   const navigatorOverlay = overlays.find((overlay) => overlay.kind === 'navigator');
   const outOfRangeOverlay = overlays.find(
@@ -7261,6 +7618,16 @@ function MScatterEngineOverlayLayer({
           heightCssPx,
           tooltip.fields.length,
         );
+  const referenceLineTooltipPlacement =
+    referenceLineHover?.detailsVisible === true
+      ? resolveRouteCursorTooltipPlacement(
+          referenceLineHover.canvasPoint.xCssPx,
+          referenceLineHover.canvasPoint.yCssPx,
+          widthCssPx,
+          heightCssPx,
+          1,
+        )
+      : null;
 
   return (
     <>
@@ -7436,6 +7803,41 @@ function MScatterEngineOverlayLayer({
               />
             </g>
           ))}
+        </svg>
+      )}
+      {referenceLineOverlays.length === 0 ? null : (
+        <svg
+          aria-hidden="true"
+          className="scatter-reference-line-layer"
+          data-reference-line-count={referenceLineOverlays.length}
+          data-testid="scatter-reference-line-layer"
+          height={heightCssPx}
+          viewBox={`0 0 ${widthCssPx} ${heightCssPx}`}
+          width={widthCssPx}
+        >
+          {referenceLineOverlays.flatMap((overlay) =>
+            overlay.segments.map((segment) => (
+              <line
+                className="scatter-reference-line"
+                data-dragging={overlay.dragging ? 'true' : 'false'}
+                data-hovered={overlay.hovered ? 'true' : 'false'}
+                data-plot-id={segment.plotId}
+                data-reference-line-id={overlay.referenceLineId}
+                data-testid="scatter-reference-line"
+                key={`${overlay.referenceLineId}:${segment.plotId}`}
+                style={{
+                  opacity: overlay.style?.opacity,
+                  stroke: overlay.style?.color,
+                  strokeDasharray: overlay.style?.dash?.join(' '),
+                  strokeWidth: overlay.style?.widthCssPx,
+                }}
+                x1={segment.xCssPx}
+                x2={segment.xCssPx}
+                y1={segment.y1CssPx}
+                y2={segment.y2CssPx}
+              />
+            )),
+          )}
         </svg>
       )}
       {pointMarkers.length === 0 ? null : (
@@ -7702,6 +8104,26 @@ function MScatterEngineOverlayLayer({
                 </dd>
               </div>
             ))}
+          </dl>
+        </div>
+      )}
+      {referenceLineHover?.detailsVisible !== true ? null : (
+        <div
+          aria-hidden="true"
+          className="scatter-fast-cursor-tooltip scatter-reference-line-tooltip"
+          data-reference-line-id={referenceLineHover.id}
+          data-testid="scatter-reference-line-tooltip"
+          style={{ transform: referenceLineTooltipPlacement?.transform }}
+        >
+          <div className="scatter-fast-cursor-tooltip-header">
+            <strong>{referenceLineHover.line.label ?? referenceLineHover.id}</strong>
+            <span>Reference</span>
+          </div>
+          <dl className="scatter-fast-cursor-tooltip-fields">
+            <div data-active="true">
+              <dt>X</dt>
+              <dd>{referenceLineHover.formattedValue}</dd>
+            </div>
           </dl>
         </div>
       )}
@@ -8336,6 +8758,36 @@ function formatRange(range: { min: number; max: number } | undefined): string {
   }
 
   return `${formatNumber(range.min)} to ${formatNumber(range.max)}`;
+}
+
+function formatRouteReferenceLineValue(
+  dataset: LoadedFastScatterDataset | null,
+  value: number,
+): string {
+  const columns = dataset?.columns;
+  const axis = columns?.xKey === undefined
+    ? undefined
+    : columns.axisByColumn?.[columns.xKey];
+  return formatFastScatterAxisValue(axis, value);
+}
+
+function readStoredRouteReferenceLines(): readonly ScatterReferenceLineRecord[] {
+  try {
+    return parseScatterReferenceLineRecords(
+      globalThis.sessionStorage?.getItem(FAST_SCATTER_REFERENCE_LINE_STORAGE_KEY) ?? null,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function getRouteReferenceLineSequence(
+  records: readonly ScatterReferenceLineRecord[],
+): number {
+  return records.reduce((maximum, record) => {
+    const match = /^demo-reference-(\d+)$/u.exec(record.id);
+    return match === null ? maximum : Math.max(maximum, Number(match[1]));
+  }, 0);
 }
 
 function formatNumber(value: number): string {

@@ -20,6 +20,13 @@ controlled `visualizationMode` option. Bubble/heat-map hover, measurement,
 selection, wheel adjustment, palette, bin-size, point-size, and theme behavior
 matches the WebGL2 scatter.
 
+Application-owned X reference lines are also shared with the backend-neutral
+scatter engine. They are arbitrary encoded X positions rather than data-point
+references, support multiple lines and optional subplot scopes, and remain
+available in point, bubble, and heat-map modes. Creation, hover, and drag
+interaction update only host-rendered overlay descriptors; they never rebuild
+aggregation, upload point buffers, or schedule a WebGPU draw.
+
 ## Import And Lifecycle
 
 The package import below is the local workspace/future package boundary.
@@ -50,6 +57,36 @@ plot.use(createDefaultScatterBindings());
 await plot.interactive;
 await plot.ready;
 ```
+
+The WebGPU demo opts into configurable reference-line gestures and lets the
+host own naming, deletion, and persistence policy. Its naming dialog supports
+`Escape` cancellation with focus restoration; cancelling a new optimistic line
+removes it, while cancelling a rename preserves the existing name:
+
+```ts
+plot.use(createDefaultScatterBindings({
+  referenceLineGestures: {
+    create: { button: 0, modifiers: { altKey: true } },
+    drag: { button: 0, hitToleranceCssPx: 7 },
+    hover: { hitToleranceCssPx: 7, modifiers: { shiftKey: true } },
+  },
+}));
+
+plot.on('referencelinecreaterequest', ({ value, formattedValue }) => {
+  openApplicationNamingFlow({ value, formattedValue });
+});
+```
+
+After the application accepts a request, call
+`plot.commands.setReferenceLines(...)`. Use
+`plot.commands.setReferenceLineValue(...)` for a high-frequency video playhead
+or other programmatic cursor; the command changes only overlay geometry and
+does not emit a user-interaction change event unless `emit: true` is requested.
+The demo persists canonical application records for the browser session. It
+re-encodes absolute timestamps for compatible datetime X columns and hides,
+rather than deletes, records that do not belong to the active X coordinate
+space.
+See [SCATTER.md](./SCATTER.md#x-reference-lines) for the complete shared API.
 
 The WebGPU entry point is a superset of the `m-scatter` entry point. Existing
 WebGL2 imports can therefore switch the module path while retaining the same
@@ -223,8 +260,8 @@ and tooltips are rendered by the overlay layer.
 The WebGPU factory structurally reuses the mature scatter engine and default
 bindings. The command and event surface therefore stays the same for zoom,
 pan, rectangle/lasso selection, hover inspection, measurement, point markers,
-navigator control, viewport undo, cursor state, overlays, and controlled
-updates.
+X reference lines, navigator control, viewport undo, cursor state, overlays,
+and controlled updates.
 
 The renderer-owned `playEasterEgg()` implementation works on WebGPU as well as
 WebGL2. The default typed `future` sequence temporarily replaces the first
@@ -234,6 +271,10 @@ Point markers remain point-mode-only, matching WebGL2. Bubble inspection uses
 the retained aggregate LOD at high density. Heat-map rectangle/lasso selection
 selects complete cells, and aggregate hover/measurement exposes the same count,
 axis bounds, membership span, and sample IDs as the WebGL2 renderer.
+
+Reference lines are renderer-independent. Their live drag previews and
+programmatic value updates modify only SVG/DOM overlay state, so choosing
+Rust/WASM versus TypeScript aggregation has no effect on their cost or behavior.
 
 Wheel zoom bursts emit coalesced `preview` viewport events at animation-frame
 cadence and one `commit` event after the burst becomes idle. Pan and navigator

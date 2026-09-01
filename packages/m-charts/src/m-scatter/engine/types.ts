@@ -16,6 +16,12 @@ import type {
   FastScatterEngineEventName,
   FastScatterEngineEvents,
 } from './scatterEvents.js';
+import type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLineChangeEvent,
+  FastScatterReferenceLineCreateRequestEvent,
+  FastScatterReferenceLineHoverEvent,
+} from './scatterReferenceLines.js';
 
 export interface FastScatterRendererLike extends FastScatterController {
   appendData?(options: FastScatterRendererAppendOptions): Promise<void> | void;
@@ -55,6 +61,14 @@ export interface FastScatterEngineOptions extends FastScatterControllerOptions {
   hostClassName?: string;
   navigatorCssPx?: number;
   overlayClassName?: string;
+  onReferenceLineChange?: (event: FastScatterReferenceLineChangeEvent) => void;
+  onReferenceLineCreateRequest?: (
+    event: FastScatterReferenceLineCreateRequestEvent,
+  ) => void;
+  onReferenceLineHoverChange?: (
+    event: FastScatterReferenceLineHoverEvent | null,
+  ) => void;
+  referenceLines?: readonly FastScatterReferenceLine[];
   /** Optional prepared domain used to avoid rescanning appended columns. */
   dataDomain?: FastScatterDataDomain;
 }

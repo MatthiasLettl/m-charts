@@ -129,6 +129,37 @@ TypeScript fallback, while `typescript` bypasses WebAssembly. Recreate the
 WebGPU plot to change any of these options; continue using `plot.update(...)`
 for shared mutable scatter options.
 
+X reference lines are part of that shared contract rather than a WebGPU-only
+renderer option. They can therefore be retained across the fallback above:
+
+```ts
+plot.commands.setReferenceLines([{
+  axis: 'x',
+  draggable: true,
+  id: 'playhead',
+  label: 'Playback',
+  value: encodedTimestamp,
+}]);
+
+plot.commands.setReferenceLineValue({
+  id: 'playhead',
+  value: nextEncodedTimestamp,
+});
+```
+
+The second command is an overlay-only hot path suitable for video playback; it
+does not schedule a WebGPU or WebGL2 point redraw. Configure creation, drag, and
+hover through `createDefaultScatterBindings({ referenceLineGestures: ... })`,
+and persist user edits from `referencelinechange` commit events.
+
+If database references can appear on multiple X columns, persist their
+canonical typed values and an application semantic-dimension identifier. On an
+X-axis change, re-encode compatible values for the new axis and omit
+incompatible records from `setReferenceLines(...)` without deleting them. In
+particular, do not persist a `datetime-ns` encoded offset as though it were an
+absolute timestamp; the offset is relative to the active axis's
+`datetimeOriginNs` and optional `encodedScaleMs`.
+
 Test the intended product policy in both conditions:
 
 - WebGPU succeeds and `interactive`/`ready` resolve.

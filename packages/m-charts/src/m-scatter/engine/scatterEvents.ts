@@ -16,6 +16,11 @@ import type {
 } from '../core/index.js';
 import type { FastScatterAxisMode } from '../core/index.js';
 import type { FastScatterOverlayDescriptor } from './scatterOverlays.js';
+import type {
+  FastScatterReferenceLineChangeEvent,
+  FastScatterReferenceLineCreateRequestEvent,
+  FastScatterReferenceLineHoverEvent,
+} from './scatterReferenceLines.js';
 import type { FastScatterCursorState, FastScatterRenderState } from './scatterState.js';
 
 export interface FastScatterRenderStateEvent {
@@ -108,6 +113,9 @@ export interface FastScatterEngineEvents {
   metrics: FastScatterMetricsEvent;
   overlaychange: FastScatterOverlayChangeEvent;
   pointsizeadjustrequest: FastScatterPointSizeAdjustRequestEvent;
+  referencelinechange: FastScatterReferenceLineChangeEvent;
+  referencelinecreaterequest: FastScatterReferenceLineCreateRequestEvent;
+  referencelinehoverchange: FastScatterReferenceLineHoverEvent | null;
   renderstate: FastScatterRenderStateEvent;
   renderstatechange: FastScatterRenderStateEvent;
   selectionchange: FastScatterSelectionEvent;

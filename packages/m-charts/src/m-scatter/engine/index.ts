@@ -6,6 +6,9 @@ export { createDefaultScatterBindings } from './defaultScatterBindings.js';
 export type {
   DefaultScatterBindingsOptions,
   ScatterEasterEggBindingOptions,
+  ScatterReferenceLineGestures,
+  ScatterReferenceLineHoverGesture,
+  ScatterReferenceLinePointerGesture,
 } from './defaultScatterBindings.js';
 export type {
   FastScatterPlotCommands,
@@ -66,11 +69,31 @@ export type {
   FastScatterOverlayKind as ScatterOverlayKind,
   FastScatterPointMarkerOverlay,
   FastScatterPointMarkerOverlay as ScatterPointMarkerOverlay,
+  FastScatterReferenceLineOverlay,
+  FastScatterReferenceLineOverlay as ScatterReferenceLineOverlay,
   FastScatterRectangleSelectionOverlay,
   FastScatterRectangleSelectionOverlay as ScatterRectangleSelectionOverlay,
   FastScatterRectangleZoomOverlay,
   FastScatterRectangleZoomOverlay as ScatterRectangleZoomOverlay,
 } from './scatterOverlays.js';
+export type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLine as ScatterReferenceLine,
+  FastScatterReferenceLineChangeEvent,
+  FastScatterReferenceLineChangeEvent as ScatterReferenceLineChangeEvent,
+  FastScatterReferenceLineChangePhase,
+  FastScatterReferenceLineChangePhase as ScatterReferenceLineChangePhase,
+  FastScatterReferenceLineChangeSource,
+  FastScatterReferenceLineChangeSource as ScatterReferenceLineChangeSource,
+  FastScatterReferenceLineCreateRequestEvent,
+  FastScatterReferenceLineCreateRequestEvent as ScatterReferenceLineCreateRequestEvent,
+  FastScatterReferenceLineHit,
+  FastScatterReferenceLineHit as ScatterReferenceLineHit,
+  FastScatterReferenceLineHoverEvent,
+  FastScatterReferenceLineHoverEvent as ScatterReferenceLineHoverEvent,
+  FastScatterReferenceLineStyle,
+  FastScatterReferenceLineStyle as ScatterReferenceLineStyle,
+} from './scatterReferenceLines.js';
 export type {
   FastScatterCursorState,
   FastScatterCursorState as ScatterCursorState,

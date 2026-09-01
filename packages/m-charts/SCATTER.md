@@ -3,6 +3,7 @@
 Scatter is the WebGL2 XY plot engine under `packages/m-charts/src/m-scatter`.
 It supports stacked subplots sharing one X column, point/bubble/heatmap modes,
 rectangle and lasso selection, hover inspection, measurements, point markers,
+application-owned X reference lines,
 navigator range control, and typed event handoff to the host application.
 
 For the WebGPU renderer that reuses this data, engine, command, event, binding,
@@ -152,6 +153,8 @@ The binding listens on `inputElement`, or the host parent/host if omitted.
 | `Shift` + pointer move | Temporary point or aggregate inspection. |
 | `Shift` + right drag | Measurement guide from the hovered point/aggregate. |
 | Left double-click point | Toggle a point marker in point mode. |
+| Configured reference-line create gesture | Emit `referencelinecreaterequest` at an arbitrary X position. |
+| Left drag near a draggable reference line | Move it with overlay-only previews when reference-line gestures are enabled. |
 | Middle drag | Pan X/Y. |
 | Middle click | Emit `viewportundorequest` with source `pointer`. |
 | `Q` | Emit `viewportundorequest` with source `keyboard`. |
@@ -163,6 +166,26 @@ or prevent events in host-owned text inputs and popovers if needed.
 
 Additional app-owned shortcuts are not scatter engine defaults; implement them
 in the host by calling commands or `plot.update(...)`.
+
+Reference-line creation is opt-in and configurable. The WebGPU demo uses
+`Alt`/`Option` + double-click to request creation, unmodified left drag within a
+7 CSS-pixel hit tolerance to move a draggable line, and `Shift` + hover to show
+details:
+
+```ts
+plot.use(createDefaultScatterBindings({
+  referenceLineGestures: {
+    create: { button: 0, modifiers: { altKey: true } },
+    drag: { button: 0, hitToleranceCssPx: 7 },
+    hover: { hitToleranceCssPx: 7, modifiers: { shiftKey: true } },
+  },
+}));
+```
+
+Starting a drag in the reference-line hit corridor moves that line and takes
+priority over rectangle zoom. A brush that starts elsewhere can cross a line
+without being interrupted. Set `drag: false`, require modifiers, or set
+`draggable: false` on a line when the host wants brushes to start on it.
 
 ## Commands And Events
 
@@ -176,6 +199,9 @@ Most used commands:
 - Hover/measurement/markers: `hoverAtPoint`, `clearHover`,
   `setHoverSourceIndex`, `setMeasurement`, `togglePointMarker`,
   `clearPointMarkers`.
+- Reference lines: `getReferenceLines`, `setReferenceLines`,
+  `setReferenceLineValue`, `getReferenceLineAtPoint`,
+  `requestReferenceLineCreate`, and `setReferenceLineHover`.
 - Overlays and cursor: `setOverlays`, `clearOverlays`, `getOverlays`,
   `setCursorState`, `setActivePlot`.
 - Requests: `requestPointSizeAdjust`, `requestHeatmapBinSizeAdjust`.
@@ -189,6 +215,12 @@ Important events:
 - `hoverchange`: active point or aggregate, source index, labels, canvas point,
   distance, and lookup timing.
 - `measurementchange`: reference/current measurement points.
+- `referencelinecreaterequest`: proposed encoded X value, formatted value,
+  X key, subplot, and canvas point. The host assigns an ID and adds the line.
+- `referencelinechange`: `start`, RAF-coalesced `preview`, `commit`, or
+  `cancel` with previous/current values and pointer/programmatic source.
+- `referencelinehoverchange`: line, formatted value, subplot, pointer anchor,
+  and whether the configured detail gesture is active.
 - `brushstart`, `brushpreview`, `brushcommit`, `brushcancel`: brush target,
   shape, CSS geometry, modifiers, range, phase, source, and default action.
 - `overlaychange`, `activeplotchange`, `cursorchange`.
@@ -209,7 +241,72 @@ shared host/canvas CSS hooks.
 
 Scatter overlay kinds include `rectangle-zoom`, `rectangle-selection`, `lasso`,
 `committed-selection`, `color-rule-brush`, `hover-guide`, `measurement-guide`,
-`cursor-tooltip`, `navigator`, `out-of-range-markers`, and `point-marker`.
+`cursor-tooltip`, `navigator`, `out-of-range-markers`, `point-marker`, and
+`reference-line`.
+
+## X Reference Lines
+
+Reference lines are distinct from point markers. Point markers are tied to a
+source index, show point values, work only in point mode, and are cleared by
+the point-marker commands or `Escape`. Reference lines are application-owned,
+use arbitrary X-axis positions, work in point/bubble/heat-map modes, may span
+all or selected subplots, and persist until the host replaces or removes them.
+
+```ts
+const referenceLines: FastScatterReferenceLine[] = [
+  {
+    axis: 'x',
+    draggable: true,
+    id: 'video-playhead',
+    label: 'Playback',
+    style: { color: '#d9485f', dash: [7, 5], widthCssPx: 1.5 },
+    value: encodedTimestamp,
+  },
+];
+
+plot.commands.setReferenceLines(referenceLines);
+
+// High-frequency playhead update: overlay only, no renderer/GPU draw.
+plot.commands.setReferenceLineValue({
+  id: 'video-playhead',
+  value: nextEncodedTimestamp,
+});
+```
+
+`value` is always a finite number in the same encoded coordinate space as
+`columns.x` and `viewport.x`. Numeric axes use their numeric coordinate;
+categorical/boolean axes use encoded category coordinates; `datetime-ns` axes
+use the schema encoder's millisecond offset from `datetimeOriginNs`. Use the
+axis metadata and `formatFastScatterAxisValue(...)` for display, and keep raw
+timestamp-to-encoded conversion explicit in the host to avoid confusing epoch
+numbers with encoded offsets.
+
+Persist canonical application values rather than axis-specific encoded offsets
+when a reference can be shown against more than one X column. For example, a
+database record can store an absolute nanosecond timestamp plus an application
+semantic dimension such as `experiment-time`. When the active X axis changes,
+the host should retain the record, project it through that axis's
+`datetimeOriginNs` and `encodedScaleMs` when the semantic dimension is
+compatible, and omit it from `setReferenceLines(...)` while it is incompatible.
+Do not delete a persistent reference merely because the current X column cannot
+display it. Physical column names and axis kinds alone are not always semantic
+compatibility identifiers: two timestamp columns may share a timeline, while
+two other timestamp columns may represent unrelated concepts.
+
+Creation is a request rather than an automatic persistent mutation. This lets
+the host open a naming dialog, enforce limits or permissions, store a database
+record, then call `setReferenceLines(...)` with the stable application ID.
+Simple hosts may accept synchronously so the line appears immediately.
+
+Replacing lines through either `setReferenceLines(...)` or
+`plot.update({ referenceLines })` also reconciles the active reference-line
+hover payload. Updated labels and values are published, while removed,
+out-of-viewport, or no-longer-scoped hovered lines clear the hover state.
+
+Reference-line projection, hit testing, hover, and live dragging are confined
+to the overlay engine. They do not scan points, rebuild aggregation, upload GPU
+buffers, or schedule WebGL2/WebGPU drawing, so their cost depends on the number
+of reference lines rather than the dataset size.
 
 The demo app owns side panels, URL state, generated data loading, exports,
 diagnostics, and most visible overlay rendering. Those are integration examples,

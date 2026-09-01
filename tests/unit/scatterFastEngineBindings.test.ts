@@ -1634,6 +1634,177 @@ markerHost.dispatchEvent(
 assert.deepEqual(markerPlot.commands.getStateSnapshot().pointMarkerSourceIndices, []);
 markerPlot.dispose();
 
+const referenceHost = new FakeElement(document);
+referenceHost.setRect(420, 280);
+let referenceRenderer: MockRenderer | null = null;
+const referencePlot = createFastScatterPlot(
+  referenceHost as unknown as HTMLElement,
+  {
+    ...createOptions((rendererOptions) => {
+      referenceRenderer = new MockRenderer(rendererOptions.onMetrics ?? (() => {}));
+      return referenceRenderer;
+    }),
+    referenceLines: [
+      { axis: 'x', draggable: true, id: 'reference-a', label: 'Reference A', value: 0.25 },
+    ],
+  },
+);
+referencePlot.use(createDefaultScatterBindings({
+  referenceLineGestures: {
+    create: { button: 0, modifiers: { altKey: true } },
+    drag: { button: 0, hitToleranceCssPx: 7 },
+    hover: { hitToleranceCssPx: 7, modifiers: { shiftKey: true } },
+  },
+}));
+const referenceOverlay = referencePlot.commands.getOverlays().find(
+  (overlay) => overlay.kind === 'reference-line',
+);
+const referenceSegment = referenceOverlay?.segments[0];
+assert.notEqual(referenceSegment, undefined);
+const referenceMidY = (referenceSegment!.y1CssPx + referenceSegment!.y2CssPx) / 2;
+const referenceCreateEvents: number[] = [];
+const referenceHoverEvents: string[] = [];
+const referenceChangeEvents: string[] = [];
+referencePlot.on('referencelinecreaterequest', (event) => {
+  referenceCreateEvents.push(event.value);
+});
+referencePlot.on('referencelinehoverchange', (event) => {
+  referenceHoverEvents.push(event === null ? 'none' : `${event.id}:${event.detailsVisible}`);
+});
+referencePlot.on('referencelinechange', (event) => {
+  referenceChangeEvents.push(event.phase);
+});
+const referenceCreateRect = referencePlot.commands.getPlotRectAtPoint(
+  referenceSegment!.xCssPx,
+  referenceMidY,
+)!;
+const referenceCreateX = referenceCreateRect.xCssPx + referenceCreateRect.widthCssPx * 0.8;
+const createDoubleClick = makeEvent('dblclick', {
+  altKey: true,
+  button: 0,
+  buttons: 0,
+  clientX: referenceCreateX,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  shiftKey: false,
+});
+referenceHost.dispatchEvent(createDoubleClick);
+assert.equal(createDoubleClick.defaultPrevented, true);
+assert.ok(Math.abs(referenceCreateEvents[0]! - 0.8) < 1e-6);
+
+referenceHost.dispatchEvent(makeEvent('pointermove', {
+  altKey: false,
+  button: -1,
+  buttons: 0,
+  clientX: referenceSegment!.xCssPx + 2,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 31,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+assert.equal(referenceHoverEvents.at(-1), 'reference-a:false');
+assert.equal(referencePlot.commands.getStateSnapshot().cursor, 'col-resize');
+referenceHost.dispatchEvent(makeEvent('pointermove', {
+  altKey: false,
+  button: -1,
+  buttons: 0,
+  clientX: referenceSegment!.xCssPx + 2,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 31,
+  pointerType: 'mouse',
+  shiftKey: true,
+}));
+assert.equal(referenceHoverEvents.at(-1), 'reference-a:true');
+
+const rendererUpdatesBeforeReferenceDrag = referenceRenderer!.updates.length;
+referenceHost.dispatchEvent(makeEvent('pointerdown', {
+  altKey: false,
+  button: 0,
+  buttons: 1,
+  clientX: referenceSegment!.xCssPx,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 32,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+const referenceDragX = referenceCreateRect.xCssPx + referenceCreateRect.widthCssPx * 0.7;
+referenceHost.dispatchEvent(makeEvent('pointermove', {
+  altKey: false,
+  button: 0,
+  buttons: 1,
+  clientX: referenceDragX,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 32,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+await wait(25);
+referenceHost.dispatchEvent(makeEvent('pointerup', {
+  altKey: false,
+  button: 0,
+  buttons: 0,
+  clientX: referenceDragX,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 32,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+assert.deepEqual(referenceChangeEvents, ['start', 'preview', 'commit']);
+assert.ok(Math.abs(referencePlot.commands.getReferenceLines()[0]!.value - 0.7) < 1e-6);
+assert.equal(referenceRenderer!.updates.length, rendererUpdatesBeforeReferenceDrag);
+
+const zoomStartX = referenceCreateRect.xCssPx + referenceCreateRect.widthCssPx * 0.05;
+referenceHost.dispatchEvent(makeEvent('pointerdown', {
+  altKey: false,
+  button: 0,
+  buttons: 1,
+  clientX: zoomStartX,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 33,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+assert.equal(
+  referencePlot.commands.getOverlays().some((overlay) => overlay.kind === 'rectangle-zoom'),
+  true,
+);
+referenceHost.dispatchEvent(makeEvent('pointercancel', {
+  altKey: false,
+  button: 0,
+  buttons: 0,
+  clientX: referenceSegment!.xCssPx,
+  clientY: referenceMidY,
+  ctrlKey: false,
+  metaKey: false,
+  pointerId: 33,
+  pointerType: 'mouse',
+  shiftKey: false,
+}));
+referenceHost.dispatchEvent(makeEvent('keydown', {
+  altKey: false,
+  code: 'Escape',
+  ctrlKey: false,
+  key: 'Escape',
+  metaKey: false,
+  repeat: false,
+  shiftKey: false,
+}));
+assert.equal(referencePlot.commands.getReferenceLines().length, 1);
+referencePlot.dispose();
+
 const hoverHost = new FakeElement(document);
 hoverHost.setRect(420, 280);
 const hoverPlot = createFastScatterPlot(

@@ -39,6 +39,7 @@ import {
   findFastScatterPlotRectAtPoint,
   mergeFastScatterSelectionSourceIndices,
   panFastScatterViewportFromDrag,
+  pixelToAxis,
   resolveFastScatterRectangleZoomEffectiveAxisMode,
   resizeFastScatterNavigatorWindow,
   lookupFastScatterNearestPoint,
@@ -69,6 +70,10 @@ import type {
 } from './scatterEvents.js';
 import type { FastScatterOverlayDescriptor, FastScatterOverlayKind } from './scatterOverlays.js';
 import type { FastScatterCursorState, FastScatterRenderState } from './scatterState.js';
+import type {
+  FastScatterReferenceLine,
+  FastScatterReferenceLineHoverEvent,
+} from './scatterReferenceLines.js';
 
 const DEFAULT_OVERLAY_CLASS = 'scatter-fast-engine-overlay';
 const DEFAULT_NAVIGATOR_CSS_PX = 36;
@@ -112,7 +117,8 @@ export function createFastScatterEngine(
   }
 
   let disposed = false;
-  let optionsState = options;
+  const initialReferenceLines = normalizeReferenceLines(options.referenceLines ?? []);
+  let optionsState = { ...options, referenceLines: initialReferenceLines };
   let renderer: FastScatterRendererLike | null = null;
   let renderState: FastScatterRenderState = 'idle';
   let renderStateMessage: string | undefined;
@@ -130,6 +136,9 @@ export function createFastScatterEngine(
   let activeMeasurement: FastScatterMeasurementEvent | null = null;
   let activeSelectionFilters: readonly FastScatterSelectionFilter[] = [];
   let pointMarkerSourceIndices: readonly number[] = [];
+  let referenceLines = initialReferenceLines;
+  let activeReferenceLineHover: FastScatterReferenceLineHoverEvent | null = null;
+  let activeReferenceLineDraggingId: string | null = null;
   let pointIndexBySourceIndex: ReadonlyMap<number, number> | null = null;
   let viewportGeneration = 0;
   let dataDomain = options.dataDomain ?? calculateFastScatterDomain(options.columns, options.spec);
@@ -201,8 +210,19 @@ export function createFastScatterEngine(
   }
 
   function buildRendererOptions(): FastScatterRendererOptions {
+    const {
+      onReferenceLineChange: _onReferenceLineChange,
+      onReferenceLineCreateRequest: _onReferenceLineCreateRequest,
+      onReferenceLineHoverChange: _onReferenceLineHoverChange,
+      referenceLines: _referenceLines,
+      ...rendererState
+    } = optionsState;
+    void _onReferenceLineChange;
+    void _onReferenceLineCreateRequest;
+    void _onReferenceLineHoverChange;
+    void _referenceLines;
     return {
-      ...optionsState,
+      ...rendererState,
       canvas,
       onHoverChange: (hover) => {
         optionsState.onHoverChange?.(hover);
@@ -232,6 +252,7 @@ export function createFastScatterEngine(
     renderer.resize(rect.width, rect.height, globalThis.devicePixelRatio || 1);
     refreshNavigatorOverlay();
     refreshPointMarkerOverlays();
+    refreshReferenceLineOverlays();
   }
 
   function createRenderer(): void {
@@ -365,6 +386,7 @@ export function createFastScatterEngine(
       );
       refreshNavigatorOverlay();
       refreshPointMarkerOverlays();
+      refreshReferenceLineOverlays();
     }),
   );
 
@@ -438,6 +460,42 @@ export function createFastScatterEngine(
     getOverlays() {
       return overlays;
     },
+    getReferenceLineAtPoint({
+      draggableOnly = false,
+      hitToleranceCssPx = 6,
+      pointerCssX,
+      pointerCssY,
+    }) {
+      if (disposed) return null;
+      const tolerance = Math.max(0, hitToleranceCssPx);
+      const referenceOverlays = overlays.filter(
+        (overlay) => overlay.kind === 'reference-line',
+      );
+      let nearest: ReturnType<FastScatterPlotCommands['getReferenceLineAtPoint']> = null;
+      for (let overlayIndex = referenceOverlays.length - 1; overlayIndex >= 0; overlayIndex -= 1) {
+        const overlay = referenceOverlays[overlayIndex]!;
+        if (draggableOnly && overlay.line.draggable !== true) continue;
+        for (const segment of overlay.segments) {
+          if (pointerCssY < segment.y1CssPx || pointerCssY > segment.y2CssPx) continue;
+          const distanceCssPx = Math.abs(pointerCssX - segment.xCssPx);
+          if (distanceCssPx > tolerance ||
+              (nearest !== null && distanceCssPx >= nearest.distanceCssPx)) continue;
+          nearest = {
+            distanceCssPx,
+            formattedValue: overlay.formattedValue,
+            id: overlay.referenceLineId,
+            line: overlay.line,
+            plotId: segment.plotId,
+            value: overlay.value,
+            xCssPx: segment.xCssPx,
+          };
+        }
+      }
+      return nearest;
+    },
+    getReferenceLines() {
+      return referenceLines;
+    },
     getPlotRectAtPoint(pointerCssX, pointerCssY) {
       return findFastScatterPlotRectAtPoint(
         getCurrentPlotRects(),
@@ -487,6 +545,8 @@ export function createFastScatterEngine(
         overlays,
         pointMarkerSourceIndices,
         pointSizeScale: optionsState.pointSizeScale,
+        referenceLineHover: activeReferenceLineHover,
+        referenceLines,
         render: commands.getRenderSnapshot(),
         selectionFilters: activeSelectionFilters,
         selectedSourceIndices: optionsState.selectedSourceIndices ?? new Uint32Array(0),
@@ -591,6 +651,111 @@ export function createFastScatterEngine(
       }
       emitter.emit('overlaychange', { overlays, reason });
     },
+    requestReferenceLineCreate({
+      pointerCssX,
+      pointerCssY,
+      source = 'programmatic',
+    }) {
+      if (disposed) return null;
+      const plotRect = commands.getPlotRectAtPoint(pointerCssX, pointerCssY);
+      if (plotRect === null) return null;
+      const value = pixelToAxis(
+        pointerCssX,
+        optionsState.viewport.x,
+        plotRect.xCssPx,
+        plotRect.xCssPx + plotRect.widthCssPx,
+      );
+      if (!Number.isFinite(value)) return null;
+      const event = {
+        axis: 'x' as const,
+        canvasPoint: { xCssPx: pointerCssX, yCssPx: pointerCssY },
+        formattedValue: formatFastScatterAxisValue(getXAxis(), value),
+        plotId: plotRect.id,
+        source,
+        value,
+        xKey: optionsState.columns.xKey ?? null,
+      };
+      optionsState.onReferenceLineCreateRequest?.(event);
+      emitter.emit('referencelinecreaterequest', event);
+      return event;
+    },
+    setReferenceLineHover(request) {
+      if (disposed) return null;
+      const next = request === null
+        ? null
+        : {
+            canvasPoint: {
+              xCssPx: request.pointerCssX,
+              yCssPx: request.pointerCssY,
+            },
+            detailsVisible: request.detailsVisible ?? true,
+            formattedValue: request.hit.formattedValue,
+            id: request.hit.id,
+            line: request.hit.line,
+            plotId: request.hit.plotId,
+            value: request.hit.value,
+          };
+      if (areReferenceLineHoverEventsEqual(activeReferenceLineHover, next)) {
+        return activeReferenceLineHover;
+      }
+      activeReferenceLineHover = next;
+      refreshReferenceLineOverlays();
+      optionsState.onReferenceLineHoverChange?.(next);
+      emitter.emit('referencelinehoverchange', next);
+      return next;
+    },
+    setReferenceLines(lines) {
+      if (disposed) return;
+      replaceReferenceLines(lines);
+    },
+    setReferenceLineValue({
+      emit = false,
+      id,
+      phase = 'commit',
+      previousValue,
+      source = 'programmatic',
+      value,
+    }) {
+      if (disposed || !Number.isFinite(value)) return false;
+      const index = referenceLines.findIndex((line) => line.id === id);
+      if (index < 0) return false;
+      const current = referenceLines[index]!;
+      const previous = previousValue ?? current.value;
+      const nextLine = current.value === value ? current : { ...current, value };
+      if (nextLine !== current) {
+        referenceLines = referenceLines.map((line, lineIndex) =>
+          lineIndex === index ? nextLine : line,
+        );
+        optionsState = { ...optionsState, referenceLines };
+      }
+      activeReferenceLineDraggingId =
+        phase === 'start' || phase === 'preview' ? id : null;
+      const previousReferenceLineHover = activeReferenceLineHover;
+      if (activeReferenceLineHover?.id === id) {
+        activeReferenceLineHover = {
+          ...activeReferenceLineHover,
+          formattedValue: formatFastScatterAxisValue(getXAxis(), value),
+          line: nextLine,
+          value,
+        };
+      }
+      refreshReferenceLineOverlays();
+      emitReferenceLineHoverChangeIfNeeded(previousReferenceLineHover);
+      if (emit) {
+        const event = {
+          formattedValue: formatFastScatterAxisValue(getXAxis(), value),
+          id,
+          line: nextLine,
+          phase,
+          previousValue: previous,
+          source,
+          value,
+        };
+        optionsState.onReferenceLineChange?.(event);
+        emitter.emit('referencelinechange', event);
+      }
+      return true;
+    },
     setViewport(
       viewport: FastScatterViewport,
       reason: FastScatterViewportChangeReason = 'programmatic',
@@ -610,10 +775,14 @@ export function createFastScatterEngine(
       } else {
         renderer?.update({ viewport });
       }
+      const previousReferenceLineHover = activeReferenceLineHover;
+      reconcileReferenceLineHoverState();
       if (phase === 'commit') {
         refreshNavigatorOverlay();
         refreshPointMarkerOverlays();
       }
+      refreshReferenceLineOverlays();
+      emitReferenceLineHoverChangeIfNeeded(previousReferenceLineHover);
       optionsState.onViewportChange?.(viewport, reason, phase);
       emitter.emit('viewportchange', { phase, reason, viewport });
     },
@@ -1499,9 +1668,13 @@ export function createFastScatterEngine(
         return;
       }
       const previousSelectedSourceIndices = optionsState.selectedSourceIndices;
+      const nextReferenceLines = partialOptions.referenceLines === undefined
+        ? undefined
+        : normalizeReferenceLines(partialOptions.referenceLines);
       optionsState = {
         ...optionsState,
         ...partialOptions,
+        ...(nextReferenceLines === undefined ? {} : { referenceLines: nextReferenceLines }),
       };
       if (
         partialOptions.columns !== undefined || partialOptions.spec !== undefined ||
@@ -1543,11 +1716,20 @@ export function createFastScatterEngine(
         partialOptions.focusedPlotId !== undefined ||
         partialOptions.spec !== undefined
       ) {
+        const previousReferenceLineHover = activeReferenceLineHover;
         if (partialOptions.columns !== undefined) {
           pointIndexBySourceIndex = null;
         }
+        if (nextReferenceLines === undefined) reconcileReferenceLineHoverState();
         refreshNavigatorOverlay();
         refreshPointMarkerOverlays();
+        if (nextReferenceLines === undefined) {
+          refreshReferenceLineOverlays();
+          emitReferenceLineHoverChangeIfNeeded(previousReferenceLineHover);
+        }
+      }
+      if (nextReferenceLines !== undefined) {
+        replaceReferenceLines(nextReferenceLines);
       }
     },
     use(binding: FastScatterBinding) {
@@ -1582,6 +1764,7 @@ export function createFastScatterEngine(
     pointIndexBySourceIndex = null;
     if (domainChanged) refreshNavigatorOverlay();
     if (pointMarkerSourceIndices.length > 0) refreshPointMarkerOverlays();
+    if (referenceLines.length > 0) refreshReferenceLineOverlays();
   });
   finishAppendHandlers.set(instance, async () => {
     await renderer?.finishDataAppend?.();
@@ -1590,6 +1773,7 @@ export function createFastScatterEngine(
   try {
     createRenderer();
     refreshNavigatorOverlay();
+    refreshReferenceLineOverlays();
   } catch (error) {
     handleSetupError(error, backend.setupErrorMessage ?? 'Unknown scatter renderer setup error.');
   }
@@ -1750,6 +1934,106 @@ export function createFastScatterEngine(
     }
 
     replaceOverlayKinds(['point-marker'], markerOverlays);
+  }
+
+  function refreshReferenceLineOverlays(): void {
+    if (disposed) return;
+    if (referenceLines.length === 0) {
+      replaceOverlayKinds(['reference-line'], [], 'clear');
+      return;
+    }
+    const plotRects = getCurrentPlotRects();
+    const viewport = optionsState.viewport.x;
+    const nextOverlays: FastScatterOverlayDescriptor[] = [];
+    for (const line of referenceLines) {
+      if (line.value < viewport.min || line.value > viewport.max) continue;
+      const scopedPlots = line.plotIds === undefined ? null : new Set(line.plotIds);
+      const segments = plotRects.flatMap((plotRect) => {
+        if (scopedPlots !== null && !scopedPlots.has(plotRect.id)) return [];
+        return [{
+          plotId: plotRect.id,
+          xCssPx: axisToPixel(
+            line.value,
+            viewport,
+            plotRect.xCssPx,
+            plotRect.xCssPx + plotRect.widthCssPx,
+          ),
+          y1CssPx: plotRect.yCssPx,
+          y2CssPx: plotRect.yCssPx + plotRect.heightCssPx,
+        }];
+      });
+      if (segments.length === 0) continue;
+      nextOverlays.push({
+        dragging: activeReferenceLineDraggingId === line.id,
+        formattedValue: formatFastScatterAxisValue(getXAxis(), line.value),
+        hovered: activeReferenceLineHover?.id === line.id,
+        id: `reference-line:${line.id}`,
+        kind: 'reference-line',
+        label: line.label,
+        line,
+        referenceLineId: line.id,
+        segments,
+        style: line.style,
+        value: line.value,
+        zIndex: 4,
+      });
+    }
+    replaceOverlayKinds(['reference-line'], nextOverlays);
+  }
+
+  function replaceReferenceLines(lines: readonly FastScatterReferenceLine[]): void {
+    const previousReferenceLineHover = activeReferenceLineHover;
+    referenceLines = normalizeReferenceLines(lines);
+    optionsState = { ...optionsState, referenceLines };
+    reconcileReferenceLineHoverState();
+
+    if (
+      !referenceLines.some(
+        (line) => line.id === activeReferenceLineDraggingId && line.draggable === true,
+      )
+    ) {
+      activeReferenceLineDraggingId = null;
+    }
+
+    refreshReferenceLineOverlays();
+    emitReferenceLineHoverChangeIfNeeded(previousReferenceLineHover);
+  }
+
+  function reconcileReferenceLineHoverState(): void {
+    if (activeReferenceLineHover === null) return;
+    const hoveredLine = referenceLines.find(
+      (line) => line.id === activeReferenceLineHover?.id,
+    );
+    activeReferenceLineHover =
+      hoveredLine === undefined ||
+        !isReferenceLineVisibleInPlot(hoveredLine, activeReferenceLineHover.plotId)
+        ? null
+        : {
+            ...activeReferenceLineHover,
+            formattedValue: formatFastScatterAxisValue(getXAxis(), hoveredLine.value),
+            line: hoveredLine,
+            value: hoveredLine.value,
+          };
+  }
+
+  function isReferenceLineVisibleInPlot(
+    line: FastScatterReferenceLine,
+    plotId: string,
+  ): boolean {
+    return (
+      line.value >= optionsState.viewport.x.min &&
+      line.value <= optionsState.viewport.x.max &&
+      (line.plotIds === undefined || line.plotIds.includes(plotId)) &&
+      getCurrentPlotRects().some((plotRect) => plotRect.id === plotId)
+    );
+  }
+
+  function emitReferenceLineHoverChangeIfNeeded(
+    previous: FastScatterReferenceLineHoverEvent | null,
+  ): void {
+    if (areReferenceLineHoverEventsEqual(previous, activeReferenceLineHover)) return;
+    optionsState.onReferenceLineHoverChange?.(activeReferenceLineHover);
+    emitter.emit('referencelinehoverchange', activeReferenceLineHover);
   }
 
   function resolvePointIndexForSourceIndex(sourceIndex: number): number | null {
@@ -2072,9 +2356,13 @@ function buildRendererUpdateOptions(
   delete controllerOptions.forceWebglUnavailable;
   delete controllerOptions.hostClassName;
   delete controllerOptions.navigatorCssPx;
+  delete controllerOptions.onReferenceLineChange;
+  delete controllerOptions.onReferenceLineCreateRequest;
+  delete controllerOptions.onReferenceLineHoverChange;
   delete controllerOptions.overlayClassName;
   delete controllerOptions.preserveDrawingBuffer;
   delete controllerOptions.rendererFactory;
+  delete controllerOptions.referenceLines;
   return {
     ...controllerOptions,
     onHoverChange: rendererOptions.onHoverChange,
@@ -2128,4 +2416,42 @@ function isValidSourceIndex(sourceIndex: number, pointCount: number): boolean {
     return false;
   }
   return true;
+}
+
+function normalizeReferenceLines(
+  lines: readonly FastScatterReferenceLine[],
+): readonly FastScatterReferenceLine[] {
+  const ids = new Set<string>();
+  return lines.map((line) => {
+    if (line.axis !== 'x') {
+      throw new TypeError('Fast scatter reference lines currently support only the X axis.');
+    }
+    if (line.id.trim().length === 0) {
+      throw new TypeError('Fast scatter reference line IDs must not be empty.');
+    }
+    if (ids.has(line.id)) {
+      throw new TypeError(`Duplicate fast scatter reference line ID "${line.id}".`);
+    }
+    if (!Number.isFinite(line.value)) {
+      throw new TypeError(`Fast scatter reference line "${line.id}" must have a finite value.`);
+    }
+    ids.add(line.id);
+    return line;
+  });
+}
+
+function areReferenceLineHoverEventsEqual(
+  previous: FastScatterReferenceLineHoverEvent | null,
+  next: FastScatterReferenceLineHoverEvent | null,
+): boolean {
+  if (previous === next) return true;
+  if (previous === null || next === null) return false;
+  return (
+    previous.id === next.id &&
+    previous.plotId === next.plotId &&
+    previous.value === next.value &&
+    previous.formattedValue === next.formattedValue &&
+    previous.detailsVisible === next.detailsVisible &&
+    previous.line === next.line
+  );
 }
