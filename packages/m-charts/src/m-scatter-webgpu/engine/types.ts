@@ -2,6 +2,7 @@ import type {
   FastScatterPlotInstance,
   FastScatterPlotOptions,
 } from '../../m-scatter/engine/index.js';
+import type { FastScatterClientViewBinding } from '../../m-scatter/core/index.js';
 import type {
   FastScatterWebgpuAggregationBackend,
   FastScatterWebgpuDiagnostics,
@@ -20,12 +21,14 @@ export interface FastScatterWebgpuPlotOptions
   pointCapacity?: number;
   /** Requests optional GPU timestamp-query support. Creation-only. */
   requestTimestampQuery?: boolean;
+  /** Optional additive resident client-side data view. Creation-only. */
+  clientView?: FastScatterClientViewBinding;
 }
 
 export type FastScatterWebgpuPlotUpdateOptions = Partial<Omit<
   FastScatterWebgpuPlotOptions,
-  'aggregationBackend' | 'indexedStyle' | 'packedStyles' | 'requestTimestampQuery'
-  | 'pointCapacity'
+  'aggregationBackend' | 'clientView' | 'indexedStyle' | 'packedStyles'
+  | 'requestTimestampQuery' | 'pointCapacity'
 >>;
 
 export interface FastScatterWebgpuPlotInstance extends FastScatterPlotInstance {

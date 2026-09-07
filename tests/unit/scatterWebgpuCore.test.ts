@@ -20,10 +20,15 @@ import {
   fastScatterWebgpuUpdateRequiresDraw,
   isFastScatterWebgpuLodPoint,
   packFastScatterWebgpuStyle,
+  unpackFastScatterWebgpuStyleColumns,
   type FastScatterPointColumns,
   type ScatterWebgpuPlotOptions,
 } from '../../packages/m-charts/src/m-scatter-webgpu/index.ts';
 import { buildFastScatterAggregation } from '../../packages/m-charts/src/m-scatter/index.ts';
+import {
+  composeFastScatterWebgpuStyleWord,
+  createFastScatterWebgpuClientStyleMask,
+} from '../../packages/m-charts/src/m-scatter-webgpu/core/styleComposition.ts';
 import { diagnoseWebgpuSupport } from '../../packages/m-charts/src/plot-engine-webgpu/index.ts';
 
 assert.deepEqual(
@@ -92,6 +97,38 @@ assert.equal((style.meta >>> 8) & 0x7, 2);
 assert.equal((style.meta >>> 11) & 0x3ff, 512);
 assert.equal((style.meta >>> 21) & 0x7ff, 28);
 assert.equal(style.size, 7);
+const unpackedStyle = unpackFastScatterWebgpuStyleColumns({
+  data: new Uint32Array([style.color, style.meta]),
+  maxPointSize: 7,
+  styleStrideBytes: 8,
+}, 1);
+assert.equal(unpackedStyle.colorFormat, 'rgba32');
+assert.equal(unpackedStyle.color[0], 0x11223344);
+assert.equal(unpackedStyle.opacity[0], Math.fround(128 / 255));
+assert.equal(unpackedStyle.shape[0], 2);
+assert.equal(unpackedStyle.size[0], 7);
+
+const clientStyleMask = createFastScatterWebgpuClientStyleMask({
+  color: { assigned: new Uint8Array([1, 0]), values: new Uint32Array(2) },
+  opacity: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+  rotation: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+  shape: { assigned: new Uint8Array([1, 0]), values: new Uint8Array(2) },
+  size: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+}, 0);
+assert.equal(clientStyleMask, 0x0070_ffff);
+assert.equal(
+  createFastScatterWebgpuClientStyleMask({
+    opacity: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+    rotation: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+    size: { assigned: new Uint8Array([0, 1]), values: new Float32Array(2) },
+  }, 1),
+  0xff8f_0000,
+);
+assert.equal(
+  composeFastScatterWebgpuStyleWord(0xaaaa_aaaa, 0x5555_5555, clientStyleMask),
+  0xaada_5555,
+  'client composition replaces assigned channels and preserves every other packed source bit',
+);
 
 const coordinateValues = new Float64Array([
   1_700_000_000_000,
@@ -168,6 +205,11 @@ assert.doesNotMatch(shader, /override Y_STORAGE_MODE: u32/);
 assert.match(shader, /uniforms\.flags\.z & 0x40000000u/u);
 assert.match(shader, /uniforms\.flags\.z & 0x80000000u/u);
 assert.match(shader, /selectedMembership\[pointIndex >> 5u\]/u);
+assert.match(shader, /visibleMembership\[pointIndex >> 5u\]/u);
+assert.match(shader, /selectedIndices\[pointIndex\]/u);
+assert.match(shader, /@compute @workgroup_size\(256\)/u);
+assert.match(shader, /sourceStyles\[index\] & ~mask/u);
+assert.match(shader, /overrideStyle & mask/u);
 assert.doesNotMatch(shader, /sizeDelta/u);
 assert.match(shader, /select\(pointIndex, 0u, STYLE_MODE != 0u\)/);
 assert.match(shader, /indexedStyle = STYLE_MODE == 2u/);
@@ -373,6 +415,24 @@ assert.match(rendererSource, /calculateFastScatterWebgpuLodRange/u);
 assert.doesNotMatch(rendererSource, /TARGET_EXACT_CHUNK_GPU_MS/u);
 assert.match(rendererSource, /workTexture/u);
 assert.match(rendererSource, /createRenderPipelineAsync/u);
+assert.match(rendererSource, /sourceUploadBytes: 0/u);
+assert.match(rendererSource, /createComposedClientStyleBuffer/u);
+assert.match(rendererSource, /createFastScatterWebgpuClientStyleMask/u);
+assert.match(rendererSource, /visibleBuffer/u);
+assert.match(rendererSource, /createClientViewDrawIndices/u);
+assert.match(rendererSource, /resolveIndexedVisibleRange/u);
+assert.match(rendererSource, /clientViewDraw \? plot\.overviewBindGroup : plot\.bindGroup/u);
+// Draw projection correctness is exercised by real-GPU pixel comparisons in
+// tests/e2e/scatterClientView.spec.ts, including rapid revision changes.
+assert.doesNotMatch(
+  rendererSource,
+  /resolveVisibleRange\(\s*this\.options\.columns,/u,
+);
+const applyClientViewSource = rendererSource.slice(
+  rendererSource.indexOf('private async applyClientViewResources('),
+  rendererSource.indexOf('\n  private updateSelectedIndices(', rendererSource.indexOf('private async applyClientViewResources(')),
+);
+assert.doesNotMatch(applyClientViewSource, /onSubmittedWorkDone/u);
 const appendDataSource = rendererSource.slice(
   rendererSource.indexOf('async appendData('),
   rendererSource.indexOf('\n  updateViewport(', rendererSource.indexOf('async appendData(')),

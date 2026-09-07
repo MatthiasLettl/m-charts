@@ -32,6 +32,7 @@ export {
 export {
   createFastScatterEasterEggPointLayout,
 } from './easterEgg.js';
+export * from './clientView.js';
 export type {
   FastScatterEasterEggPoint,
   FastScatterEasterEggPointLayout,

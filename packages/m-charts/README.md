@@ -337,6 +337,24 @@ upload directly and existing 8/12-byte records convert in bounded chunks. See
 [SCATTER_WEBGPU.md](SCATTER_WEBGPU.md) for its precision, packed-buffer,
 selection, profiling, demo, and benchmark contracts.
 
+WebGPU scatter additionally supports an additive resident `clientView` for a
+typed, JSON-serializable filter → transform → style pipeline. It retains source
+GPU buffers, exposes state/callbacks for host persistence and synchronization,
+preserves embedded and paged-packed source styling by default, and leaves chart
+selection application-controlled. See
+[CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md) for the complete API and host adapter
+responsibilities.
+
+Client views reuse unchanged filter/transform/style stages and derived GPU
+buffers. Subscriber errors are isolated and can be handled with
+`onListenerError(error, event)`; configuration getters are read-only snapshots.
+Unmatched style rules retain source or theme defaults, including theme updates.
+
+The WebGPU scatter demo includes configurable linear/difference transforms,
+independent computed style channels with all five glyphs, and a popup after
+rectangle/lasso selection for keeping inside or outside rows. Selection filters
+preserve source-row identity across transforms and can be removed individually.
+
 The WebGPU histogram renders every normalized bin and color-stack segment; it
 does not sample bars. Raw typed columns with explicit domains prefer the shared
 Rust/WASM aggregation binary, while unsupported column/category/color shapes

@@ -168,8 +168,13 @@ import {
   type ScatterRenderState,
 } from 'm-charts/m-scatter';
 import {
+  createFastScatterClientDataView,
+  evaluateFastScatterClientView,
   createScatterWebgpuStreamingPlot,
   createScatterWebgpuPlot,
+  type ClientDataView,
+  type ClientDataViewState,
+  type FastScatterClientViewBinding,
   type FastScatterWebgpuAggregationBackend,
   type FastScatterWebgpuDiagnostics,
   type FastScatterWebgpuPackedStyles,
@@ -183,6 +188,11 @@ import { FastScatterOverlay } from 'm-charts/m-scatter';
 
 declare global {
   interface Window {
+    __scatterClientViewTestHook?: {
+      getState: () => ClientDataViewState | null;
+      keepSelection: (mode: 'inside' | 'outside') => void;
+      reset: () => void;
+    };
     __scatterFastSelectionTestHook?: {
       exportSelectedIds: () => string[];
       exportSelectedRecordsText: () => string;
@@ -470,7 +480,10 @@ interface RendererMetricsState {
   upload: {
     bufferCount: number;
     durationMs: number;
+    operation?: string;
+    sourceUploadBytes?: number;
     uploadBytes: number;
+    viewUploadBytes?: number;
   } | null;
   dragPan: {
     axisMode: string;
@@ -849,6 +862,99 @@ export function MScatterPlotRoute({
       xMode,
     );
   }, [datasetState, xAxisKey, xMode]);
+  const clientViewNumericPlot = useMemo(() => plottedDataset?.spec.plots.find((plot) => {
+    const kind = plottedDataset.columns.axisByColumn?.[plot.yKey]?.kind;
+    return kind === undefined || kind === 'numeric' || kind === 'datetime-ns';
+  }) ?? null, [plottedDataset]);
+  const clientViewColumns = useMemo<FastScatterPointColumns | null>(() => {
+    if (
+      rendererBackend !== 'webgpu' || plottedDataset === null || webgpuStreamKind !== null
+    ) return null;
+    return plottedDataset.columns;
+  }, [plottedDataset, rendererBackend, webgpuStreamKind]);
+  const clientView = useMemo<ClientDataView | null>(() => {
+    if (
+      clientViewColumns === null
+    ) return null;
+    const pointCount = clientViewColumns.x.length;
+    const isReferenceMember = new Uint8Array(pointCount);
+    for (let index = 0; index < pointCount; index += 1) {
+      if (index % 17 === 0) isReferenceMember[index] = 1;
+    }
+    const fields: Record<string, { kind: 'numeric' | 'boolean' | 'categorical'; values: ArrayLike<number> }> = {
+      sourceRow: { kind: 'numeric', values: Uint32Array.from({ length: pointCount }, (_, i) => i) },
+      glyphGroup: { kind: 'categorical', values: Uint8Array.from({ length: pointCount }, (_, i) => i % 5) },
+      isReferenceMember: { kind: 'boolean', values: isReferenceMember },
+    };
+    const phase = clientViewColumns.y.phase;
+    if (phase !== undefined) fields.phase = { kind: 'categorical', values: phase };
+    const accepted = clientViewColumns.y.accepted;
+    if (accepted !== undefined) fields.accepted = { kind: 'boolean', values: accepted };
+    return createFastScatterClientDataView({
+      columns: clientViewColumns,
+      datasetKey: 'scatter-webgpu-demo',
+      datasetVersion: `${pointCount}:${clientViewColumns.xKey ?? 'x'}`,
+      fields,
+    });
+  }, [clientViewColumns]);
+  const [affineFactor, setAffineFactor] = useState('1.25');
+  const [affineOffset, setAffineOffset] = useState('-0.15');
+  const [deltaDirection, setDeltaDirection] = useState<'forward' | 'backward'>('forward');
+  const [deltaMissing, setDeltaMissing] = useState<'null' | 'zero'>('null');
+  const [deltaPartition, setDeltaPartition] = useState('');
+  const [styleColorMode, setStyleColorMode] = useState('category');
+  const [styleShape, setStyleShape] = useState('all');
+  const [styleChannels, setStyleChannels] = useState({ color: true, opacity: true, rotation: true, shape: true, size: true });
+  const affineValid = affineFactor.trim() !== '' && affineOffset.trim() !== '' &&
+    Number.isFinite(Number(affineFactor)) && Number.isFinite(Number(affineOffset));
+  const selectionAnchor = useRef<{ x: number; y: number } | null>(null);
+  const selectionGesture = useRef(false);
+  const [selectionMenu, setSelectionMenu] = useState<{
+    x: number; y: number; selection: FastScatterSelectionEvent;
+  } | null>(null);
+  useEffect(() => {
+    // The engine also commits drags released outside its host. Capture the
+    // release on window before its selection callback, not just on the shell.
+    const finish = (event: PointerEvent) => {
+      if (selectionGesture.current) selectionAnchor.current = { x: event.clientX, y: event.clientY };
+      selectionGesture.current = false;
+    };
+    const cancel = () => { selectionGesture.current = false; selectionAnchor.current = null; };
+    window.addEventListener('pointerup', finish, true);
+    window.addEventListener('pointercancel', cancel, true);
+    return () => {
+      window.removeEventListener('pointerup', finish, true);
+      window.removeEventListener('pointercancel', cancel, true);
+    };
+  }, []);
+  const [clientViewSnapshot, setClientViewSnapshot] = useState<{
+    state: ClientDataViewState;
+    view: ClientDataView;
+  } | null>(null);
+  useEffect(() => {
+    if (clientView === null) return;
+    return clientView.on('change', (event) => {
+      setClientViewSnapshot({ state: event.state, view: clientView });
+    });
+  }, [clientView]);
+  const clientViewState = clientView === null
+    ? null
+    : clientViewSnapshot?.view === clientView
+      ? clientViewSnapshot.state
+      : clientView.getState();
+  const clientViewStatePreview = useMemo(() => JSON.stringify(clientViewState,
+    (_key, value: unknown) => Array.isArray(value) && value.length > 200
+      ? [...value.slice(0, 200), `… ${value.length - 200} more entries`] : value,
+    2,
+  ), [clientViewState]);
+  const clientViewEvaluation = useMemo(
+    () => clientView === null || clientViewState === null ? null : clientView.evaluate(),
+    [clientView, clientViewState],
+  );
+  const scatterClientViewBinding = useMemo<FastScatterClientViewBinding | undefined>(
+    () => clientView === null ? undefined : { view: clientView },
+    [clientView],
+  );
   const referenceLineAxisContext = useMemo<ScatterReferenceLineAxisContext>(() => {
     const columns = plottedDataset?.columns;
     const plottedXKey = columns?.xKey ?? null;
@@ -1530,6 +1636,9 @@ export function MScatterPlotRoute({
     (selection: FastScatterSelectionEvent) => {
       setSelectedSourceIndices(selection.sourceIndices);
       setLatestSelectionEvent(selection);
+      setSelectionMenu(selection.selectedCount > 0 && selectionAnchor.current !== null
+        ? { ...selectionAnchor.current, selection } : null);
+      selectionAnchor.current = null;
       setRendererMetrics((previous) => ({
         ...previous,
         rectangleSelection:
@@ -1575,6 +1684,274 @@ export function MScatterPlotRoute({
       selectedRecordExport: null,
     }));
   }, []);
+
+  const resetClientView = useCallback(() => {
+    if (clientView === null) return;
+    clearSelectedSourceIndices();
+    setSelectionMenu(null);
+    const current = clientView.getState();
+    clientView.replaceState({
+      ...current,
+      filters: [],
+      revision: current.revision,
+      sourceStyleMode: 'preserve',
+      styles: [],
+      transformations: [],
+    });
+    if (defaultFastViewport !== null) {
+      setTransientFastViewport(defaultFastViewport);
+    }
+    const nextParams = new URLSearchParams(searchParamsRef.current);
+    clearFastScatterViewportSearchParams(nextParams);
+    setSearchParams(nextParams, { replace: true });
+  }, [clientView, defaultFastViewport, clearSelectedSourceIndices, setSearchParams]);
+
+  const upsertClientFilter = useCallback((filter: ClientDataViewState['filters'][number]) => {
+    if (clientView === null) return;
+    const existing = clientView.getFilters().some((candidate) => candidate.id === filter.id);
+    if (existing) clientView.updateFilter(filter.id, filter);
+    else clientView.addFilter(filter);
+  }, [clientView]);
+
+  const getClientViewProjectedDomain = useCallback(() => {
+    if (clientView === null || clientViewColumns === null || plottedDataset === null) return null;
+    const projection = evaluateFastScatterClientView(
+      { view: clientView },
+      clientViewColumns,
+    );
+    const axisByColumn = { ...(plottedDataset.columns.axisByColumn ?? {}) };
+    const transformedKeys = new Set(projection.transformedYKeys);
+    if (projection.transformedX) {
+      transformedKeys.add(plottedDataset.columns.xKey ?? 'x');
+    }
+    for (const key of transformedKeys) {
+      const axis = axisByColumn[key];
+      if (axis === undefined) continue;
+      const values = key === (plottedDataset.columns.xKey ?? 'x')
+        ? projection.interactionColumns.x
+        : projection.interactionColumns.y[key];
+      if (values !== undefined) {
+        axisByColumn[key] = { ...axis, domain: calculateTypedArrayDomain(values) };
+      }
+    }
+    const projectedColumns: FastScatterDisplayColumns = {
+      ...projection.interactionColumns,
+      axisByColumn,
+    };
+    return calculateFastScatterDomain(
+      projectedColumns,
+      plottedDataset.spec,
+    );
+  }, [clientView, clientViewColumns, plottedDataset]);
+
+  const fitClientViewViewport = useCallback(() => {
+    const domain = getClientViewProjectedDomain();
+    if (domain === null) return;
+    setTransientFastViewport(createDefaultFastScatterViewport(domain));
+  }, [getClientViewProjectedDomain]);
+
+  const removeClientTransformation = useCallback((id: string) => {
+    if (clientView === null) return;
+    clientView.removeTransformation(id);
+    fitClientViewViewport();
+  }, [clientView, fitClientViewViewport]);
+
+  const applyClientRangeFilter = useCallback(() => {
+    const plot = clientViewNumericPlot;
+    const range = plot === null ? undefined : scatterDomain?.yByPlot[plot.id];
+    if (plot === null || range === undefined) return;
+    const span = range.max - range.min;
+    upsertClientFilter({
+      id: 'demo-range',
+      predicate: {
+        field: plot.yKey,
+        min: range.min + span * 0.25,
+        max: range.max - span * 0.25,
+        op: 'between',
+      },
+    });
+  }, [clientViewNumericPlot, scatterDomain, upsertClientFilter]);
+
+  const applyClientCategoricalFilter = useCallback(() => {
+    if (plottedDataset?.columns.y.phase === undefined) return;
+    upsertClientFilter({
+      id: 'demo-category',
+      predicate: { field: 'phase', op: 'in', values: [0, 1] },
+    });
+  }, [plottedDataset, upsertClientFilter]);
+
+  const applyClientBooleanFilter = useCallback(() => {
+    if (plottedDataset?.columns.y.accepted === undefined) return;
+    upsertClientFilter({
+      id: 'demo-boolean',
+      predicate: { field: 'accepted', op: 'eq', value: true },
+    });
+  }, [plottedDataset, upsertClientFilter]);
+
+  const applyClientAffineTransformation = useCallback(() => {
+    const yKey = clientViewNumericPlot?.yKey;
+    if (clientView === null || yKey === undefined || !affineValid) return;
+    const transformation = {
+      factor: Number(affineFactor),
+      id: 'demo-affine',
+      input: yKey,
+      offset: Number(affineOffset),
+      op: 'affine' as const,
+      output: yKey,
+    };
+    if (clientView.getTransformations().some((item) => item.id === transformation.id)) {
+      clientView.updateTransformation(transformation.id, transformation);
+    } else clientView.addTransformation(transformation);
+    fitClientViewViewport();
+  }, [affineFactor, affineOffset, affineValid, clientView, clientViewNumericPlot, fitClientViewViewport]);
+
+  const applyClientDeltaTransformation = useCallback(() => {
+    const yKey = clientViewNumericPlot?.yKey;
+    const xKey = plottedDataset?.columns.xKey ?? 'x';
+    if (clientView === null || yKey === undefined) return;
+    const transformation = {
+      direction: deltaDirection,
+      id: 'demo-delta',
+      input: yKey,
+      missingValue: deltaMissing,
+      partitionBy: deltaPartition ? [deltaPartition] : [],
+      op: 'difference' as const,
+      orderBy: xKey,
+      output: yKey,
+    };
+    if (clientView.getTransformations().some((item) => item.id === transformation.id)) {
+      clientView.updateTransformation(transformation.id, transformation);
+    } else clientView.addTransformation(transformation);
+    fitClientViewViewport();
+  }, [clientView, clientViewNumericPlot, fitClientViewViewport, plottedDataset, deltaDirection, deltaMissing, deltaPartition]);
+
+  const applyClientStylePreset = useCallback(() => {
+    const plot = clientViewNumericPlot;
+    const range = plot === null
+      ? undefined
+      : getClientViewProjectedDomain()?.yByPlot[plot.id];
+    if (
+      clientView === null || plottedDataset === null || plot === null || range === undefined
+    ) return;
+    const categoryField = plottedDataset.columns.y.phase === undefined ? plot.yKey : 'phase';
+    const rule: ClientDataViewState['styles'][number] = {
+      channels: {
+        color: styleColorMode === 'gradient'
+          ? { field: plot.yKey, op: 'continuous', domain: [range.min, range.max], range: ['#2563eb', '#f97316'] }
+          : { field: categoryField, op: 'hashedColor' as const },
+        opacity: {
+          branches: [{
+            value: { op: 'constant' as const, value: 1 },
+            when: { field: 'isReferenceMember', op: 'eq' as const, value: true },
+          }],
+          fallback: { op: 'constant' as const, value: 0.52 },
+          op: 'case' as const,
+        },
+        rotation: {
+          domain: [range.min, range.max] as const,
+          field: plot.yKey,
+          op: 'continuous' as const,
+          range: [-Math.PI, Math.PI] as const,
+        },
+        shape: styleShape === 'all'
+          ? { field: 'glyphGroup', op: 'categorical', values: { '0': 0, '1': 1, '2': 2, '3': 3, '4': 4 } }
+          : { op: 'constant', value: Number(styleShape) },
+        size: {
+          domain: [range.min, range.max] as const,
+          field: plot.yKey,
+          op: 'continuous' as const,
+          range: [2, 8] as const,
+        },
+      },
+      id: 'demo-computed-style',
+    };
+    const enabledRule = { ...rule, channels: Object.fromEntries(
+      Object.entries(rule.channels).filter(([channel]) => styleChannels[channel as keyof typeof styleChannels]),
+    ) };
+    const current = clientView.getState();
+    const existingIndex = current.styles.findIndex((item) => item.id === rule.id);
+    const styles = [...current.styles];
+    if (existingIndex < 0) styles.push(enabledRule);
+    else styles[existingIndex] = enabledRule;
+    clientView.replaceState({
+      ...current,
+      revision: current.revision,
+      sourceStyleMode: 'ignore',
+      styles,
+    });
+  }, [clientView, clientViewNumericPlot, getClientViewProjectedDomain, plottedDataset, styleColorMode, styleShape, styleChannels]);
+
+  const inspectClientGlyphs = useCallback(() => {
+    if (clientView === null || clientViewColumns === null || plottedDataset === null) return;
+    const projection = evaluateFastScatterClientView({ view: clientView }, clientViewColumns);
+    const sample = projection.activeSourceIndices.slice(0, 200);
+    if (sample.length === 0) return;
+    const domain = getClientViewProjectedDomain();
+    if (domain === null) return;
+    const rangeFor = (values: ArrayLike<number>) => calculateTypedArrayDomain(
+      Float64Array.from(sample, (index) => values[index] ?? Number.NaN),
+    );
+    const yByPlot = { ...domain.yByPlot };
+    if (clientViewNumericPlot !== null) {
+      const values = projection.renderColumns.y[clientViewNumericPlot.yKey];
+      if (values !== undefined) yByPlot[clientViewNumericPlot.id] = rangeFor(values);
+    }
+    setTransientFastViewport(createDefaultFastScatterViewport({
+      ...domain, x: rangeFor(projection.renderColumns.x), yByPlot,
+    }));
+  }, [clientView, clientViewColumns, plottedDataset, clientViewNumericPlot, getClientViewProjectedDomain]);
+
+  const setClientSourceStyleMode = useCallback((sourceStyleMode: 'ignore' | 'preserve') => {
+    if (clientView === null) return;
+    const current = clientView.getState();
+    if (current.sourceStyleMode === sourceStyleMode) return;
+    clientView.replaceState({
+      ...current,
+      revision: current.revision,
+      sourceStyleMode,
+    });
+  }, [clientView]);
+
+  const keepSelectionWithClientFilter = useCallback((mode: 'inside' | 'outside') => {
+    if (clientView === null || latestSelectionEvent === null) return;
+    if (latestSelectionEvent.sourceIndices.length === 0) return;
+    // Selection coordinates may be transformed. Freeze the exact source rows
+    // selected on screen so filtering never reinterprets them as raw values.
+    const ids = new Set(clientView.getFilters().map((filter) => filter.id));
+    let id = 'demo-selection';
+    for (let suffix = 2; ids.has(id); suffix += 1) id = `demo-selection-${suffix}`;
+    clientView.addFilter({
+      id,
+      predicate: { field: 'sourceRow', op: mode === 'inside' ? 'in' : 'notIn',
+        values: Array.from(latestSelectionEvent.sourceIndices) },
+    });
+    clearSelectedSourceIndices();
+    setSelectionMenu(null);
+  }, [clientView, latestSelectionEvent, clearSelectedSourceIndices]);
+
+  useEffect(() => {
+    if (rendererBackend !== 'webgpu') return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.altKey || event.repeat ||
+        (event.target instanceof HTMLElement && event.target.closest('input, select, textarea, [contenteditable="true"]'))) return;
+      if (event.key.toLowerCase() === 'i') keepSelectionWithClientFilter('inside');
+      else if (event.key.toLowerCase() === 'o') keepSelectionWithClientFilter('outside');
+      else return;
+      event.preventDefault();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [keepSelectionWithClientFilter, rendererBackend]);
+
+  useEffect(() => {
+    if (rendererBackend !== 'webgpu') return;
+    window.__scatterClientViewTestHook = {
+      getState: () => clientView?.exportState() ?? null,
+      keepSelection: keepSelectionWithClientFilter,
+      reset: resetClientView,
+    };
+    return () => { delete window.__scatterClientViewTestHook; };
+  }, [clientView, keepSelectionWithClientFilter, rendererBackend, resetClientView]);
 
   const materializeSelectedRecordsForUserExport = useCallback(
     (mode: 'copy' | 'download') => {
@@ -1707,7 +2084,11 @@ export function MScatterPlotRoute({
       return;
     }
 
+    const projectedDomain = clientView === null ? null : getClientViewProjectedDomain();
+    const resetFastViewport = projectedDomain === null
+      ? defaultFastViewport : createDefaultFastScatterViewport(projectedDomain);
     cancelPendingInteractionSearchState();
+    if (clientView !== null) setTransientFastViewport(resetFastViewport);
     viewportHistoryRef.current = [];
     setFocusedPlotId(null);
     if (!plottedDataset.isLegacyViewport) {
@@ -1717,7 +2098,7 @@ export function MScatterPlotRoute({
         mode: normalizeFastScatterRouteMode(currentUrlState.mode),
         setSearchParams,
         spec: plottedDataset.spec,
-        viewport: defaultFastViewport,
+        viewport: resetFastViewport,
       });
       return;
     }
@@ -1728,6 +2109,8 @@ export function MScatterPlotRoute({
     });
   }, [
     cancelPendingInteractionSearchState,
+    clientView,
+    getClientViewProjectedDomain,
     defaultFastViewport,
     defaultViewport,
     plottedDataset,
@@ -2147,7 +2530,16 @@ export function MScatterPlotRoute({
         aria-label="m-scatter workspace"
       >
         <div className="workspace-grid scatter-fast-workspace-grid">
-          <section className="scatter-fast-chart-shell" aria-label="m-scatter chart shell">
+          <section className="scatter-fast-chart-shell" aria-label="m-scatter chart shell"
+            onPointerDownCapture={(event) => {
+              selectionGesture.current = event.button === 2 && !event.shiftKey;
+              selectionAnchor.current = null;
+            }}
+          >
+            {clientView !== null && selectionMenu !== null && selectionMenu.selection === latestSelectionEvent && (
+              <ClientSelectionMenu menu={selectionMenu}
+                onDismiss={() => setSelectionMenu(null)} onKeep={keepSelectionWithClientFilter} />
+            )}
             {datasetState.status === 'error' ? (
               <div className="workspace-placeholder" role="alert">
                 <h2>Scatter dataset unavailable</h2>
@@ -2207,6 +2599,8 @@ export function MScatterPlotRoute({
                 theme={fastScatterTheme}
                 visualizationMode={visualizationMode}
                 webgpuAggregationBackend={webgpuAggregationBackend}
+                clientView={scatterClientViewBinding}
+                clientViewColumns={clientViewColumns ?? undefined}
                 webgpuStreamingSource={
                   datasetState.status === 'loaded'
                     ? datasetState.streaming?.source
@@ -3173,6 +3567,207 @@ export function MScatterPlotRoute({
                 </div>
               )}
             </section>
+            {rendererBackend !== 'webgpu' || clientView === null || clientViewState === null
+              ? null
+              : (
+                <section
+                  className="control-section scatter-client-view-panel"
+                  data-testid="scatter-client-view-panel"
+                >
+                  <div className="control-section-heading-row">
+                    <div>
+                      <h2>Client data pipeline</h2>
+                      <p className="compact-note">
+                        Filters, transformations, and styles run locally over resident data.
+                      </p>
+                    </div>
+                    <button onClick={resetClientView} type="button">Reset all</button>
+                  </div>
+
+                  <div className="scatter-client-view-summary" aria-label="Client pipeline summary">
+                    <span>{formatCount(clientViewEvaluation?.metrics.activeRowCount ?? 0)} visible</span>
+                    <span>{clientViewState.filters.length} filters</span>
+                    <span>{clientViewState.transformations.length} transforms</span>
+                    <span>{clientViewState.styles.length} styles</span>
+                    <span data-testid="client-view-style-source">
+                      {clientViewState.sourceStyleMode === 'ignore' ? 'Theme base' : 'Dataset base'}
+                    </span>
+                  </div>
+
+                  <details className="control-disclosure" open>
+                    <summary>Filters</summary>
+                    <div className="control-disclosure-body">
+                      <p className="compact-note">Right-drag a selection to open keep-inside / keep-outside actions. Filters combine; remove a rule to restore rows. Numeric range uses original values.</p>
+                      <div className="button-row scatter-client-view-actions">
+                        <button data-testid="client-filter-range" onClick={applyClientRangeFilter} type="button">
+                          Middle numeric range
+                        </button>
+                        <button
+                          data-testid="client-filter-category"
+                          disabled={plottedDataset?.columns.y.phase === undefined}
+                          onClick={applyClientCategoricalFilter}
+                          type="button"
+                        >
+                          Idle + Ramp phases
+                        </button>
+                        <button
+                          data-testid="client-filter-boolean"
+                          disabled={plottedDataset?.columns.y.accepted === undefined}
+                          onClick={applyClientBooleanFilter}
+                          type="button"
+                        >
+                          Accepted only
+                        </button>
+                      </div>
+                      <div className="button-row scatter-client-view-actions">
+                        <button
+                          data-testid="client-filter-selection-inside"
+                          disabled={latestSelectionEvent === null || latestSelectionEvent.selectedCount === 0}
+                          onClick={() => keepSelectionWithClientFilter('inside')}
+                          title="Alt+I"
+                          type="button"
+                        >
+                          Keep inside · remove outside
+                        </button>
+                        <button
+                          data-testid="client-filter-selection-outside"
+                          disabled={latestSelectionEvent === null || latestSelectionEvent.selectedCount === 0}
+                          onClick={() => keepSelectionWithClientFilter('outside')}
+                          title="Alt+O"
+                          type="button"
+                        >
+                          Keep outside · remove inside
+                        </button>
+                      </div>
+                      <ClientViewItemList
+                        items={clientViewState.filters}
+                        onRemove={(id) => clientView.removeFilter(id)}
+                      />
+                    </div>
+                  </details>
+
+                  <details className="control-disclosure">
+                    <summary>Transformations</summary>
+                    <div className="control-disclosure-body">
+                      <p className="compact-note">Numeric axis: {clientViewNumericPlot?.yKey ?? 'unavailable'}. Applied in the order listed below, after filtering.</p>
+                      <div className="scatter-client-inputs">
+                        <label>Scale factor<input type="number" step="any" value={affineFactor} onChange={(event) => setAffineFactor(event.target.value)} /></label>
+                        <label>Offset<input type="number" step="any" value={affineOffset} onChange={(event) => setAffineOffset(event.target.value)} /></label>
+                      </div>
+                      <p className="compact-note">y′ = y × {affineFactor || '?'} + ({affineOffset || '?'})</p>
+                      {!affineValid && <p role="alert" className="compact-note">Enter finite numbers for factor and offset.</p>}
+                      <button data-testid="client-transform-affine" disabled={!affineValid || clientViewNumericPlot === null} onClick={applyClientAffineTransformation} type="button">Apply linear transform</button>
+                      <label>Difference direction<select value={deltaDirection} onChange={(event) => setDeltaDirection(event.target.value as 'forward' | 'backward')}>
+                        <option value="forward">Forward: next − current</option><option value="backward">Backward: current − previous</option>
+                      </select></label>
+                      <label>Missing neighbor<select value={deltaMissing} onChange={(event) => setDeltaMissing(event.target.value as 'null' | 'zero')}>
+                        <option value="null">Hide point (null)</option><option value="zero">Use zero</option>
+                      </select></label>
+                      <label>Difference groups<select value={deltaPartition} onChange={(event) => setDeltaPartition(event.target.value)}>
+                        <option value="">All rows</option>
+                        {plottedDataset?.columns.y.phase !== undefined && <option value="phase">Within each phase</option>}
+                        {plottedDataset?.columns.y.accepted !== undefined && <option value="accepted">Within accepted / rejected</option>}
+                      </select></label>
+                      <p className="compact-note">Differences use visible rows ordered by {plottedDataset?.columns.xKey ?? 'x'}. To scale a delta, apply the difference first, then the linear transform. Updating a transform keeps its position.</p>
+                      <button data-testid="client-transform-delta" disabled={clientViewNumericPlot === null} onClick={applyClientDeltaTransformation} type="button">Apply difference</button>
+                      <ClientViewItemList
+                        items={clientViewState.transformations}
+                        onRemove={removeClientTransformation}
+                      />
+                    </div>
+                  </details>
+
+                  <details className="control-disclosure">
+                    <summary>Styles</summary>
+                    <div className="control-disclosure-body">
+                      <div>
+                        <p className="compact-note">Base styling</p>
+                        <div
+                          aria-label="Client pipeline base styling"
+                          className="segmented-control"
+                        >
+                          <button
+                            aria-pressed={clientViewState.sourceStyleMode !== 'ignore'}
+                            className={clientViewState.sourceStyleMode !== 'ignore' ? 'is-active' : undefined}
+                            data-testid="client-style-dataset-base"
+                            onClick={() => setClientSourceStyleMode('preserve')}
+                            type="button"
+                          >
+                            Dataset styles
+                          </button>
+                          <button
+                            aria-pressed={clientViewState.sourceStyleMode === 'ignore'}
+                            className={clientViewState.sourceStyleMode === 'ignore' ? 'is-active' : undefined}
+                            data-testid="client-style-data-only"
+                            onClick={() => setClientSourceStyleMode('ignore')}
+                            type="button"
+                          >
+                            Theme defaults
+                          </button>
+                        </div>
+                      </div>
+                      <fieldset className="scatter-client-channels"><legend>Compute channels</legend>
+                        {(['color', 'opacity', 'size', 'shape', 'rotation'] as const).map((channel) => (
+                          <label key={channel}><input type="checkbox" checked={styleChannels[channel]}
+                            onChange={(event) => setStyleChannels((previous) => ({ ...previous, [channel]: event.target.checked }))} />{channel}</label>
+                        ))}
+                      </fieldset>
+                      <label>Color mapping<select value={styleColorMode} onChange={(event) => setStyleColorMode(event.target.value)}>
+                        <option value="category">Hashed category colors</option><option value="gradient">Numeric blue → orange gradient</option>
+                      </select></label>
+                      <label>Glyph shape<select value={styleShape} onChange={(event) => setStyleShape(event.target.value)}>
+                        <option value="all">All five shapes (row groups)</option><option value="0">Circle</option><option value="1">Rectangle</option><option value="2">Triangle</option><option value="3">Pin</option><option value="4">Arrow</option>
+                      </select></label>
+                      <p className="compact-note">Size: 2–8 px. Rotation: −180° to 180°. Both follow the numeric value. Opacity: 100% for reference members, 52% otherwise. Use Inspect glyphs to zoom into a small region of the current data.</p>
+                      <p className="compact-note">Apply replaces the preset and starts from theme defaults. Switch to Dataset styles to compose the checked channels over supplied styling.</p>
+                      <div className="button-row scatter-client-view-actions">
+                        <button
+                          data-testid="client-style-preset"
+                          onClick={applyClientStylePreset}
+                          type="button"
+                        >
+                          Use client-computed preset
+                        </button>
+                      </div>
+                      <button type="button" data-testid="client-style-inspect"
+                        disabled={(clientViewEvaluation?.metrics.activeRowCount ?? 0) === 0}
+                        onClick={inspectClientGlyphs}>Inspect glyphs · zoom to 200 rows</button>
+                      <ClientViewItemList
+                        items={clientViewState.styles}
+                        onRemove={(id) => clientView.removeStyle(id)}
+                      />
+                    </div>
+                  </details>
+
+                  <details className="control-disclosure">
+                    <summary>Pipeline diagnostics and state</summary>
+                    <div className="control-disclosure-body">
+                      <dl className="diagnostic-list">
+                        <div><dt>Revision</dt><dd data-testid="client-view-revision">{clientViewState.revision}</dd></div>
+                        <div><dt>Resident rows</dt><dd>{formatCount(clientViewEvaluation?.metrics.rowCount ?? 0)}</dd></div>
+                        <div><dt>Visible rows</dt><dd data-testid="client-view-visible-count">{formatCount(clientViewEvaluation?.metrics.activeRowCount ?? 0)}</dd></div>
+                        <div><dt>Evaluation</dt><dd>{formatDuration(clientViewEvaluation?.metrics.durationMs ?? null)}</dd></div>
+                        <div><dt>Evaluator backend</dt><dd>{clientViewEvaluation?.metrics.backend ?? 'pending'}</dd></div>
+                        <div><dt>Source re-upload</dt><dd data-testid="client-view-source-upload">{formatBytes(rendererMetrics.upload?.sourceUploadBytes ?? 0)}</dd></div>
+                        <div><dt>View upload</dt><dd data-testid="client-view-view-upload">{formatBytes(rendererMetrics.upload?.viewUploadBytes ?? 0)}</dd></div>
+                        <div><dt>Network refetch</dt><dd data-testid="client-view-network-refetch">none</dd></div>
+                      </dl>
+                      <p className="compact-note">State preview limits long arrays to 200 entries. Download includes the complete state.</p>
+                      <button type="button" onClick={() => {
+                        const url = URL.createObjectURL(new Blob([JSON.stringify(clientView.exportState(), null, 2)], { type: 'application/json' }));
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = 'scatter-client-view.json';
+                        link.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 0);
+                      }}>Download pipeline state</button>
+                      <pre className="compact-code-block" data-testid="client-view-state-json">
+                        <code>{clientViewStatePreview}</code>
+                      </pre>
+                    </div>
+                  </details>
+                </section>
+              )}
             <section className="control-section scatter-fast-debug-panels">
               <details className="control-disclosure route-advanced-diagnostics">
                 <summary>
@@ -4012,7 +4607,10 @@ function updateRendererMetrics(
       upload: {
         bufferCount: readNumber(detail.bufferCount),
         durationMs: metrics.durationMs ?? 0,
+        operation: typeof detail.operation === 'string' ? detail.operation : undefined,
+        sourceUploadBytes: readOptionalNumber(detail.sourceUploadBytes),
         uploadBytes: readNumber(detail.uploadBytes),
+        viewUploadBytes: readOptionalNumber(detail.viewUploadBytes),
       },
     };
   }
@@ -5472,6 +6070,78 @@ function createSchemaMetadataScatterDataset(
   };
 }
 
+function ClientSelectionMenu({ menu, onDismiss, onKeep }: {
+  menu: { x: number; y: number; selection: FastScatterSelectionEvent };
+  onDismiss: () => void;
+  onKeep: (mode: 'inside' | 'outside') => void;
+}) {
+  const root = useRef<HTMLDivElement>(null);
+  const dismiss = useRef(onDismiss);
+  useEffect(() => { dismiss.current = onDismiss; }, [onDismiss]);
+  useEffect(() => {
+    root.current?.querySelector('button')?.focus({ preventScroll: true });
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) dismiss.current();
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      dismiss.current();
+    };
+    const close = (event: Event) => {
+      // Selection details can resize/scroll the independent sidebar. Only a
+      // scroll of the chart's ancestors changes this popup's anchor.
+      if (event.type === 'scroll' && event.target instanceof Node &&
+        root.current !== null && !event.target.contains(root.current)) return;
+      dismiss.current();
+    };
+    window.addEventListener('pointerdown', outside, true);
+    window.addEventListener('keydown', escape, true);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('pointerdown', outside, true);
+      window.removeEventListener('keydown', escape, true);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [menu]);
+  return <div ref={root} role="dialog" aria-label="Selection filter actions"
+    className="scatter-client-selection-menu" data-testid="client-selection-menu"
+    style={{ left: Math.max(8, Math.min(menu.x + 8, window.innerWidth - 288)),
+      top: Math.max(8, Math.min(menu.y + 8, window.innerHeight - 190)) }}>
+    <strong>{formatCount(menu.selection.selectedCount)} selected rows</strong>
+    <button type="button" onClick={() => onKeep('inside')}>Keep inside · remove outside <kbd>Alt+I</kbd></button>
+    <button type="button" onClick={() => onKeep('outside')}>Keep outside · remove inside <kbd>Alt+O</kbd></button>
+    <button type="button" onClick={onDismiss}>Dismiss</button>
+  </div>;
+}
+
+function ClientViewItemList({
+  items,
+  onRemove,
+}: {
+  items: readonly { readonly id: string; readonly op?: string }[];
+  onRemove: (id: string) => void;
+}) {
+  if (items.length === 0) {
+    return <p className="compact-note">No rules applied.</p>;
+  }
+  return (
+    <ul className="scatter-client-view-items">
+      {items.map((item) => (
+        <li key={item.id}>
+          <span>{item.id}{item.op === undefined ? '' : ` · ${item.op}`}</span>
+          <button aria-label={`Remove ${item.id}`} onClick={() => onRemove(item.id)} type="button">
+            Remove
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 const DEFAULT_WEBGPU_POINT_COUNT = 1_000_000;
 const MAX_WEBGPU_DEMO_POINT_COUNT = 25_000_000;
 const WEBGPU_POINT_COUNT_PARAM = 'points';
@@ -6448,6 +7118,8 @@ function PlaceholderChartShell({
   opacityScale,
   visualizationMode,
   webgpuAggregationBackend,
+  clientView,
+  clientViewColumns,
   webgpuStreamingSource,
   webgpuStreamingComplete = false,
   webgpuStreamingColumnsRef,
@@ -6504,6 +7176,8 @@ function PlaceholderChartShell({
   opacityScale: number;
   visualizationMode: FastScatterVisualizationMode;
   webgpuAggregationBackend: FastScatterWebgpuAggregationBackend;
+  clientView?: FastScatterClientViewBinding;
+  clientViewColumns?: FastScatterPointColumns;
   webgpuStreamingSource?: FastScatterWebgpuStreamSource;
   webgpuStreamingComplete?: boolean;
   webgpuStreamingColumnsRef?: RefObject<FastScatterPointColumns | null>;
@@ -6651,7 +7325,7 @@ function PlaceholderChartShell({
     return {
       axisMode: urlState?.axis ?? 'xy',
       canvasClassName: 'scatter-fast-webgl-canvas',
-      columns: plottedDataset.columns,
+      columns: clientViewColumns ?? plottedDataset.columns,
       focusedPlotId,
       forceWebglUnavailable: isDemoTestControlEnabled(
         query,
@@ -6685,6 +7359,7 @@ function PlaceholderChartShell({
     focusedPlotId,
     heatmapBinSizePx,
     heatmapPalette,
+    clientViewColumns,
     opacityScale,
     onMetrics,
     onRendererMetrics,
@@ -7035,11 +7710,14 @@ function PlaceholderChartShell({
         rendererBackend === 'webgpu'
           ? createScatterWebgpuPlot(
               host,
-              toWebgpuPlotOptions(
-                initialOptions,
-                plotCreationDataset?.packedStyles,
-                webgpuAggregationBackend,
-              ),
+              {
+                ...toWebgpuPlotOptions(
+                  initialOptions,
+                  plotCreationDataset?.packedStyles,
+                  webgpuAggregationBackend,
+                ),
+                clientView,
+              },
             )
           : createScatterPlot(host, initialOptions),
       );
@@ -7057,6 +7735,7 @@ function PlaceholderChartShell({
     };
   }, [
     hasFastViewport,
+    clientView,
     onWebgpuStreamProgress,
     plotCreationDataset,
     plotRef,
@@ -7090,7 +7769,7 @@ function PlaceholderChartShell({
       visualizationMode,
     };
     if (webgpuStreamingSource === undefined) {
-      updateOptions.columns = plottedDataset.columns;
+      updateOptions.columns = clientViewColumns ?? plottedDataset.columns;
       updateOptions.hoverIndex = plottedDataset.hoverIndex;
       updateOptions.spec = plottedDataset.spec;
     }
@@ -7105,6 +7784,7 @@ function PlaceholderChartShell({
     plot.update(updateOptions);
   }, [
     effectiveMode,
+    clientViewColumns,
     fastViewport,
     focusedPlotId,
     heatmapBinSizePx,
@@ -8745,6 +9425,7 @@ function readStringArray(value: unknown): string[] {
 }
 
 function formatBytes(value: number): string {
+  if (value === 0) return '0 B';
   if (value < 1024 * 1024) {
     return `${(value / 1024).toFixed(1)} KiB`;
   }

@@ -55,6 +55,7 @@ const webgpuUpdateOptionNames = new Set(
 );
 for (const creationOnlyOption of [
   'aggregationBackend',
+  'clientView',
   'indexedStyle',
   'packedStyles',
   'requestTimestampQuery',

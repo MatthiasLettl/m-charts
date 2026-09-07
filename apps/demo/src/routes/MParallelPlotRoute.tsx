@@ -1430,7 +1430,9 @@ export function MParallelPlotRoute({
                       streamingSource={webgpuStreamingSource}
                       onStreamProgress={(progress, buffers) => {
                         setStreamProgress(progress);
-                        setStreamedBuffers(buffers);
+                        // Resident page appends update the renderer's buffer object
+                        // in place. Snapshot its metadata with this progress event.
+                        setStreamedBuffers({ ...buffers });
                       }}
                     />
                   </div>

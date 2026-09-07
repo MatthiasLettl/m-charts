@@ -22,6 +22,7 @@ struct PackedStyle {
 @group(0) @binding(5) var<storage, read> rotationVectors: array<vec2f>;
 @group(0) @binding(6) var<storage, read> stylesHigh: array<PackedStyle>;
 @group(0) @binding(7) var<storage, read> selectedMembership: array<u32>;
+@group(0) @binding(8) var<storage, read> visibleMembership: array<u32>;
 
 override STYLE_MODE: u32 = 0u;
 override X_STORAGE_MODE: u32 = 0u;
@@ -105,10 +106,12 @@ fn pointVertex(
   var pointIndex = uniforms.flags.x + instanceIndex * pointStride +
     lodBucketOffset(uniforms.flags.x, instanceIndex, pointStride);
   if (indexedPass) {
-    pointIndex = selectedIndices[instanceIndex];
+    pointIndex = selectedIndices[pointIndex];
   }
   let selectedVisible = !selectedPass ||
     (selectedMembership[pointIndex >> 5u] & (1u << (pointIndex & 31u))) != 0u;
+  let clientVisible =
+    (visibleMembership[pointIndex >> 5u] & (1u << (pointIndex & 31u))) != 0u;
   let indexedStyle = STYLE_MODE == 2u;
   let styleIndex = select(pointIndex, 0u, STYLE_MODE != 0u);
   var style: PackedStyle;
@@ -182,7 +185,7 @@ fn pointVertex(
     sizePx / max(plotSize.y, 1.0),
   );
   let culled =
-    invalid || !selectedVisible ||
+    invalid || !selectedVisible || !clientVisible ||
     normalizedX < -normalizedPadding.x || normalizedX > 1.0 + normalizedPadding.x ||
     normalizedY < -normalizedPadding.y || normalizedY > 1.0 + normalizedPadding.y;
 
@@ -250,6 +253,24 @@ fn backgroundVertex(@builtin(vertex_index) vertexIndex: u32) -> BackgroundOutput
 @fragment
 fn backgroundFragment() -> @location(0) vec4f {
   return uniforms.subplotColor;
+}
+`;
+
+export const FAST_SCATTER_WEBGPU_STYLE_COMPOSE_SHADER = /* wgsl */ `
+@group(0) @binding(0) var<storage, read> sourceStyles: array<u32>;
+@group(0) @binding(1) var<storage, read> overrideMasks: array<u32>;
+@group(0) @binding(2) var<storage, read_write> composedStyles: array<u32>;
+
+@compute @workgroup_size(256)
+fn composeStyle(@builtin(global_invocation_id) invocation: vec3u) {
+  let index = invocation.x;
+  if (index >= arrayLength(&composedStyles)) {
+    return;
+  }
+  let mask = overrideMasks[index];
+  let overrideStyle = composedStyles[index];
+  composedStyles[index] =
+    (sourceStyles[index] & ~mask) | (overrideStyle & mask);
 }
 `;
 

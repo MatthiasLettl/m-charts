@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 
 import { expect, test, type Page } from '@playwright/test';
 import {
@@ -493,6 +494,298 @@ test('m-scatter WebGPU route exposes the dedicated backend or a useful availabil
   } else {
     await expect(page.locator('[data-testid="scatter-fast-webgpu-canvas"]')).toHaveCount(1);
   }
+});
+
+test('m-scatter WebGPU preserves supplied styles and switches client style sources', async ({
+  page,
+}) => {
+  await page.goto(
+    '/m-scatter-webgpu?points=1000&webgpuData=http&__e2ePreserveDrawingBuffer=1&__e2eScatterFastRouteStateHook=1',
+  );
+  const panel = page.getByTestId('scatter-client-view-panel');
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId('client-style-dataset-base')).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => chart.getAttribute('data-render-state')).toMatch(/^(ready|error)$/u);
+  if (await chart.getAttribute('data-render-state') === 'error') {
+    await expect(page.getByTestId('scatter-fast-render-error')).toContainText(/WebGPU|GPU adapter/u);
+    return;
+  }
+
+  const styleSource = () => page.evaluate(() =>
+    window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
+      ?.clientView?.styleSource ?? null,
+  );
+  await expect.poll(styleSource).toBe('source');
+  await expect(page.locator('.scatter-fast-webgpu-canvas')).toBeVisible();
+  const suppliedStyleSignature = await getCanvasPixelSignature(
+    page,
+    '.scatter-fast-webgpu-canvas',
+  );
+
+  await panel.getByText('Styles', { exact: true }).click();
+  await page.getByTestId('client-style-data-only').click();
+  await expect.poll(styleSource).toBe('client-only');
+  await expect.poll(() => getCanvasPixelSignature(
+    page,
+    '.scatter-fast-webgpu-canvas',
+  )).not.toBe(suppliedStyleSignature);
+
+  await page.getByTestId('client-style-dataset-base').click();
+  await expect.poll(styleSource).toBe('source');
+  await expect.poll(() => getCanvasPixelSignature(
+    page,
+    '.scatter-fast-webgpu-canvas',
+  )).toBe(suppliedStyleSignature);
+
+  await page.getByTestId('client-style-preset').click();
+  await expect.poll(styleSource).toBe('client-only');
+  await expect.poll(() => getCanvasPixelSignature(
+    page,
+    '.scatter-fast-webgpu-canvas',
+  )).not.toBe(suppliedStyleSignature);
+
+  await panel.getByRole('button', { name: 'Reset all' }).click();
+  await expect.poll(styleSource).toBe('source');
+  await expect.poll(() => getCanvasPixelSignature(
+    page,
+    '.scatter-fast-webgpu-canvas',
+  )).toBe(suppliedStyleSignature);
+});
+
+test('m-scatter WebGPU client pipeline filters, transforms, styles, exports, and resets', async ({
+  page,
+}) => {
+  await page.goto(
+    '/m-scatter-webgpu?points=1000&mode=select&axis=xy&__e2eScatterFastRouteStateHook=1&__e2eScatterFastSelectionHook=1',
+  );
+  await expect(page.getByTestId('scatter-webgpu-dataset-setup')).toBeVisible();
+  await page.getByTestId('scatter-webgpu-generate-dataset').click();
+  const panel = page.getByTestId('scatter-client-view-panel');
+  await expect(panel).toBeVisible();
+  await expect(page.getByTestId('client-view-visible-count')).toHaveText('1,000');
+  await expect(page.getByTestId('client-style-dataset-base')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('client-view-style-source')).toHaveText('Dataset base');
+  const initialState = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(initialState?.sourceStyleMode).toBe('preserve');
+  expect(initialState?.styles).toHaveLength(0);
+
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect.poll(() => chart.getAttribute('data-render-state')).toMatch(/^(ready|error)$/u);
+  const webgpuReady = await chart.getAttribute('data-render-state') === 'ready';
+  if (webgpuReady) {
+    await expect.poll(() => page.evaluate(() =>
+      window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
+        ?.clientView?.styleSource ?? null,
+    )).toBe('source');
+  }
+
+  await page.getByTestId('client-filter-range').click();
+  await expect.poll(async () => Number(
+    (await page.getByTestId('client-view-visible-count').textContent())?.replace(/,/gu, ''),
+  )).toBeLessThan(1000);
+  await page.getByTestId('client-filter-category').click();
+  await page.getByTestId('client-filter-boolean').click();
+
+  await panel.getByText('Transformations', { exact: true }).click();
+  await page.getByLabel('Scale factor', { exact: true }).fill('');
+  await expect(page.getByTestId('client-transform-affine')).toBeDisabled();
+  await page.getByLabel('Scale factor', { exact: true }).fill('-2');
+  await page.getByLabel('Offset', { exact: true }).fill('10');
+  await page.getByTestId('client-transform-affine').click();
+  await page.getByLabel('Difference direction').selectOption('backward');
+  await page.getByLabel('Missing neighbor').selectOption('zero');
+  await page.getByLabel('Difference groups').selectOption('phase');
+  await page.getByTestId('client-transform-delta').click();
+  await panel.getByText('Styles', { exact: true }).click();
+  await page.getByTestId('client-style-preset').click();
+  await expect(page.getByTestId('client-style-data-only')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('client-view-style-source')).toHaveText('Theme base');
+  if (webgpuReady) {
+    await expect.poll(() => page.evaluate(() =>
+      window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
+        ?.clientView?.styleSource ?? null,
+    )).toBe('client-only');
+  }
+  await page.getByTestId('client-style-dataset-base').click();
+  await expect(page.getByTestId('client-view-style-source')).toHaveText('Dataset base');
+  if (webgpuReady) {
+    await expect.poll(() => page.evaluate(() =>
+      window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
+        ?.clientView?.styleSource ?? null,
+    )).toBe('client-composed');
+  }
+  await page.getByTestId('client-style-data-only').click();
+
+  const state = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(state?.filters).toHaveLength(3);
+  expect(state?.transformations).toHaveLength(2);
+  expect(state?.transformations[0]).toMatchObject({ factor: -2, offset: 10 });
+  expect(state?.transformations[1]).toMatchObject({ direction: 'backward', missingValue: 'zero', partitionBy: ['phase'] });
+  expect(state?.styles[0]?.channels.shape).toMatchObject({ op: 'categorical', values: { '0': 0, '1': 1, '2': 2, '3': 3, '4': 4 } });
+  expect(state?.styles).toHaveLength(1);
+  expect(state?.sourceStyleMode).toBe('ignore');
+  expect(() => JSON.stringify(state)).not.toThrow();
+  await expect(page.getByTestId('client-view-source-upload')).toHaveText('0 B');
+  await expect(page.getByTestId('client-view-network-refetch')).toHaveText('none');
+
+  await panel.getByRole('button', { name: 'Reset all' }).click();
+  await expect(page.getByTestId('client-view-visible-count')).toHaveText('1,000');
+  const resetState = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(resetState?.filters).toHaveLength(0);
+  expect(resetState?.transformations).toHaveLength(0);
+  expect(resetState?.styles).toHaveLength(0);
+  expect(resetState?.sourceStyleMode).toBe('preserve');
+  await expect(page.getByTestId('client-view-style-source')).toHaveText('Dataset base');
+  if (webgpuReady) {
+    await expect.poll(() => page.evaluate(() =>
+      window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
+        ?.clientView?.styleSource ?? null,
+    )).toBe('source');
+  }
+
+  if (await chart.getAttribute('data-render-state') === 'error') {
+    await expect(page.getByTestId('scatter-fast-render-error')).toContainText(/WebGPU|GPU adapter/u);
+    return;
+  }
+  const hitRegion = page.getByTestId('scatter-fast-hit-region').last();
+  const box = await hitRegion.boundingBox();
+  if (box === null) throw new Error('WebGPU selection hit region is unavailable.');
+  await page.mouse.move(box.x + box.width * 0.44, box.y + box.height * 0.25);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(box.x + box.width * 0.54, box.y + box.height * 0.75, { steps: 5 });
+  await page.mouse.up({ button: 'right' });
+  await expect(page.getByTestId('client-filter-selection-inside')).toBeEnabled();
+  const selectedCount = await page.evaluate(() =>
+    window.__scatterFastSelectionTestHook?.getSelectedCount() ?? 0,
+  );
+  expect(selectedCount).toBeGreaterThan(0);
+  await expect(page.getByRole('dialog', { name: 'Selection filter actions' })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Keep inside', exact: false }).click();
+  await expect(page.getByTestId('client-view-visible-count')).toHaveText(
+    selectedCount.toLocaleString('en-US'),
+  );
+  const selectionState = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(selectionState?.filters.some(({ id }) => id === 'demo-selection')).toBe(true);
+  await panel.getByRole('button', { name: 'Reset all' }).click();
+  await expect(page.getByTestId('client-view-visible-count')).toHaveText('1,000');
+  await page.mouse.move(box.x + box.width * 0.1, box.y + box.height * 0.1);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(box.x + box.width * 0.75, box.y + box.height * 0.9, { steps: 5 });
+  await page.mouse.up({ button: 'right' });
+  const largeSelectedCount = await page.evaluate(() =>
+    window.__scatterFastSelectionTestHook?.getSelectedCount() ?? 0,
+  );
+  expect(largeSelectedCount).toBeGreaterThan(selectedCount);
+  await page.keyboard.press('Alt+o');
+  await expect(page.getByTestId('client-view-visible-count')).toHaveText(
+    (1000 - largeSelectedCount).toLocaleString('en-US'),
+  );
+});
+
+test('m-scatter WebGPU selection actions retain transformed rows and compose filters', async ({ page }) => {
+  await page.goto('/m-scatter-webgpu?points=1000&webgpuData=http&__e2eScatterFastRouteStateHook=1&__e2eScatterFastSelectionHook=1');
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect.poll(() => chart.getAttribute('data-render-state')).toMatch(/^(ready|error)$/u);
+  test.skip(await chart.getAttribute('data-render-state') === 'error', 'WebGPU adapter unavailable');
+  const panel = page.getByTestId('scatter-client-view-panel');
+  await panel.getByText('Transformations', { exact: true }).click();
+  await page.getByTestId('client-transform-delta').click();
+  await page.getByLabel('Scale factor', { exact: true }).fill('-3');
+  await page.getByLabel('Offset', { exact: true }).fill('20');
+  await page.getByTestId('client-transform-affine').click();
+  const visibleCount = async () => Number((await page.getByTestId('client-view-visible-count').textContent())?.replace(/,/gu, ''));
+  const select = async (left: number, right: number) => {
+    const box = await page.getByTestId('scatter-fast-hit-region').last().boundingBox();
+    if (box === null) throw new Error('Missing selection region');
+    await page.mouse.move(box.x + box.width * left, box.y + box.height * 0.05);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(box.x + box.width * right, box.y + box.height * 0.95, { steps: 6 });
+    await page.mouse.up({ button: 'right' });
+    await expect(page.getByTestId('client-selection-menu')).toBeVisible();
+    return page.evaluate(() => window.__scatterFastSelectionTestHook?.getSelectedCount() ?? 0);
+  };
+  const selected = await select(0.2, 0.8);
+  expect(selected).toBeGreaterThan(0);
+  await page.getByTestId('client-selection-menu').getByRole('button', { name: 'Keep inside' }).click();
+  await expect.poll(visibleCount).toBe(selected);
+  await expect(page.getByTestId('client-selection-menu')).toBeHidden();
+  const excluded = await select(0.3, 0.5);
+  await page.getByTestId('client-selection-menu').getByRole('button', { name: 'Keep outside' }).click();
+  await expect.poll(visibleCount).toBe(selected - excluded);
+  await page.getByRole('button', { name: 'Remove demo-selection-2', exact: true }).click();
+  await expect.poll(visibleCount).toBe(selected);
+  await select(0.25, 0.65);
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('client-selection-menu')).toBeHidden();
+  await expect.poll(visibleCount).toBe(selected);
+  await panel.getByRole('button', { name: 'Reset all' }).click();
+  await expect.poll(visibleCount).toBe(1000);
+  const lassoBox = await page.getByTestId('scatter-fast-hit-region').last().boundingBox();
+  if (lassoBox === null) throw new Error('Missing lasso region');
+  await page.mouse.move(lassoBox.x + lassoBox.width * 0.2, lassoBox.y + lassoBox.height * 0.1);
+  await page.keyboard.down('Space');
+  await page.mouse.down({ button: 'right' });
+  for (const [x, y] of [[0.8, 0.1], [0.8, 0.9], [0.2, 0.9], [0.2, 0.1]]) {
+    await page.mouse.move(lassoBox.x + lassoBox.width * x!, lassoBox.y + lassoBox.height * y!, { steps: 4 });
+  }
+  await page.mouse.up({ button: 'right' });
+  await page.keyboard.up('Space');
+  await expect(page.getByTestId('client-selection-menu')).toBeVisible();
+  const lassoSelected = await page.evaluate(() => window.__scatterFastSelectionTestHook?.getSelectedSourceIndices() ?? []);
+  expect(lassoSelected.length).toBeGreaterThan(0);
+  await page.getByTestId('client-selection-menu').getByRole('button', { name: 'Keep inside' }).click();
+  await expect.poll(visibleCount).toBe(lassoSelected.length);
+  const state = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(state?.filters[0]?.predicate).toEqual({ field: 'sourceRow', op: 'in', values: lassoSelected });
+  await panel.getByText('Pipeline diagnostics and state', { exact: true }).click();
+  const downloadPromise = page.waitForEvent('download');
+  await panel.getByRole('button', { name: 'Download pipeline state' }).click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  if (path === null) throw new Error('Missing state download');
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(state);
+});
+
+test('m-scatter WebGPU configurable styles and transforms feed WASM aggregation', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto('/m-scatter-webgpu?points=1000&webgpuData=http&__e2eScatterFastRouteStateHook=1');
+  const chart = page.getByTestId('scatter-fast-chart-shell');
+  await expect.poll(() => chart.getAttribute('data-render-state')).toMatch(/^(ready|error)$/u);
+  test.skip(await chart.getAttribute('data-render-state') === 'error', 'WebGPU adapter unavailable');
+  const panel = page.getByTestId('scatter-client-view-panel');
+  await panel.getByText('Styles', { exact: true }).click();
+  await page.getByLabel('Color mapping').selectOption('gradient');
+  await page.getByLabel('Glyph shape').selectOption('4');
+  await panel.getByRole('checkbox', { name: 'opacity', exact: true }).uncheck();
+  await page.getByTestId('client-style-preset').click();
+  await page.getByTestId('client-style-dataset-base').click();
+  const state = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
+  expect(state?.styles[0]?.channels.color).toMatchObject({ op: 'continuous' });
+  expect(state?.styles[0]?.channels.shape).toEqual({ op: 'constant', value: 4 });
+  expect(state?.styles[0]?.channels.opacity).toBeUndefined();
+  expect(state?.sourceStyleMode).toBe('preserve');
+  await page.getByTestId('client-style-inspect').click();
+  await expect(chart).toHaveAttribute('data-render-state', 'ready');
+  await page.getByRole('radio', { name: 'Bubble', exact: true }).check();
+  await page.getByRole('radio', { name: 'Rust/WASM', exact: true }).check();
+  await panel.getByText('Transformations', { exact: true }).click();
+  await page.getByLabel('Scale factor', { exact: true }).fill('0');
+  await page.getByLabel('Offset', { exact: true }).fill('42');
+  await page.getByTestId('client-transform-affine').click();
+  await page.getByTestId('client-filter-range').click();
+  await page.getByTestId('client-style-inspect').click();
+  await page.getByRole('button', { name: 'Reset viewport', exact: true }).click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()?.aggregationBackend,
+  )).toBe('rust-wasm');
+  await expect(page.getByTestId('client-view-source-upload')).toHaveText('0 B');
+  await expect(chart).toHaveAttribute('data-render-state', 'ready');
+  const viewport = await page.evaluate(() => window.__scatterFastRouteStateTestHook?.getFastViewport());
+  expect(viewport?.yByPlot['signal']?.min).toBeLessThanOrEqual(42);
+  expect(viewport?.yByPlot['signal']?.max).toBeGreaterThanOrEqual(42);
+  expect(errors).toEqual([]);
 });
 
 test('m-scatter WebGPU reference lines create, rename, inspect, drag, and delete', async ({
@@ -1271,22 +1564,22 @@ test('m-parallel WebGPU streaming exposes a usable frame while data is arriving'
   await expect(page.getByTestId('parallel-fast-plot-loading')).toHaveCount(0);
   let observedStreamUpdates = 0;
   let previousLoadedCount = 0;
-  let prefixMismatch = false;
+  const prefixMismatches: { loadedCount: number; renderedCount: number }[] = [];
   await expect.poll(async () => {
-    const loadedCount = Number(
-      await page.getByTestId('parallel-webgpu-stream-progress').getAttribute(
-        'data-loaded-count',
-      ),
-    );
-    const renderedCount = Number(await chart.getAttribute('data-record-count'));
+    // Both values describe the same React commit. Separate browser round trips
+    // can straddle a stream batch and report a false prefix mismatch.
+    const { loadedCount, renderedCount } = await page.evaluate(() => ({
+      loadedCount: Number(document.querySelector('[data-testid="parallel-webgpu-stream-progress"]')?.getAttribute('data-loaded-count')),
+      renderedCount: Number(document.querySelector('[data-testid="parallel-fast-chart-layout"]')?.getAttribute('data-record-count')),
+    }));
     if (loadedCount > previousLoadedCount) {
       observedStreamUpdates += 1;
       previousLoadedCount = loadedCount;
-      if (renderedCount !== loadedCount) prefixMismatch = true;
+      if (renderedCount !== loadedCount) prefixMismatches.push({ loadedCount, renderedCount });
     }
     return loadedCount;
   }, { timeout: 120_000 }).toBe(1_000_000);
-  expect(prefixMismatch).toBe(false);
+  expect(prefixMismatches).toEqual([]);
   expect(observedStreamUpdates).toBeGreaterThan(1);
   await expect.poll(async () => Number(
     await page.getByTestId('parallel-webgpu-stream-progress').getAttribute('data-loaded-count'),
@@ -2195,6 +2488,13 @@ async function assertCanvasNonBlank(page: Page, selector: string): Promise<void>
       }),
     )
     .toBe(true);
+}
+
+async function getCanvasPixelSignature(page: Page, selector: string): Promise<string> {
+  // WebGPU textures are presented to the compositor and then discarded; a
+  // later drawImage readback may be transparent even when the plot is visible.
+  const pixels = await page.locator(selector).first().screenshot({ animations: 'disabled' });
+  return createHash('sha256').update(pixels).digest('hex');
 }
 
 async function assertCanvasHasNonBackgroundPixels(page: Page, selector: string): Promise<void> {

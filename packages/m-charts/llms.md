@@ -1071,6 +1071,57 @@ The WebGPU entry point is an export/type superset of the WebGL2 scatter entry
 point. Both use the shared contracts below; WebGPU adds asynchronous startup and
 diagnostics rather than a separate interaction API.
 
+For resident filtering, transformations, and styling, create a view with
+`createFastScatterClientDataView({ columns, fields, datasetKey,
+datasetVersion })` and pass `clientView: { view }` at plot creation. Pipeline
+order is filters, then transformations over remaining rows, then styles.
+`getFilters/getTransformations/getStyles/getState/exportState` inspect it;
+`add/update/remove/reorder` methods and `replaceState` mutate it; and
+`change/filterchange/transformationchange/stylechange` callbacks let the host
+persist or synchronize the versioned JSON state. Snapshots contain only
+configuration, never the dataset. Arbitrary application metadata such as saved
+selection membership must be joined into a declared boolean/categorical column
+by source-row order; no business fields are hardcoded.
+Source columns are immutable while the view is attached; recreate the plot and
+view together for a new dataset. Imported snapshots reject unknown operators,
+channels, invalid typed operands, and mismatched dataset identity without
+publishing a partial state.
+
+Configuration getters return frozen snapshots; `exportState()` returns a detached,
+editable copy. Supply `onListenerError(error, event)` at view creation to handle
+subscriber failures (default: console.error). Errors never stop other subscribers
+or roll back committed state; reentrant notifications preserve revision order.
+The synchronous evaluator caches unchanged stages. Style-only edits reuse masks,
+transformed coordinates, and masked interaction columns; GPU updates reuse those
+buffers and coalesce rapid revisions. Use one `replaceState` to batch related
+edits. First evaluation and changed stages still scan resident rows; expensive
+pipelines should be applied on explicit actions rather than every input event.
+Unsorted X and invalid coordinates retain stable source IDs. Source hover indexes
+are bypassed while coordinates are transformed and restored on reset.
+
+The filter contract is a typed JSON AST (`and/or/not`, comparisons, `between`,
+`in/notIn`, null/valid checks, and `pointInPolygon`). Hosts own translations
+from Elasticsearch, SQL, or application schemas and must keep unsupported
+clauses server-side rather than dropping them. Scatter selection stays
+ephemeral; a host may translate one or many rectangle/lasso regions into an
+inside OR predicate or its outside negation when coordinates are original.
+After transforms, filter stable source-row IDs from `sourceIndices` instead;
+the demo uses a declared numeric row field with `in/notIn` and adds a new filter
+per action. Its selection popup, Alt+I/Alt+O actions, configurable linear and
+grouped difference controls, and independent style channels demonstrate this
+flow. The style preset includes all five glyphs and gradient/category colors.
+Existing embedded styles are the
+base by default, `sourceStyleMode: 'ignore'` opts out, and style-free datasets
+are valid. Paged packed styles remain an immutable GPU base and client rules
+compose per channel without expanded CPU source copies. Client-view diagnostics
+report `styleSource` as `source`, `client-composed`, or `client-only`.
+`revision` is requested state; `appliedRevision` identifies the installed GPU
+projection. Wait for `pending === false` and `cacheReady === true` before
+inspecting a newly requested frame (then allow browser presentation). Hashed
+category color depends only on the category value. See
+`CLIENT_DATA_VIEW.md` for exact types, examples, ordering, packed-style
+composition, performance, diagnostics, and demo behavior.
+
 Core capabilities:
 
 - Multiple stacked XY subplots sharing one X column.
@@ -1080,6 +1131,9 @@ Core capabilities:
 - Shape codes from `FAST_SCATTER_SHAPE_CODES`: circle, rectangle/square,
   triangle, pin, and arrow.
 - Selection by rectangle or lasso with source indices and query-ready filters.
+- Optional WebGPU scatter `clientView` with typed JSON filter predicates,
+  filter-before-transform affine/difference calculations, computed color,
+  opacity, rotation, shape, and size, and versioned state/callback APIs.
 - Hover, measurement, point markers, navigator, focused subplot, out-of-range
   markers, point-size adjustment requests, heatmap bin-size requests, metrics,
   render-state events, and WebGL2 context or WebGPU device lifecycle events.

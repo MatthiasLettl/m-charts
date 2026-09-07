@@ -4,6 +4,68 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## WebGPU Scatter Client Data Views
+
+- Full-suite validation also fixed the parallel streaming controller returning
+  stale `getBuffers()` results after a packed-page append. Progress callbacks
+  now expose the same resident prefix as the renderer; the demo snapshots that
+  prefix's metadata so subsequent in-place GPU appends cannot race its progress UI.
+
+- Added applied-revision/pending diagnostics, prevented stale exact frames while
+  a projection uploads, and exercised paged-style composition, sparse filters,
+  LOD, and reset on ten million GPU-resident rows.
+
+- Fixed streaming capacity growth to resize visibility storage without a client
+  view, client-view culling for unsorted/nonfinite X, and conditional color rules
+  losing the theme fallback. Source hover indexes are bypassed after coordinate
+  transforms and restored when transforms are removed.
+- Reuse unchanged evaluator stages, masked interaction columns, and derived GPU
+  buffers. Constant styles encode once; ordered differences avoid redundant
+  sorting. Rapid GPU revisions coalesce without retaining every intermediate
+  projection, and canceled uploads release their temporary buffers.
+- Isolate subscriber failures through optional `onListenerError(error, event)`
+  (default: console.error), freeze configuration snapshots, and preserve event
+  order during reentrant edits. Reject streaming append with an attached,
+  creation-bound client view before mutation.
+- Added CPU caching/error/order regressions and real-GPU pixel comparisons for
+  source compatibility, theme updates, streaming growth, rapid resets, and hover.
+
+- Expanded the demo with finite scale/offset controls, difference direction,
+  missing-neighbor and grouping options, independent style channels, all five
+  glyphs, category/gradient colors, and a glyph inspection zoom. Added a
+  dismissible selection popup and bounded state previews with full JSON downloads.
+  Reset viewport now retains the domain of active transformations.
+- Selection filters now freeze selected source rows, work after transformations,
+  and compose across successive selections. Large membership filters use set
+  lookups; disabled transforms no longer expose nonexistent derived fields.
+- Added transformed-selection and configurable-control regressions, native
+  macOS GPU test flags, and composited WebGPU screenshot comparisons.
+
+- Added an additive, chart-independent typed client data-view API with a
+  JSON-serializable predicate AST, numeric/datetime/categorical/boolean fields,
+  filter-first affine and ordered/partitioned difference transforms, and
+  computed color/opacity/rotation/shape/size rules.
+- Integrated the controller with WebGPU scatter while retaining immutable
+  source coordinate/style buffers. View changes replace only visibility and
+  derived buffers, expose state/change callbacks and diagnostics, preserve or
+  ignore embedded, static-packed, and paged-packed base styles, and never
+  initiate network work. Paged styles remain GPU-resident and compose with
+  per-channel client overrides without expanded CPU copies.
+- Added host-wired inside/outside multi-region selection filters, keyboard
+  actions, presets, inspection/removal/reset controls, and state/performance
+  diagnostics to `/m-scatter-webgpu`, plus unit/E2E coverage and a detailed host
+  integration/persistence/query-adapter guide.
+- Fixed sorted-X draw-range culling after a client filter. The renderer now
+  derives the draw span from resident/render coordinates and gives an ordered
+  active-index list the full LOD budget, so sparse box/lasso filters no longer
+  render an empty chart, an unrelated contiguous X prefix, or a biased
+  source-stride sample above one million rows.
+- Hardened client-view interaction ordering, imported-state operator and typed
+  operand validation, detached nested state, preserved RGBA8 style metadata,
+  and bigint-first nanosecond differences. Source-column replacement is now
+  rejected while a view is attached instead of desynchronizing CPU and GPU
+  state.
+
 ## Scatter X Reference Lines
 
 - Added application-owned, multi-line X reference annotations to the shared

@@ -334,6 +334,22 @@ folders, change the engine import to
 copy-ready migration and fallback example is
 [docs/examples/scatter-webgpu-migration.md](docs/examples/scatter-webgpu-migration.md).
 
+WebGPU scatter may also attach a `createFastScatterClientDataView(...)`
+controller for resident typed filters, filter-before-transform calculations,
+and computed styles. Source data stays resident; hosts own query-language
+conversion, selection-to-filter actions, persistence, and synchronization. See
+[CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md).
+
+Client views reuse unchanged filter/transform/style stages and derived GPU
+buffers. Subscriber errors are isolated and can be handled with
+`onListenerError(error, event)`; configuration getters are read-only snapshots.
+Unmatched style rules retain source or theme defaults, including theme updates.
+
+The WebGPU scatter demo includes configurable linear/difference transforms,
+independent computed style channels with all five glyphs, and a popup after
+rectangle/lasso selection for keeping inside or outside rows. Selection filters
+preserve source-row identity across transforms and can be removed individually.
+
 ### Histogram
 
 ```ts

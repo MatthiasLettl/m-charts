@@ -40,6 +40,10 @@
       "types": "./dist/plot-engine-webgpu/index.d.ts",
       "import": "./dist/plot-engine-webgpu/index.js"
     },
+    "./client-data-view": {
+      "types": "./dist/client-data-view/index.d.ts",
+      "import": "./dist/client-data-view/index.js"
+    },
     "./m-scatter": {
       "types": "./dist/m-scatter/index.d.ts",
       "import": "./dist/m-scatter/index.js"

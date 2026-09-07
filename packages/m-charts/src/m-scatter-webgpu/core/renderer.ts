@@ -14,6 +14,7 @@ import {
   type FastScatterBubbleSubplotAggregation,
   type FastScatterHeatmapSubplotAggregation,
   type FastScatterControllerOptions,
+  type FastScatterClientViewEvaluation,
   type FastScatterDataDomain,
   type FastScatterEasterEggPlaybackOptions,
   type FastScatterMetricsEvent,
@@ -45,6 +46,7 @@ import {
   FAST_SCATTER_WEBGPU_AGGREGATE_SHADER,
   FAST_SCATTER_WEBGPU_COMPOSITE_SHADER,
   FAST_SCATTER_WEBGPU_SHADER,
+  FAST_SCATTER_WEBGPU_STYLE_COMPOSE_SHADER,
 } from './shaders.js';
 import {
   encodeFastScatterWebgpuRange,
@@ -52,6 +54,7 @@ import {
   packFastScatterWebgpuStyle,
 } from './packing.js';
 import { buildFastScatterWebgpuBubbleAggregation } from './aggregation.js';
+import { createFastScatterWebgpuClientStyleMask } from './styleComposition.js';
 import {
   FastScatterWebgpuWasmAggregationSession,
   type FastScatterWebgpuWasmAggregationDiagnostics,
@@ -83,6 +86,8 @@ interface PlotResources {
   overviewBuffer: GPUBuffer;
   overviewCount: number;
   overviewIndices: Uint32Array;
+  sourceOverviewBuffer: GPUBuffer;
+  sourceOverviewCount: number;
   overviewUniformBuffer: GPUBuffer;
   plotId: string;
   selectedBindGroup: GPUBindGroup;
@@ -91,6 +96,7 @@ interface PlotResources {
   selectedUniformBuffer: GPUBuffer;
   uniformBuffer: GPUBuffer;
   y: EncodedColumn;
+  sourceY: EncodedColumn;
   yKey: string;
 }
 
@@ -125,12 +131,28 @@ interface GpuResources {
   styleByteLength: number;
   styleMode: number;
   styleSplitBytes: number;
+  sourceStyleBuffer: GPUBuffer;
+  sourceStyleBufferHigh: GPUBuffer;
+  sourceStyleByteLength: number;
+  sourceStyleMode: number;
+  sourceStyleSplitBytes: number;
+  sourceMaxPointSize: number;
+  styleComposeBindGroupLayout?: GPUBindGroupLayout;
+  styleComposePipeline?: GPUComputePipeline;
   uploadBytes: number;
   workTexture: GPUTexture;
   workView: GPUTextureView;
   x: EncodedColumn;
+  sourceX: EncodedColumn;
   xIndexedMode: 0 | 1 | 2;
   xSorted: boolean;
+  clientViewBuffers: Set<GPUBuffer>;
+  clientViewDrawIndices: Uint32Array;
+  clientViewAppliedEvaluation: FastScatterClientViewEvaluation | null;
+  clientViewIndexBuffer: GPUBuffer | null;
+  clientViewStyleBuffers: Set<GPUBuffer>;
+  visibleBuffer: GPUBuffer;
+  visibleBufferBytes: number;
 }
 
 interface AggregatePlotResources {
@@ -171,6 +193,7 @@ const DEFAULT_THEME: FastScatterTheme = {
   subplotBackgroundColor: [0.965, 0.975, 0.988, 1],
 };
 const STYLE_STRIDE_BYTES = 4;
+const STYLE_COMPOSE_WORKGROUP_SIZE = 256;
 const ROTATION_LUT_SIZE = 1024;
 const ROTATION_LUT_BYTES = ROTATION_LUT_SIZE * 2 * Float32Array.BYTES_PER_ELEMENT;
 const UNIFORM_BYTES = 128;
@@ -273,6 +296,10 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   private streamingPreviewTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   private nextStreamingPreviewAt = 0;
   private widthCssPx = 0;
+  private clientViewEvaluation: FastScatterClientViewEvaluation | null;
+  private clientViewUploadBytes = 0;
+  private clientViewResourceTask: Promise<void> | null = null;
+  private readonly sourceColumns: FastScatterPointColumns;
   private resolveFirstFrame!: () => void;
   private resolveInteractiveFrame!: () => void;
 
@@ -282,21 +309,27 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       aggregationBackend: _aggregationBackend,
       dataDomain: _dataDomain,
       indexedStyle: _indexedStyle,
+      initialClientView: _initialClientView,
       lifecycle: _lifecycle,
       packedStyles: _packedStyles,
       pointCapacity: _pointCapacity,
       requestTimestampQuery: _requestTimestampQuery,
+      sourceColumns: _sourceColumns,
       ...options
     } = rendererOptions;
     void _canvas;
     this.aggregationBackendPreference = _aggregationBackend ?? 'auto';
     void _dataDomain;
     void _indexedStyle;
+    this.clientViewEvaluation = _initialClientView ?? null;
     void _lifecycle;
     void _packedStyles;
     this.pointCapacity = normalizePointCapacity(_pointCapacity, options.columns.x.length);
     void _requestTimestampQuery;
-    this.options = options;
+    this.sourceColumns = _sourceColumns ?? options.columns;
+    this.options = _initialClientView === undefined
+      ? options
+      : { ...options, columns: _initialClientView.interactionColumns };
     this.firstFrameComplete = new Promise<void>((resolve) => {
       this.resolveFirstFrame = resolve;
     });
@@ -314,10 +347,15 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   update(options: Partial<FastScatterControllerOptions>): void {
     if (this.disposed) return;
     const previous = this.options;
+    const clientViewColumnUpdate = this.clientViewEvaluation !== null &&
+      options.columns !== undefined && options.columns !== previous.columns;
     const rebuild =
-      (options.columns !== undefined && options.columns !== previous.columns) ||
+      (!clientViewColumnUpdate && options.columns !== undefined && options.columns !== previous.columns) ||
       (options.spec !== undefined && options.spec !== previous.spec) ||
-      (options.hoverIndex !== undefined && options.hoverIndex !== previous.hoverIndex);
+      (this.clientViewEvaluation === null && options.hoverIndex !== undefined &&
+        options.hoverIndex !== previous.hoverIndex) ||
+      (this.clientViewEvaluation !== null && options.theme !== undefined &&
+        !areThemesEqual(options.theme, previous.theme));
     const selectionChanged =
       options.selectedSourceIndices !== undefined &&
       options.selectedSourceIndices !== previous.selectedSourceIndices;
@@ -368,6 +406,18 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     }
   }
 
+  async applyClientView(evaluation: FastScatterClientViewEvaluation): Promise<void> {
+    if (this.disposed) return;
+    this.clientViewEvaluation = evaluation;
+    this.options = { ...this.options, columns: evaluation.interactionColumns };
+    if (this.context === null || this.gpu === null) return;
+    try {
+      await this.applyClientViewResources();
+    } catch (error) {
+      this.rendererOptions.lifecycle?.onError?.(error);
+    }
+  }
+
   async appendData({
     capacity,
     columns,
@@ -376,6 +426,9 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     startPoint,
   }: FastScatterRendererAppendOptions): Promise<void> {
     if (this.disposed) return;
+    if (this.clientViewEvaluation !== null) {
+      throw new TypeError('Streaming append is unavailable while a creation-bound clientView is attached.');
+    }
     const previousCount = this.options.columns.x.length;
     if (startPoint !== previousCount || columns.x.length < startPoint) {
       throw new Error(
@@ -422,6 +475,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       }
       const previousX = gpu.x.buffer;
       gpu.x = nextX;
+      gpu.sourceX = nextX;
       gpu.xIndexedMode = 0;
       recreatePlotBindGroups(context.device, gpu);
       previousX.destroy();
@@ -623,9 +677,16 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   }
 
   isPointRendered(pointIndex: number, plotId: string): boolean {
-    if (!Number.isInteger(pointIndex) || pointIndex < 0) return false;
+    if (
+      !Number.isInteger(pointIndex) || pointIndex < 0 ||
+      pointIndex >= this.options.columns.x.length
+    ) return false;
     if (normalizeFastScatterVisualizationMode(this.options.visualizationMode) !== 'points') {
       return false;
+    }
+    if (this.clientViewEvaluation !== null) {
+      return ((this.clientViewEvaluation.activeMask[pointIndex >>> 5] ?? 0) &
+        (1 << (pointIndex & 31))) !== 0;
     }
     if (!this.sampleReady) return true;
     if (this.lastLodPointCount === 0) return false;
@@ -710,14 +771,15 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         ? this.lastLodStride
         : Math.max(1, Math.ceil(aggregateTotalCount / Math.max(1, aggregateRenderedCount))),
       overviewRepresentativeCount: visualizationMode === 'points' ? this.gpu?.plots.reduce(
-        (total, plot) => total + plot.overviewCount,
+        (total, plot) => total + plot.sourceOverviewCount,
         0,
       ) ?? 0 : 0,
       uploadBytes: this.gpu?.uploadBytes ?? 0,
       cacheBytes: this.gpu === null
         ? 0
         : this.gpu.cacheWidth * this.gpu.cacheHeight * 8,
-      cacheReady: this.cacheReady,
+      cacheReady: this.cacheReady && (this.clientViewEvaluation === null ||
+        this.gpu?.clientViewAppliedEvaluation === this.clientViewEvaluation),
       coalescedFrameCount: this.coalescedFrameCount,
       deviceLimits: this.context === null ? undefined : {
         maxBufferSize: this.context.limits.maxBufferSize,
@@ -732,6 +794,22 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       requiredBufferSize: requirements.requiredBufferSize,
       requiredStorageBufferBindingSize: requirements.requiredStorageBufferBindingSize,
       submittedFrameCount: this.submittedFrameCount,
+      clientView: this.clientViewEvaluation === null ? undefined : {
+        activePointCount: this.clientViewEvaluation.metrics.activeRowCount,
+        evaluationBackend: this.clientViewEvaluation.metrics.backend,
+        evaluationMs: this.clientViewEvaluation.metrics.durationMs,
+        revision: this.clientViewEvaluation.revision,
+        appliedRevision: this.gpu?.clientViewAppliedEvaluation?.revision ?? null,
+        pending: this.gpu?.clientViewAppliedEvaluation !== this.clientViewEvaluation,
+        sourceUploadBytes: 0,
+        styleSource: this.clientViewEvaluation.sourceStyleMode === 'ignore'
+          ? 'client-only'
+          : Object.values(this.clientViewEvaluation.styles)
+              .some((channel) => channel !== undefined)
+            ? 'client-composed'
+            : 'source',
+        viewUploadBytes: this.clientViewUploadBytes,
+      },
     };
   }
 
@@ -826,7 +904,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     if (context === null || this.disposed) return;
     const version = ++this.rebuildVersion;
     const startedAt = performance.now();
-    const columns = this.options.columns;
+    const columns = this.clientViewEvaluation === null ? this.options.columns : this.sourceColumns;
     const spec = this.options.spec;
     validatePointColumns(columns, spec);
     assertPackedStylesCanRebuild(this.rendererOptions.packedStyles, columns.x.length);
@@ -847,12 +925,17 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       this.options.hoverIndex,
       this.pointCapacity,
       this.rendererOptions.dataDomain,
+      this.clientViewEvaluation !== null,
     );
     if (this.disposed || version !== this.rebuildVersion) {
       destroyGpuResources(next);
       return;
     }
     this.gpu = next;
+    if (this.clientViewEvaluation !== null) {
+      await this.applyClientViewResources();
+      if (this.disposed || version !== this.rebuildVersion) return;
+    }
     this.aggregateDirty = true;
     this.aggregateVisualDirty = true;
     this.cacheReady = false;
@@ -876,6 +959,188 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       }),
     });
     this.scheduleDraw();
+  }
+
+  private applyClientViewResources(): Promise<void> {
+    if (this.clientViewResourceTask !== null) return this.clientViewResourceTask;
+    // Retain only the latest requested projection plus one in-flight upload.
+    // Rapid mutations must not queue closures retaining every derived array.
+    const task = Promise.resolve().then(async () => {
+      while (!this.disposed && this.gpu !== null && this.clientViewEvaluation !== null &&
+        this.gpu.clientViewAppliedEvaluation !== this.clientViewEvaluation) {
+        await this.materializeClientViewResources(this.clientViewEvaluation);
+      }
+    }).finally(() => { this.clientViewResourceTask = null; });
+    this.clientViewResourceTask = task;
+    return task;
+  }
+
+  private async materializeClientViewResources(
+    evaluation: FastScatterClientViewEvaluation,
+  ): Promise<void> {
+    const context = this.context;
+    const gpu = this.gpu;
+    if (context === null || gpu === null || this.disposed) return;
+    if (this.clientViewEvaluation !== evaluation) return;
+    const startedAt = performance.now();
+    const nextBuffers = new Set<GPUBuffer>();
+    const previous = gpu.clientViewAppliedEvaluation;
+    const sameMask = previous?.activeMask === evaluation.activeMask;
+    const sameIndices = sameMask && previous?.renderColumns.x === evaluation.renderColumns.x &&
+      previous.renderColumns.xOrder === evaluation.renderColumns.xOrder;
+    const drawIndices = sameIndices ? gpu.clientViewDrawIndices : createClientViewDrawIndices(evaluation);
+    let viewUploadBytes = sameMask ? 0 : evaluation.activeMask.byteLength;
+    let committed = false;
+    try {
+      const reuseX = previous?.renderColumns.x === evaluation.renderColumns.x;
+      const nextX = reuseX ? gpu.x : evaluation.transformedX
+        ? await createEncodedColumn(
+            context.device,
+            evaluation.renderColumns.x,
+            'm-scatter-webgpu/client-view/x',
+            gpu.pointCapacity,
+          )
+        : gpu.sourceX;
+      if (nextX !== gpu.sourceX) nextBuffers.add(nextX.buffer);
+      if (!reuseX && evaluation.transformedX) viewUploadBytes += nextX.byteLength;
+
+      const nextYByKey = new Map<string, EncodedColumn>();
+      for (const plot of gpu.plots) {
+        if (nextYByKey.has(plot.yKey)) continue;
+        if (!evaluation.transformedYKeys.has(plot.yKey)) {
+          nextYByKey.set(plot.yKey, plot.sourceY);
+          continue;
+        }
+        const values = evaluation.renderColumns.y[plot.yKey];
+        if (values === undefined) continue;
+        const reuseY = previous?.renderColumns.y[plot.yKey] === values;
+        const column = reuseY ? plot.y : await createEncodedColumn(
+          context.device,
+          values,
+          `m-scatter-webgpu/client-view/y/${plot.yKey}`,
+          gpu.pointCapacity,
+        );
+        nextYByKey.set(plot.yKey, column);
+        nextBuffers.add(column.buffer);
+        if (!reuseY) viewUploadBytes += column.byteLength;
+      }
+
+      const reuseStyles = previous?.styles === evaluation.styles &&
+        previous?.sourceStyleMode === evaluation.sourceStyleMode &&
+        previous?.renderColumns.color === evaluation.renderColumns.color;
+      const hasComputedStyles = Object.values(evaluation.styles)
+        .some((channel) => channel !== undefined);
+      const stylesChanged = evaluation.sourceStyleMode === 'ignore' || hasComputedStyles;
+      const pagedPackedStyles = this.rendererOptions.packedStyles !== undefined &&
+        !('data' in this.rendererOptions.packedStyles);
+      const nextStyles = !reuseStyles && stylesChanged
+        ? evaluation.sourceStyleMode === 'preserve' && hasComputedStyles && pagedPackedStyles
+          ? await createComposedClientStyleBuffer(
+              context,
+              gpu,
+              evaluation,
+              this.options.theme ?? DEFAULT_THEME,
+            )
+          : await createStyleBuffer(
+              context.device,
+              evaluation.renderColumns,
+              this.options.theme ?? DEFAULT_THEME,
+              undefined,
+              gpu.pointCapacity,
+              true,
+            )
+        : null;
+      const styleBuffers = reuseStyles ? gpu.clientViewStyleBuffers : new Set<GPUBuffer>();
+      if (nextStyles !== null) {
+        styleBuffers.add(nextStyles.buffer);
+        styleBuffers.add(nextStyles.bufferHigh);
+        for (const buffer of nextStyles.auxiliaryBuffers ?? []) styleBuffers.add(buffer);
+        nextBuffers.add(nextStyles.buffer);
+        nextBuffers.add(nextStyles.bufferHigh);
+        if (nextStyles.auxiliaryBuffers !== undefined) {
+          for (const buffer of nextStyles.auxiliaryBuffers) nextBuffers.add(buffer);
+          viewUploadBytes += nextStyles.uploadBytes ?? nextStyles.byteLength;
+        } else {
+          viewUploadBytes += nextStyles.byteLength;
+        }
+      }
+      for (const buffer of styleBuffers) nextBuffers.add(buffer);
+      const drawIndexBuffer = sameIndices && gpu.clientViewIndexBuffer !== null
+        ? gpu.clientViewIndexBuffer
+        : createStaticIndexBuffer(context.device, drawIndices, 'm-scatter-webgpu/client-view-draw-indices');
+      if (!sameIndices) viewUploadBytes += drawIndices.byteLength;
+      nextBuffers.add(drawIndexBuffer);
+      if (this.disposed || this.gpu !== gpu || this.clientViewEvaluation !== evaluation) return;
+
+      if (!sameMask) context.device.queue.writeBuffer(
+        gpu.visibleBuffer,
+        0,
+        evaluation.activeMask.buffer,
+        evaluation.activeMask.byteOffset,
+        evaluation.activeMask.byteLength,
+      );
+      const previousBuffers = gpu.clientViewBuffers;
+      gpu.clientViewBuffers = nextBuffers;
+      gpu.clientViewDrawIndices = drawIndices;
+      gpu.clientViewIndexBuffer = drawIndexBuffer;
+      gpu.clientViewStyleBuffers = styleBuffers;
+      gpu.clientViewAppliedEvaluation = evaluation;
+      gpu.x = nextX;
+      gpu.xIndexedMode = 0;
+      gpu.xSorted = isNondecreasing(evaluation.renderColumns.x);
+      for (const plot of gpu.plots) {
+        plot.overviewBuffer = drawIndexBuffer;
+        plot.overviewCount = drawIndices.length;
+        plot.overviewIndices = drawIndices;
+        plot.y = nextYByKey.get(plot.yKey) ?? plot.sourceY;
+      }
+      if (!reuseStyles) {
+        gpu.styleBuffer = nextStyles?.buffer ?? gpu.sourceStyleBuffer;
+        gpu.styleBufferHigh = nextStyles?.bufferHigh ?? gpu.sourceStyleBufferHigh;
+        gpu.styleByteLength = nextStyles?.byteLength ?? gpu.sourceStyleByteLength;
+        gpu.styleMode = nextStyles === null ? gpu.sourceStyleMode : 0;
+        gpu.styleSplitBytes = nextStyles?.splitBytes ?? gpu.sourceStyleSplitBytes;
+        gpu.maxPointSize = nextStyles?.maxPointSize ?? gpu.sourceMaxPointSize;
+      }
+      recreatePlotBindGroups(context.device, gpu);
+      committed = true;
+      for (const buffer of previousBuffers) {
+        if (!nextBuffers.has(buffer)) buffer.destroy();
+      }
+
+      this.clientViewUploadBytes = viewUploadBytes;
+      gpu.uploadBytes += viewUploadBytes;
+      this.aggregationWasm = null;
+      this.aggregationWasmAttempted = false;
+      this.aggregateDirty = true;
+      this.aggregateVisualDirty = true;
+      this.cacheReady = false;
+      this.cacheSnapshot = null;
+      this.sampleReady = false;
+      this.exactRequested = true;
+      this.emitMetrics({
+        durationMs: performance.now() - startedAt,
+        phase: 'buffer-upload',
+        pointCount: evaluation.metrics.rowCount,
+        uploadBytes: viewUploadBytes,
+        detail: JSON.stringify({
+          activePointCount: evaluation.metrics.activeRowCount,
+          backend: 'webgpu',
+          evaluationMs: evaluation.metrics.durationMs,
+          operation: 'client-view-update',
+          revision: evaluation.revision,
+          sourceUploadBytes: 0,
+          viewUploadBytes,
+        }),
+      });
+      this.scheduleDraw();
+    } finally {
+      if (!committed) {
+        for (const buffer of nextBuffers) {
+          if (!gpu.clientViewBuffers.has(buffer)) buffer.destroy();
+        }
+      }
+    }
   }
 
   private updateSelectedIndices(sourceIndices: Uint32Array): void {
@@ -977,6 +1242,8 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   private drawExactFrame(): void {
     const context = this.context;
     const gpu = this.gpu;
+    if (this.clientViewEvaluation !== null &&
+      gpu?.clientViewAppliedEvaluation !== this.clientViewEvaluation) return;
     const canvas = this.rendererOptions.canvas;
     if (
       this.disposed || context === null || gpu === null ||
@@ -1029,11 +1296,16 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       (total, rect) => total + rect.widthCssPx * rect.heightCssPx,
       0,
     );
-    const unpaddedVisibleRange = resolveVisibleRange(
-      this.options.columns,
-      renderViewport.x,
-      gpu.xSorted,
-    );
+    // Interaction columns intentionally contain NaN Y values for filtered-out
+    // rows. GPU draw culling uses the resident/render coordinates plus an
+    // X-ordered active-index buffer so sparse client filters receive the full
+    // LOD budget instead of being sampled accidentally by source-row stride.
+    const drawColumns = gpu.clientViewAppliedEvaluation?.renderColumns ?? this.options.columns;
+    const clientViewDraw = this.clientViewEvaluation !== null;
+    if (clientViewDraw && gpu.clientViewAppliedEvaluation !== this.clientViewEvaluation) return;
+    const unpaddedVisibleRange = clientViewDraw
+      ? resolveIndexedVisibleRange(drawColumns.x, gpu.clientViewDrawIndices, renderViewport.x)
+      : resolveVisibleRange(drawColumns, renderViewport.x, gpu.xSorted);
     const alphaPolicy = resolveFastScatterAlphaPolicy({
       plotAreaPx: totalPlotArea,
       pointCount: unpaddedVisibleRange.end - unpaddedVisibleRange.start,
@@ -1048,16 +1320,15 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const xPadding =
       (xSpan * gpu.maxPointSize * userPointSizeScale * alphaPolicy.pointSizeScale) /
       maxPlotWidthCssPx;
-    const visibleRange = resolveVisibleRange(
-      this.options.columns,
-      {
+    const paddedXRange = {
         max: renderViewport.x.max + xPadding,
         min: renderViewport.x.min - xPadding,
-      },
-      gpu.xSorted,
-    );
+      };
+    const visibleRange = clientViewDraw
+      ? resolveIndexedVisibleRange(drawColumns.x, gpu.clientViewDrawIndices, paddedXRange)
+      : resolveVisibleRange(drawColumns, paddedXRange, gpu.xSorted);
     const visibleCount = visibleRange.end - visibleRange.start;
-    const maxVisibleOverviewCount = gpu.plots.reduce(
+    const maxVisibleOverviewCount = clientViewDraw ? 0 : gpu.plots.reduce(
       (max, plot) => Math.max(
         max,
         countSortedUint32ValuesInRange(
@@ -1180,7 +1451,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         pointIndexBase: lodStart,
         pointIndexStride: lodStride,
         alphaWeight: lodStride,
-        indexedPass: false,
+        indexedPass: clientViewDraw,
         selectedPass: false,
         selectedIndexMode: 0,
         theme,
@@ -1195,7 +1466,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         clampInteger(rect.widthCssPx, 1, gpu.cacheWidth - clampInteger(rect.xCssPx, 0, gpu.cacheWidth)),
         clampInteger(rect.heightCssPx, 1, gpu.cacheHeight - clampInteger(rect.yCssPx, 0, gpu.cacheHeight)),
       );
-      pass.setBindGroup(0, plot.bindGroup);
+      pass.setBindGroup(0, clientViewDraw ? plot.overviewBindGroup : plot.bindGroup);
       pass.setPipeline(gpu.backgroundPipeline);
       pass.draw(3);
       drawCalls += 1;
@@ -1274,7 +1545,10 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         pass.draw(4, lodPointCount);
         drawCalls += 1;
       }
-      if (visualizationMode === 'points' && lodStride > 1 && plot.overviewCount > 0) {
+      if (
+        !clientViewDraw && visualizationMode === 'points' &&
+        lodStride > 1 && plot.overviewCount > 0
+      ) {
         writePlotUniforms(context.device, plot, {
           alphaScale: alphaPolicy.alphaScale,
           canvasHeight: gpu.cacheHeight,
@@ -1320,7 +1594,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
           pointIndexBase: lodStart,
           pointIndexStride: lodStride,
           alphaWeight: 1,
-          indexedPass: false,
+          indexedPass: clientViewDraw,
           selectedPass: true,
           selectedIndexMode: 1,
           theme,
@@ -1328,14 +1602,17 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
           xRange: encodedX.range,
           yRange: encodeFastScatterWebgpuRange(yRange, plot.y.encoding),
           yStorageMode: plot.y.storageMode,
-        });
-        pass.setBindGroup(0, plot.selectedBindGroup);
+        }, clientViewDraw ? 'selected-overview' : 'default');
+        pass.setBindGroup(
+          0,
+          clientViewDraw ? plot.selectedOverviewBindGroup : plot.selectedBindGroup,
+        );
         pass.setPipeline(gpu.selectedDensePipelines[plot.y.storageMode]);
         if (lodPointCount > 0) {
           pass.draw(4, lodPointCount);
           drawCalls += 1;
         }
-        if (lodStride > 1 && plot.overviewCount > 0) {
+        if (!clientViewDraw && lodStride > 1 && plot.overviewCount > 0) {
           writePlotUniforms(context.device, plot, {
             alphaScale: 1,
             canvasHeight: gpu.cacheHeight,
@@ -2353,6 +2630,7 @@ async function createGpuResources(
   hoverIndex: FastScatterControllerOptions['hoverIndex'],
   requestedPointCapacity = columns.x.length,
   dataDomain?: FastScatterDataDomain,
+  clientViewEnabled = false,
 ): Promise<GpuResources> {
   const { device } = context;
   const theme = requestedTheme ?? DEFAULT_THEME;
@@ -2367,7 +2645,7 @@ async function createGpuResources(
       ? range
       : { min: Math.min(current.min, range.min), max: Math.max(current.max, range.max) });
   }
-  const indexedXMode = await resolveIndexedXMode(columns.x);
+  const indexedXMode = clientViewEnabled ? 0 : await resolveIndexedXMode(columns.x);
   const [x, styles, sourceMapping, encodedYColumns] = await Promise.all([
     indexedXMode !== 0
       ? createIdentityEncodedColumn(device, 'm-scatter-webgpu/x-identity')
@@ -2378,7 +2656,7 @@ async function createGpuResources(
           pointCapacity,
           dataDomain?.x,
         ),
-    createStyleBuffer(device, columns, theme, packedStyles, pointCapacity),
+    createStyleBuffer(device, columns, theme, packedStyles, pointCapacity, clientViewEnabled),
     createSourceMapping(columns),
     Promise.all(yKeys.map(async (yKey) => {
       const values = columns.y[yKey];
@@ -2405,6 +2683,15 @@ async function createGpuResources(
     size: EMPTY_BUFFER_BYTES,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
   });
+  const visibleWordCount = Math.max(1, Math.ceil(pointCapacity / 32));
+  const visibleBuffer = device.createBuffer({
+    label: 'm-scatter-webgpu/client-view-visible-mask',
+    mappedAtCreation: true,
+    size: visibleWordCount * Uint32Array.BYTES_PER_ELEMENT,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+  });
+  new Uint32Array(visibleBuffer.getMappedRange()).fill(0xffff_ffff);
+  visibleBuffer.unmap();
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
       { binding: 0, buffer: { type: 'uniform' }, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.VERTEX },
@@ -2415,9 +2702,31 @@ async function createGpuResources(
       { binding: 5, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.VERTEX },
       { binding: 6, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.VERTEX },
       { binding: 7, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.VERTEX },
+      { binding: 8, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.VERTEX },
     ],
     label: 'm-scatter-webgpu/point-bindings',
   });
+  let styleComposeBindGroupLayout: GPUBindGroupLayout | undefined;
+  let styleComposePipeline: GPUComputePipeline | undefined;
+  if (clientViewEnabled) {
+    styleComposeBindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.COMPUTE },
+        { binding: 1, buffer: { type: 'read-only-storage' }, visibility: GPUShaderStage.COMPUTE },
+        { binding: 2, buffer: { type: 'storage' }, visibility: GPUShaderStage.COMPUTE },
+      ],
+      label: 'm-scatter-webgpu/client-style-compose-bindings',
+    });
+    const styleComposeModule = device.createShaderModule({
+      code: FAST_SCATTER_WEBGPU_STYLE_COMPOSE_SHADER,
+      label: 'm-scatter-webgpu/client-style-compose-shader',
+    });
+    styleComposePipeline = await device.createComputePipelineAsync({
+      compute: { entryPoint: 'composeStyle', module: styleComposeModule },
+      label: 'm-scatter-webgpu/client-style-compose-pipeline',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [styleComposeBindGroupLayout] }),
+    });
+  }
   const shaderModule = device.createShaderModule({
     code: FAST_SCATTER_WEBGPU_SHADER,
     label: 'm-scatter-webgpu/point-shader',
@@ -2602,7 +2911,7 @@ async function createGpuResources(
       bindGroup: createPlotBindGroup(
         device, bindGroupLayout, uniformBuffer, x.buffer, y.buffer,
         styleBuffer, styleBufferHigh, styles.byteLength, styleSplitBytes,
-        selectedBuffer, rotationBuffer, selectedBuffer,
+        selectedBuffer, rotationBuffer, selectedBuffer, visibleBuffer,
       ),
       compositeBindGroup: createCompositeBindGroup(
         device,
@@ -2625,6 +2934,7 @@ async function createGpuResources(
         overview.buffer,
         rotationBuffer,
         selectedBuffer,
+        visibleBuffer,
       ),
       overviewBuffer: overview.buffer,
       overviewCount: overview.count,
@@ -2644,6 +2954,7 @@ async function createGpuResources(
         selectedBuffer,
         rotationBuffer,
         selectedBuffer,
+        visibleBuffer,
       ),
       selectedOverviewBindGroup: createPlotBindGroup(
         device,
@@ -2658,11 +2969,15 @@ async function createGpuResources(
         overview.buffer,
         rotationBuffer,
         selectedBuffer,
+        visibleBuffer,
       ),
       selectedOverviewUniformBuffer,
       selectedUniformBuffer,
+      sourceOverviewBuffer: overview.buffer,
+      sourceOverviewCount: overview.count,
       uniformBuffer,
       y,
+      sourceY: y,
       yKey: plot.yKey,
     };
   });
@@ -2703,12 +3018,28 @@ async function createGpuResources(
     styleByteLength: styles.byteLength,
     styleMode: styles.constant ? (indexedStyle ? 2 : 1) : 0,
     styleSplitBytes,
+    sourceStyleBuffer: styleBuffer,
+    sourceStyleBufferHigh: styleBufferHigh,
+    sourceStyleByteLength: styles.byteLength,
+    sourceStyleMode: styles.constant ? (indexedStyle ? 2 : 1) : 0,
+    sourceStyleSplitBytes: styleSplitBytes,
+    sourceMaxPointSize: styles.maxPointSize,
+    styleComposeBindGroupLayout,
+    styleComposePipeline,
     uploadBytes: x.byteLength + uniqueYBytes + styles.byteLength + overviewBytes,
     workTexture,
     workView,
     x,
+    sourceX: x,
     xIndexedMode: indexedXMode,
     xSorted: (indexedXMode !== 0 || isNondecreasing(columns.x)) && columns.xOrder === undefined,
+    clientViewBuffers: new Set(),
+    clientViewDrawIndices: new Uint32Array(0),
+    clientViewAppliedEvaluation: null,
+    clientViewIndexBuffer: null,
+    clientViewStyleBuffers: new Set(),
+    visibleBuffer,
+    visibleBufferBytes: visibleWordCount * Uint32Array.BYTES_PER_ELEMENT,
   };
 }
 
@@ -2862,6 +3193,24 @@ function growGpuPointResources(
     oldLow.destroy();
     oldHigh.destroy();
   }
+  const visibleBytes = Math.max(4, Math.ceil(capacity / 32) * 4);
+  if (visibleBytes > gpu.visibleBufferBytes) {
+    const visible = device.createBuffer({
+      label: 'm-scatter-webgpu/stream-visible-mask-grown',
+      mappedAtCreation: true,
+      size: visibleBytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
+    });
+    new Uint32Array(visible.getMappedRange()).fill(0xffff_ffff);
+    visible.unmap();
+    gpu.visibleBuffer.destroy();
+    gpu.visibleBuffer = visible;
+    gpu.visibleBufferBytes = visibleBytes;
+  }
+  gpu.sourceStyleBuffer = gpu.styleBuffer;
+  gpu.sourceStyleBufferHigh = gpu.styleBufferHigh;
+  gpu.sourceStyleByteLength = gpu.styleByteLength;
+  gpu.sourceStyleSplitBytes = gpu.styleSplitBytes;
   gpu.pointCapacity = capacity;
   recreatePlotBindGroups(device, gpu);
   for (const buffer of oldBuffers) buffer.destroy();
@@ -3066,7 +3415,9 @@ async function createStyleBuffer(
   theme: FastScatterTheme,
   packedStyles?: FastScatterWebgpuPackedStyles,
   requestedCapacity = columns.x.length,
+  forcePerPoint = false,
 ): Promise<{
+  auxiliaryBuffers?: readonly GPUBuffer[];
   buffer: GPUBuffer;
   bufferHigh: GPUBuffer;
   byteLength: number;
@@ -3074,6 +3425,7 @@ async function createStyleBuffer(
   maxPointSize: number;
   overviewIndices: Uint32Array;
   splitBytes: number;
+  uploadBytes?: number;
 }> {
   const pointCount = columns.x.length;
   const pointCapacity = normalizePointCapacity(requestedCapacity, pointCount);
@@ -3181,7 +3533,7 @@ async function createStyleBuffer(
       overviewIndices: finishOverviewStyles(),
     };
   }
-  const constant =
+  const constant = !forcePerPoint &&
     columns.color === undefined && columns.opacity === undefined &&
     columns.rotation === undefined && columns.shape === undefined && columns.size === undefined;
   const styleCount = constant ? 1 : pointCapacity;
@@ -3216,6 +3568,148 @@ async function createStyleBuffer(
     maxPointSize,
     overviewIndices: constant ? new Uint32Array(0) : finishOverviewStyles(),
   };
+}
+
+interface ComposedClientStyleBuffer {
+  auxiliaryBuffers: readonly GPUBuffer[];
+  buffer: GPUBuffer;
+  bufferHigh: GPUBuffer;
+  byteLength: number;
+  constant: false;
+  maxPointSize: number;
+  overviewIndices: Uint32Array;
+  splitBytes: number;
+  uploadBytes: number;
+}
+
+async function createComposedClientStyleBuffer(
+  context: WebgpuContext,
+  gpu: GpuResources,
+  evaluation: FastScatterClientViewEvaluation,
+  theme: FastScatterTheme,
+): Promise<ComposedClientStyleBuffer> {
+  const { device } = context;
+  const byteLength = gpu.sourceStyleByteLength;
+  const composed = createStyleGpuBuffers(device, byteLength, true);
+  const masks = createStyleGpuBuffers(device, byteLength, true);
+  const mappedComposed = mapStyleBuffers(composed);
+  const mappedMasks = mapStyleBuffers(masks);
+  const pointCount = evaluation.metrics.rowCount;
+  const chunkPointCount = Math.min(UPLOAD_CHUNK_POINTS, Math.max(1, pointCount));
+  const styleChunk = new Uint32Array(chunkPointCount);
+  const maskChunk = new Uint32Array(chunkPointCount);
+  let maxPointSize = gpu.sourceMaxPointSize;
+
+  for (let start = 0; start < pointCount; start += chunkPointCount) {
+    const count = Math.min(chunkPointCount, pointCount - start);
+    for (let offset = 0; offset < count; offset += 1) {
+      const pointIndex = start + offset;
+      const style = packFastScatterWebgpuStyle(
+        evaluation.renderColumns,
+        pointIndex,
+        theme.defaultPointColor,
+      );
+      styleChunk[offset] = compactStyleWords(style.color, style.meta);
+      maskChunk[offset] = createFastScatterWebgpuClientStyleMask(
+        evaluation.styles,
+        pointIndex,
+      );
+      if ((evaluation.styles.size?.assigned[pointIndex] ?? 0) !== 0) {
+        maxPointSize = Math.max(maxPointSize, style.size);
+      }
+    }
+    writeMappedStyleData(
+      mappedComposed,
+      start * STYLE_STRIDE_BYTES,
+      styleChunk.subarray(0, count),
+    );
+    writeMappedStyleData(
+      mappedMasks,
+      start * STYLE_STRIDE_BYTES,
+      maskChunk.subarray(0, count),
+    );
+    await yieldToBrowser();
+  }
+  unmapStyleBuffers(composed);
+  unmapStyleBuffers(masks);
+  encodeClientStyleComposition(context, gpu, composed, masks, byteLength);
+
+  return {
+    ...composed,
+    auxiliaryBuffers: [masks.buffer, masks.bufferHigh],
+    byteLength,
+    constant: false,
+    maxPointSize,
+    overviewIndices: new Uint32Array(0),
+    uploadBytes: byteLength * 2,
+  };
+}
+
+function encodeClientStyleComposition(
+  context: WebgpuContext,
+  gpu: GpuResources,
+  composed: StyleGpuBuffers,
+  masks: StyleGpuBuffers,
+  byteLength: number,
+): void {
+  const { device } = context;
+  const pipeline = gpu.styleComposePipeline;
+  const bindGroupLayout = gpu.styleComposeBindGroupLayout;
+  if (pipeline === undefined || bindGroupLayout === undefined) {
+    throw new Error('WebGPU client style composition resources are unavailable.');
+  }
+  const encoder = device.createCommandEncoder({
+    label: 'm-scatter-webgpu/client-style-compose-commands',
+  });
+  const pass = encoder.beginComputePass({
+    label: 'm-scatter-webgpu/client-style-compose-pass',
+  });
+  pass.setPipeline(pipeline);
+  const splitBytes = gpu.sourceStyleSplitBytes;
+  const segments = splitBytes === 0
+    ? [{
+        byteLength,
+        composed: composed.buffer,
+        mask: masks.buffer,
+        source: gpu.sourceStyleBuffer,
+      }]
+    : [
+        {
+          byteLength: splitBytes,
+          composed: composed.buffer,
+          mask: masks.buffer,
+          source: gpu.sourceStyleBuffer,
+        },
+        {
+          byteLength: byteLength - splitBytes,
+          composed: composed.bufferHigh,
+          mask: masks.bufferHigh,
+          source: gpu.sourceStyleBufferHigh,
+        },
+      ];
+  const maxPointsPerDispatch =
+    context.limits.maxComputeWorkgroupsPerDimension * STYLE_COMPOSE_WORKGROUP_SIZE;
+  for (const segment of segments) {
+    const pointCount = segment.byteLength / STYLE_STRIDE_BYTES;
+    for (let startPoint = 0; startPoint < pointCount; startPoint += maxPointsPerDispatch) {
+      const count = Math.min(maxPointsPerDispatch, pointCount - startPoint);
+      const offset = startPoint * STYLE_STRIDE_BYTES;
+      const size = count * STYLE_STRIDE_BYTES;
+      const bindGroup = device.createBindGroup({
+        entries: [
+          { binding: 0, resource: { buffer: segment.source, offset, size } },
+          { binding: 1, resource: { buffer: segment.mask, offset, size } },
+          { binding: 2, resource: { buffer: segment.composed, offset, size } },
+        ],
+        label: 'm-scatter-webgpu/client-style-compose-bind-group',
+        layout: bindGroupLayout,
+      });
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(count / STYLE_COMPOSE_WORKGROUP_SIZE));
+    }
+  }
+  pass.end();
+  device.queue.submit([encoder.finish()]);
 }
 
 interface StyleGpuBuffers {
@@ -3438,6 +3932,7 @@ function recreatePlotBindGroups(device: GPUDevice, gpu: GpuResources): void {
       gpu.selectedBuffer,
       gpu.rotationBuffer,
       gpu.selectedBuffer,
+      gpu.visibleBuffer,
     );
     plot.selectedBindGroup = createPlotBindGroup(
       device,
@@ -3452,6 +3947,7 @@ function recreatePlotBindGroups(device: GPUDevice, gpu: GpuResources): void {
       gpu.selectedBuffer,
       gpu.rotationBuffer,
       gpu.selectedBuffer,
+      gpu.visibleBuffer,
     );
     plot.overviewBindGroup = createPlotBindGroup(
       device,
@@ -3466,6 +3962,7 @@ function recreatePlotBindGroups(device: GPUDevice, gpu: GpuResources): void {
       plot.overviewBuffer,
       gpu.rotationBuffer,
       gpu.selectedBuffer,
+      gpu.visibleBuffer,
     );
     plot.selectedOverviewBindGroup = createPlotBindGroup(
       device,
@@ -3480,6 +3977,7 @@ function recreatePlotBindGroups(device: GPUDevice, gpu: GpuResources): void {
       plot.overviewBuffer,
       gpu.rotationBuffer,
       gpu.selectedBuffer,
+      gpu.visibleBuffer,
     );
   }
 }
@@ -3497,6 +3995,7 @@ function createPlotBindGroup(
   pointIndexBuffer: GPUBuffer,
   rotationBuffer: GPUBuffer,
   selectedMembershipBuffer: GPUBuffer,
+  visibleMembershipBuffer: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
     entries: [
@@ -3522,6 +4021,7 @@ function createPlotBindGroup(
             },
       },
       { binding: 7, resource: { buffer: selectedMembershipBuffer } },
+      { binding: 8, resource: { buffer: visibleMembershipBuffer } },
     ],
     layout,
   });
@@ -3839,12 +4339,77 @@ function resolveVisibleRange(
   };
 }
 
+function createClientViewDrawIndices(
+  evaluation: FastScatterClientViewEvaluation,
+): Uint32Array {
+  const xOrder = evaluation.renderColumns.xOrder;
+  if (xOrder === undefined) return evaluation.activeSourceIndices;
+  const ordered = new Uint32Array(evaluation.activeSourceIndices.length);
+  let count = 0;
+  for (const pointIndex of xOrder) {
+    if (((evaluation.activeMask[pointIndex >>> 5] ?? 0) & (1 << (pointIndex & 31))) === 0) {
+      continue;
+    }
+    ordered[count++] = pointIndex;
+  }
+  return count === ordered.length ? ordered : ordered.slice(0, count);
+}
+
+function resolveIndexedVisibleRange(
+  x: ArrayLike<number>,
+  indices: Uint32Array,
+  range: FastScatterRange,
+): { end: number; start: number } {
+  const min = Math.min(range.min, range.max);
+  const max = Math.max(range.min, range.max);
+  return {
+    end: upperBoundByIndex(x, indices, max),
+    start: lowerBoundByIndex(x, indices, min),
+  };
+}
+
+function lowerBoundByIndex(
+  values: ArrayLike<number>,
+  indices: Uint32Array,
+  target: number,
+): number {
+  let low = 0;
+  let high = indices.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const raw = values[indices[mid] ?? 0];
+    const value = Number.isFinite(raw) ? raw! : Number.POSITIVE_INFINITY;
+    if (value < target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function upperBoundByIndex(
+  values: ArrayLike<number>,
+  indices: Uint32Array,
+  target: number,
+): number {
+  let low = 0;
+  let high = indices.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    const raw = values[indices[mid] ?? 0];
+    const value = Number.isFinite(raw) ? raw! : Number.POSITIVE_INFINITY;
+    if (value <= target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
 function lowerBound(values: ArrayLike<number>, target: number): number {
   let low = 0;
   let high = values.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
-    if ((values[mid] ?? Number.POSITIVE_INFINITY) < target) low = mid + 1;
+    const raw = values[mid];
+    const value = Number.isFinite(raw) ? raw! : Number.POSITIVE_INFINITY;
+    if (value < target) low = mid + 1;
     else high = mid;
   }
   return low;
@@ -3855,7 +4420,9 @@ function upperBound(values: ArrayLike<number>, target: number): number {
   let high = values.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
-    if ((values[mid] ?? Number.POSITIVE_INFINITY) <= target) low = mid + 1;
+    const raw = values[mid];
+    const value = Number.isFinite(raw) ? raw! : Number.POSITIVE_INFINITY;
+    if (value <= target) low = mid + 1;
     else high = mid;
   }
   return low;
@@ -3904,10 +4471,17 @@ function assertPackedStylesCanRebuild(
 
 function isNondecreasing(values: ArrayLike<number>): boolean {
   let previous = Number.NEGATIVE_INFINITY;
+  let invalidSeen = false;
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index] ?? Number.NaN;
-    if (Number.isFinite(value) && value < previous) return false;
-    if (Number.isFinite(value)) previous = value;
+    if (!Number.isFinite(value)) {
+      invalidSeen = true;
+      continue;
+    }
+    // Binary-search culling treats invalid values as a trailing +infinity
+    // bucket. A finite value after an invalid hole is therefore not sorted.
+    if (invalidSeen || value < previous) return false;
+    previous = value;
   }
   return true;
 }
@@ -3936,11 +4510,23 @@ function isIndexedXRangeCompatible(
 }
 
 function destroyGpuResources(gpu: GpuResources): void {
-  const destroyedY = new Set<GPUBuffer>();
-  const destroyedOverview = new Set<GPUBuffer>();
-  gpu.x.buffer.destroy();
-  gpu.styleBuffer.destroy();
-  gpu.styleBufferHigh.destroy();
+  const dataBuffers = new Set<GPUBuffer>([
+    gpu.sourceX.buffer,
+    gpu.x.buffer,
+    gpu.sourceStyleBuffer,
+    gpu.sourceStyleBufferHigh,
+    gpu.styleBuffer,
+    gpu.styleBufferHigh,
+    gpu.visibleBuffer,
+    ...gpu.clientViewBuffers,
+  ]);
+  for (const plot of gpu.plots) {
+    dataBuffers.add(plot.sourceY.buffer);
+    dataBuffers.add(plot.y.buffer);
+    dataBuffers.add(plot.sourceOverviewBuffer);
+    dataBuffers.add(plot.overviewBuffer);
+  }
+  for (const buffer of dataBuffers) buffer.destroy();
   gpu.rotationBuffer.destroy();
   gpu.selectedBuffer.destroy();
   gpu.cacheTexture.destroy();
@@ -3951,23 +4537,15 @@ function destroyGpuResources(gpu: GpuResources): void {
     plot.uniformBuffer.destroy();
     plot.selectedOverviewUniformBuffer.destroy();
     plot.selectedUniformBuffer.destroy();
-    if (!destroyedOverview.has(plot.overviewBuffer)) {
-      destroyedOverview.add(plot.overviewBuffer);
-      plot.overviewBuffer.destroy();
-    }
-    if (!destroyedY.has(plot.y.buffer)) {
-      destroyedY.add(plot.y.buffer);
-      plot.y.buffer.destroy();
-    }
   }
 }
 
 function calculateGpuResidentBytes(gpu: GpuResources): number {
   const uniformBytes = gpu.plots.length * UNIFORM_BYTES * 5;
-  const coordinateBytes = gpu.xIndexedMode === 0
-    ? encodedColumnAllocationBytes(gpu.x.storageMode, gpu.pointCapacity)
+  const coordinateBytes = gpu.sourceX.storageMode === 0
+    ? encodedColumnAllocationBytes(gpu.sourceX.storageMode, gpu.pointCapacity)
     : EMPTY_BUFFER_BYTES;
-  const uniqueY = new Set(gpu.plots.map((plot) => plot.y));
+  const uniqueY = new Set(gpu.plots.map((plot) => plot.sourceY));
   const yBytes = [...uniqueY].reduce(
     (total, column) => total + encodedColumnAllocationBytes(
       column.storageMode,
@@ -3978,15 +4556,20 @@ function calculateGpuResidentBytes(gpu: GpuResources): number {
   const overviewBuffers = new Map<GPUBuffer, number>();
   for (const plot of gpu.plots) {
     overviewBuffers.set(
-      plot.overviewBuffer,
-      Math.max(EMPTY_BUFFER_BYTES, plot.overviewCount * Uint32Array.BYTES_PER_ELEMENT),
+      plot.sourceOverviewBuffer,
+      Math.max(EMPTY_BUFFER_BYTES, plot.sourceOverviewCount * Uint32Array.BYTES_PER_ELEMENT),
     );
   }
   const overviewBytes = [...overviewBuffers.values()].reduce(
     (total, bytes) => total + bytes,
     0,
   );
-  return coordinateBytes + yBytes + gpu.styleByteLength + overviewBytes +
+  const clientViewBytes = [...gpu.clientViewBuffers].reduce(
+    (total, buffer) => total + buffer.size,
+    0,
+  );
+  return coordinateBytes + yBytes + gpu.sourceStyleByteLength + clientViewBytes +
+    gpu.visibleBufferBytes + overviewBytes +
     gpu.cacheWidth * gpu.cacheHeight * 8 +
     gpu.selectedCapacity * Uint32Array.BYTES_PER_ELEMENT + uniformBytes +
     ROTATION_LUT_BYTES;
