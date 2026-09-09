@@ -103,4 +103,15 @@ assert.equal(complete[0], 0);
 assert.equal(complete[count - 1], count - 1);
 assert.equal((await createParallelRepresentativeSourceIndices(buffers, 0)).length, 0);
 
+const allActive = new Uint32Array(Math.ceil(count / 32)).fill(0xffff_ffff);
+assert.deepEqual(await createParallelRepresentativeSourceIndices({ ...buffers, activeMask: allActive }, 128), representatives,
+  'an empty client view preserves the original representative sample');
+const oddRows = new Uint32Array(Math.ceil(count / 32)).fill(0xaaaa_aaaa);
+const filtered = await createParallelRepresentativeSourceIndices({ ...buffers, activeMask: oddRows }, 128);
+assert.equal(filtered.length, 128);
+assert.ok(filtered.every((index) => index % 2 === 1));
+for (const index of [1, count - 1, 777, 17_777, 12_345]) {
+  assert.ok(filtered.includes(index), `filtered sampling retains extrema and rare categories: ${index}`);
+}
+
 console.log('parallel WebGPU representative sampling tests passed');

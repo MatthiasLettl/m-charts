@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   HistogramAggregationPreparedState,
   HistogramPreparedContinuousPlan,
@@ -358,7 +359,7 @@ function buildContinuousSubplotAggregation(
   ) {
     const rowIndex = preparedPlan.rowIndicesBySortedValue[candidateIndex] ?? -1;
     const value = preparedPlan.sortedValues[candidateIndex];
-    if (rowIndex < 0 || !Number.isFinite(value)) {
+    if (rowIndex < 0 || !clientRowIsActive(columns.activeMask, rowIndex) || !Number.isFinite(value)) {
       continue;
     }
     const binIndex = getContinuousBinIndex(value, plan);
@@ -458,6 +459,7 @@ function buildCategorySubplotAggregation(
   let totalCount = 0;
 
   for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    if (!clientRowIsActive(columns.activeMask, rowIndex)) continue;
     const value = readRawValue(column, rowIndex);
     const binIndex = getCategoryBinIndex(value, plan);
 

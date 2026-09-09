@@ -1,3 +1,4 @@
+import { evaluateParallelClientView } from '../../m-parallel/core/index.js';
 import {
   createParallelEngine,
 } from '../../m-parallel/engine/createParallelEngine.js';
@@ -56,6 +57,7 @@ export function createParallelWebgpuPlot(
   let renderer: ParallelWebgpuRenderer | null = null;
   const {
     aggregationBackend,
+    clientView,
     binResolution,
     directSegmentLimit,
     renderMode,
@@ -66,8 +68,15 @@ export function createParallelWebgpuPlot(
   } = options;
   void _rendererFactory;
 
+  const sourceBuffers = parallelOptions.buffers;
+  let theme = parallelOptions.theme;
+  const evaluate = () => clientView === undefined ? null : evaluateParallelClientView(
+    clientView, sourceBuffers, theme?.lineColor.map((v) => Math.round(v * 255)),
+  );
+  let evaluation = evaluate();
   const plot = createParallelEngine(hostElement, {
     ...parallelOptions,
+    buffers: evaluation?.buffers ?? sourceBuffers,
     baseCanvasClassName:
       options.baseCanvasClassName ??
       'parallel-fast-webgpu-canvas parallel-fast-webgpu-canvas-base',
@@ -122,13 +131,41 @@ export function createParallelWebgpuPlot(
   }
   const initialRenderer: ParallelWebgpuRenderer = renderer;
   const webgpuPlot = Object.assign(plot, {
+    waitForGpuIdle: () => (renderer ?? initialRenderer).waitForGpuIdle(),
     getWebgpuDiagnostics: () =>
-      (renderer ?? initialRenderer).getDiagnostics(),
+      ({ ...(renderer ?? initialRenderer).getDiagnostics(),
+        clientView: evaluation === null ? undefined : { ...evaluation.metrics, ...(renderer ?? initialRenderer).getClientViewStatus(), revision: evaluation.revision, sourceStyleMode: evaluation.sourceStyleMode } }),
     interactive: initialRenderer.interactive,
     ready: initialRenderer.ready,
   });
+  if (clientView !== undefined) plot.use(() => clientView.view.validateWith((next) => {
+    if (next.metrics.rowCount !== sourceBuffers.recordCount) throw new TypeError('Client view must retain source row identities.');
+    for (const key of sourceBuffers.axisOrder.map((key) => clientView.fieldByAxis?.[key] ?? key)) {
+      if (!Object.hasOwn(next.fields, key)) throw new TypeError(`Cannot remove plotted client field "${key}" while a chart is attached.`);
+    }
+  }));
   const updatePlot = webgpuPlot.update.bind(webgpuPlot);
+  if (clientView !== undefined) {
+    const apply = (mutable: ParallelWebgpuPlotUpdateOptions = {}) => {
+      evaluation = evaluate();
+      const snapshot = plot.commands.getStateSnapshot();
+      updatePlot({ brushIntervals: snapshot.brush.brushIntervals, axisViewports: snapshot.axisViewports,
+        selectedSourceIndices: snapshot.selectedSourceIndices, inspection: null,
+        ...mutable, buffers: evaluation!.buffers });
+    };
+    webgpuPlot.update = (next) => {
+      if (next.buffers !== undefined && next.buffers !== sourceBuffers) throw new TypeError(
+        'WebGPU parallel source buffers are immutable while clientView is attached; recreate the view and plot for a new dataset.',
+      );
+      const { buffers: _source, ...mutable } = next;
+      void _source;
+      if (next.theme !== undefined && next.theme !== theme) { theme = next.theme; apply(mutable); }
+      else updatePlot(mutable);
+    };
+    plot.use(() => clientView.view.on('change', () => apply()));
+  }
   streamedUpdateHandlers.set(webgpuPlot, async (updateOptions) => {
+    if (clientView !== undefined) throw new TypeError('Streaming updates are unavailable while clientView is attached.');
     let stop: () => void = () => undefined;
     const rendered = new Promise<void>((resolve, reject) => {
       stop = webgpuPlot.on('renderstatechange', (event) => {
@@ -151,6 +188,7 @@ export function createParallelWebgpuPlot(
     }
   });
   streamedAppendHandlers.set(webgpuPlot, async (page, buffers) => {
+    if (clientView !== undefined) throw new TypeError('Streaming append is unavailable while clientView is attached.');
     const activeRenderer = renderer ?? initialRenderer;
     await activeRenderer.appendPackedPage(page, buffers);
   });

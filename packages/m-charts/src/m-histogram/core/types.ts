@@ -62,6 +62,9 @@ export interface HistogramCategorySpec {
 export interface HistogramParameterSpec {
   readonly categories?: readonly HistogramCategorySpec[];
   readonly datetimeOriginNs?: string;
+  /** Lossless semantic values when the column stores millisecond offsets. */
+  readonly epochNsValues?: readonly string[];
+  readonly encodedScaleMs?: number;
   readonly domain?: HistogramRange;
   readonly key: HistogramParameterKey;
   readonly kind: HistogramParameterKind;
@@ -108,6 +111,8 @@ export interface HistogramRecordIdentity {
 }
 
 export interface HistogramColumns {
+  /** Optional row visibility bitset; source columns and indexes remain immutable. */
+  readonly activeMask?: Uint32Array;
   readonly color?: HistogramColorArray;
   readonly colorFormat?: HistogramColorFormat;
   readonly displayFields?: readonly HistogramDisplayField[];

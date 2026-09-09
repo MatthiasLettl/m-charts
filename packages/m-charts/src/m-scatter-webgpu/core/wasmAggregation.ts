@@ -30,6 +30,7 @@ interface FastScatterAggregationWasmExports extends WebAssembly.Exports {
   memory: WebAssembly.Memory;
   session_reset(pointCount: number, yCount: number): void;
   session_column_reserve(slot: number, kind: number, byteLength: number): number;
+  session_set_active_mask(enabled: number): number;
   session_set_x_order(enabled: number): number;
   session_set_source_index(enabled: number): number;
   session_validate(): number;
@@ -120,11 +121,20 @@ export class FastScatterWebgpuWasmAggregationSession {
     private readonly binaryBytes: number,
   ) {}
 
+  updateActiveMask(mask: Uint32Array | undefined): void {
+    if (mask !== undefined && mask.length !== Math.ceil(this.pointCount / 32)) {
+      throw new RangeError('Visibility mask length must match the resident row count.');
+    }
+    const pointer = this.wasm.session_set_active_mask(mask === undefined ? 0 : 1);
+    if (mask !== undefined) copyU32IntoMemory(this.wasm.memory, pointer, mask);
+  }
+
   static create(
-    columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
+    columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
     spec: FastScatterPlotSpec,
     xSorted: boolean,
   ): FastScatterWebgpuWasmAggregationSession | null {
+    if (columns.activeMask !== undefined && columns.activeMask.length !== Math.ceil(columns.x.length / 32)) return null;
     if (
       typeof WebAssembly === 'undefined' || !xSorted ||
       columns.x.length > 0xffff_ffff
@@ -146,6 +156,10 @@ export class FastScatterWebgpuWasmAggregationSession {
       let setupBytes = copyColumn(wasm, 0, columns.x);
       for (let index = 0; index < yColumns.length; index += 1) {
         setupBytes += copyColumn(wasm, index + 1, yColumns[index]!);
+      }
+      if (columns.activeMask !== undefined) {
+        copyU32IntoMemory(wasm.memory, wasm.session_set_active_mask(1), columns.activeMask);
+        setupBytes += columns.activeMask.byteLength;
       }
       if (columns.xOrder !== undefined) {
         const pointer = wasm.session_set_x_order(1);

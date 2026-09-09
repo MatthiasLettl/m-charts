@@ -8,6 +8,7 @@ Assumed host layout:
 
 ```text
 src/vendor/m-charts/plot-engine
+src/vendor/m-charts/client-data-view
 src/vendor/m-charts/plot-engine-webgpu
 src/vendor/m-charts/m-scatter/core
 src/vendor/m-charts/m-scatter/engine
@@ -28,8 +29,13 @@ relative prefix to match the file location in your app after copying.
 Copy chart `adapters`, scatter `workers`, or chart `react` folders only when
 the host uses those optional helpers.
 
+Copy the entire `client-data-view` folder (including its root `index.ts`):
+current chart core exports depend on it even when the optional pipeline is not
+used. The module worker only needs bundling when explicitly configured.
+
 Examples:
 
+- [Optional client data views: filters, calculations, styles, and persistence](client-data-view-source-copy.md)
 - [Scatter WebGL2](scatter-source-copy.md)
 - [Migrate scatter from WebGL2 to WebGPU](scatter-webgpu-migration.md)
 - [Histogram](histogram-source-copy.md)

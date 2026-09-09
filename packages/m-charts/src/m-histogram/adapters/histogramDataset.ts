@@ -378,6 +378,8 @@ function createHistogramParameterSpec(
           }))
         : undefined,
     datetimeOriginNs: axis.kind === 'datetime-ns' ? axis.datetimeOriginNs : undefined,
+    epochNsValues: axis.kind === 'datetime-ns' ? axis.epochNsValues : undefined,
+    encodedScaleMs: axis.kind === 'datetime-ns' ? axis.encodedScaleMs : undefined,
     domain: axis.domain,
     key,
     kind: axis.kind,

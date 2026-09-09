@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   FastScatterPlotSpec,
   FastScatterPointColumns,
@@ -77,6 +78,7 @@ export function calculateFastScatterDomain(
         createPaddedRangeForColumn(
           columns.y[plot.yKey],
           axisColumns.axisByColumn?.[plot.yKey],
+          columns.activeMask,
         ),
       ]),
     ),
@@ -272,6 +274,7 @@ export function createPaddedFastScatterDomainRange(
 function createPaddedRangeForColumn(
   column: ArrayLike<number> | undefined,
   axis: FastScatterEncodedAxis | undefined,
+  activeMask?: Uint32Array,
 ): FastScatterRange {
   const encodedDomain = axis?.domain;
   const range =
@@ -280,11 +283,11 @@ function createPaddedRangeForColumn(
     Number.isFinite(encodedDomain.max) &&
     encodedDomain.max >= encodedDomain.min
       ? encodedDomain
-      : rangeForColumn(column);
+      : rangeForColumn(column, activeMask);
   return createPaddedFastScatterDomainRange(range, axis);
 }
 
-function rangeForColumn(column: ArrayLike<number> | undefined): FastScatterRange {
+function rangeForColumn(column: ArrayLike<number> | undefined, activeMask?: Uint32Array): FastScatterRange {
   if (column === undefined || column.length === 0) {
     return { min: 0, max: 1 };
   }
@@ -292,6 +295,7 @@ function rangeForColumn(column: ArrayLike<number> | undefined): FastScatterRange
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
   for (let index = 0; index < column.length; index += 1) {
+    if (!clientRowIsActive(activeMask, index)) continue;
     const value = column[index];
     if (!Number.isFinite(value)) {
       continue;

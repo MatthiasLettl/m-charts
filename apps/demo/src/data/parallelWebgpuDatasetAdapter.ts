@@ -115,6 +115,8 @@ export interface LoadedParallelWebgpuDataset {
 export class LocalParallelWebgpuDatasetUnavailableError extends Error {}
 
 export async function loadParallelWebgpuDataset(options: {
+  /** Wait for immutable CPU columns before creating an optional client view. */
+  residentClientView?: boolean;
   manifestUrl?: string;
   fixtureUrl: string;
   pointCount: number;
@@ -334,6 +336,15 @@ export async function loadParallelWebgpuDataset(options: {
     });
   }
 
+  if (options.residentClientView) {
+    // The worker exposes lazy columns at manifest time. Client predicates must
+    // only see finalized values, and draining also releases queued GPU pages.
+    for await (const page of primary.packedData.createPages()) {
+      void page;
+      throwIfAborted(options.signal);
+    }
+    buffers.webgpuPackedData = undefined;
+  }
   return {
     buffers,
     generated: false,

@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE,
   PARALLEL_AXIS_MAX_DISPLAY_VALUE,
@@ -23,7 +24,7 @@ export class ParallelCanvasHoverRenderer implements ParallelFastHoverRendererLik
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
-    private readonly buffers: ParallelBuffers,
+    private buffers: ParallelBuffers,
     options: ParallelWebgl2HoverOverlayRendererOptions,
   ) {
     this.theme = options.theme;
@@ -45,7 +46,7 @@ export class ParallelCanvasHoverRenderer implements ParallelFastHoverRendererLik
     if (context === null) return null;
     context.clearRect(0, 0, this.canvas.width, this.canvas.height);
     const sourceIndex = this.sourceIndex;
-    if (sourceIndex !== null && this.buffers.axisCount > 0) {
+    if (sourceIndex !== null && clientRowIsActive(this.buffers.activeMask, sourceIndex) && this.buffers.axisCount > 0) {
       const color = this.theme?.selectedColor ?? DEFAULT_HOVER;
       context.strokeStyle = `rgba(${Math.round(color[0] * 255)}, ${Math.round(color[1] * 255)}, ${Math.round(color[2] * 255)}, ${color[3]})`;
       context.lineWidth = Math.max(2, globalThis.devicePixelRatio || 1);
@@ -86,11 +87,12 @@ export class ParallelCanvasHoverRenderer implements ParallelFastHoverRendererLik
   }
 
   setHoverSourceIndex(
-    _buffers: ParallelBuffers,
+    buffers: ParallelBuffers,
     sourceIndex: number | null,
   ): ParallelWebgl2HoverUpdateMetrics {
     const startedAt = performance.now();
-    const changed = sourceIndex !== this.sourceIndex;
+    const changed = sourceIndex !== this.sourceIndex || buffers !== this.buffers;
+    this.buffers = buffers;
     this.sourceIndex = sourceIndex;
     return {
       baseRedrawMs: null,

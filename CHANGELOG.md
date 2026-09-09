@@ -4,6 +4,146 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Consistent WebGPU demo pipelines
+
+- Shared the scatter-based pipeline panel, summaries, rule lists, diagnostics,
+  and state import/download across all three resident WebGPU demos.
+- Made histogram/parallel preset filters and affine/difference transforms update
+  existing rules, while keeping numeric-field and difference-order controls.
+- Aligned selection actions, Alt+I / Alt+O shortcuts, reset behavior, and transform
+  viewport fitting; fixed histogram fitting after large transformed value shifts.
+- Resolve deferred histogram selection membership when a pipeline keep action
+  needs source indices, so bin selections enable keep-inside/outside immediately.
+- Added browser regressions for repeated edits, rule order, invalid imports,
+  transformed ranges, reset, and theme changes. The E2E server port can now be
+  overridden with `M_CHARTS_E2E_PORT`.
+
+## Client pipeline documentation
+
+- Added a dedicated README overview and architecture diagram explaining the
+  optional client pipeline, large-dataset use cases, and CPU/WASM versus GPU
+  residency and update costs.
+- Added a complete source-copy example for filters, calculations, styles,
+  updates, state persistence/reset, worker setup, and disposal, with links from
+  chart guides and an agent integration checklist.
+- Corrected source-copy dependency instructions and clarified field mappings,
+  complete-item updates, streaming/bar-mode limits, and dataset lifecycle.
+
+## Client pipeline residency and validation
+
+- Kept scatter GPU source buffers resident during theme updates and added cumulative
+  source-upload/resource-build diagnostics for scatter and parallel.
+- Replaced scatter interaction copies with visibility-mask checks, including exact
+  selection, hover and TypeScript/WASM bubble/heatmap aggregation.
+- Retained histogram columns and sorted indexes across mask-only filters in both
+  TypeScript and Rust/WASM; rebuilt only derived coordinates when necessary.
+- Normalized difference overflow and tightened unknown calculation-operator validation;
+  documented and tested the application-independent predicate contract.
+- Aligned demo import/export, enable/reorder controls and additive style presets.
+- Added submitted-GPU-work fences, in-app GPU regression fixtures, 1M/10M/25M
+  latency/allocation/upload benchmarks, and a mandatory `pnpm test:release` gate.
+
+## WebGPU Parallel and Histogram Client Data Views
+
+- Pinned Rust 1.98.1 with the WASM target, rustfmt, and Clippy, documented local
+  toolchain setup, and regenerated the aggregation binary with that compiler.
+
+- Added client expression calculations (arithmetic, math, text, coalesce, case),
+  field/expression comparisons, text predicates, transformed-stage filters and
+  direct field style channels. Extended state uses version 2; legacy state and
+  synchronous APIs remain compatible.
+- Added optional bounded module-worker evaluation, atomic async batches, same-row
+  field updates, precommit chart validators, disposal and content fingerprints.
+  Demos use workers and content identity and expose the extended controls.
+- Fixed semantic category/boolean/datetime decoding, transformed axis metadata,
+  indexed scatter style inheritance, histogram unmatched colors and style-only
+  selection preservation, and parallel mask-only coordinate reuse. Histogram
+  specs can update resident subplots/parameters with a client view attached.
+- Added real-worker unit regressions and an in-app-compatible actual WebGPU/WASM
+  browser fixture, covered by the opt-in GPU E2E suite and TypeScript checks.
+
+- Added optional creation-bound parallel and raw histogram client-view bindings,
+  dataset/projection helpers, shared state/events, filtering, ordered numeric
+  transformations, and color/opacity composition with source-style opt-out.
+- Preserve row IDs and source indices through filtering, GPU visibility, exact
+  TypeScript/WASM selection and histogram membership. Recalculate transformed
+  domains; exclude filtered parallel rows from its missing-value lane and hover.
+- Reuse the parallel GPU device and unchanged coordinate/style buffers; coalesce
+  rapid revisions and expose pending/upload diagnostics. Histogram style edits
+  reuse sorted WASM and TypeScript coordinate indexes.
+- Fixed direct parallel draws interpreting paired density styles as full RGBA
+  colors. They now decode the existing packed style representation correctly.
+- Added resident demo controls, exact selection filters, reset and JSON import/
+  export. Parallel waits for immutable decoded CPU columns before attaching its
+  view. Streaming and pre-aggregated bar demos keep their existing behavior.
+- Added unit and actual-WebGPU regression coverage for optionality, mixed fields,
+  source identity, empty/sparse filters, all parallel modes, histogram backends,
+  styles, transformations, rapid updates, reset and demo interactions.
+- Updated package guides, API notes and source-copy migration instructions.
+  No client binding is required by existing chart integrations.
+
+## WebGPU Scatter Client Data Views
+
+- Full-suite validation also fixed the parallel streaming controller returning
+  stale `getBuffers()` results after a packed-page append. Progress callbacks
+  now expose the same resident prefix as the renderer; the demo snapshots that
+  prefix's metadata so subsequent in-place GPU appends cannot race its progress UI.
+
+- Added applied-revision/pending diagnostics, prevented stale exact frames while
+  a projection uploads, and exercised paged-style composition, sparse filters,
+  LOD, and reset on ten million GPU-resident rows.
+
+- Fixed streaming capacity growth to resize visibility storage without a client
+  view, client-view culling for unsorted/nonfinite X, and conditional color rules
+  losing the theme fallback. Source hover indexes are bypassed after coordinate
+  transforms and restored when transforms are removed.
+- Reuse unchanged evaluator stages, masked interaction columns, and derived GPU
+  buffers. Constant styles encode once; ordered differences avoid redundant
+  sorting. Rapid GPU revisions coalesce without retaining every intermediate
+  projection, and canceled uploads release their temporary buffers.
+- Isolate subscriber failures through optional `onListenerError(error, event)`
+  (default: console.error), freeze configuration snapshots, and preserve event
+  order during reentrant edits. Reject streaming append with an attached,
+  creation-bound client view before mutation.
+- Added CPU caching/error/order regressions and real-GPU pixel comparisons for
+  source compatibility, theme updates, streaming growth, rapid resets, and hover.
+
+- Expanded the demo with finite scale/offset controls, difference direction,
+  missing-neighbor and grouping options, independent style channels, all five
+  glyphs, category/gradient colors, and a glyph inspection zoom. Added a
+  dismissible selection popup and bounded state previews with full JSON downloads.
+  Reset viewport now retains the domain of active transformations.
+- Selection filters now freeze selected source rows, work after transformations,
+  and compose across successive selections. Large membership filters use set
+  lookups; disabled transforms no longer expose nonexistent derived fields.
+- Added transformed-selection and configurable-control regressions, native
+  macOS GPU test flags, and composited WebGPU screenshot comparisons.
+
+- Added an additive, chart-independent typed client data-view API with a
+  JSON-serializable predicate AST, numeric/datetime/categorical/boolean fields,
+  filter-first affine and ordered/partitioned difference transforms, and
+  computed color/opacity/rotation/shape/size rules.
+- Integrated the controller with WebGPU scatter while retaining immutable
+  source coordinate/style buffers. View changes replace only visibility and
+  derived buffers, expose state/change callbacks and diagnostics, preserve or
+  ignore embedded, static-packed, and paged-packed base styles, and never
+  initiate network work. Paged styles remain GPU-resident and compose with
+  per-channel client overrides without expanded CPU copies.
+- Added host-wired inside/outside multi-region selection filters, keyboard
+  actions, presets, inspection/removal/reset controls, and state/performance
+  diagnostics to `/m-scatter-webgpu`, plus unit/E2E coverage and a detailed host
+  integration/persistence/query-adapter guide.
+- Fixed sorted-X draw-range culling after a client filter. The renderer now
+  derives the draw span from resident/render coordinates and gives an ordered
+  active-index list the full LOD budget, so sparse box/lasso filters no longer
+  render an empty chart, an unrelated contiguous X prefix, or a biased
+  source-stride sample above one million rows.
+- Hardened client-view interaction ordering, imported-state operator and typed
+  operand validation, detached nested state, preserved RGBA8 style metadata,
+  and bigint-first nanosecond differences. Source-column replacement is now
+  rejected while a view is attached instead of desynchronizing CPU and GPU
+  state.
+
 ## Scatter X Reference Lines
 
 - Added application-owned, multi-line X reference annotations to the shared

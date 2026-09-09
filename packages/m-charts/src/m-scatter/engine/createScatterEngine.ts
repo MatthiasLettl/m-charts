@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   DisposableStack,
   brushEventNameForPhase,
@@ -1442,7 +1443,7 @@ export function createFastScatterEngine(
 
   function createProgrammaticHoverEvent(sourceIndex: number): FastScatterHoverEvent | null {
     const normalized = normalizeHoverSourceIndex(sourceIndex, optionsState.columns.x.length);
-    if (normalized === null) {
+    if (normalized === null || !clientRowIsActive(optionsState.columns.activeMask, normalized)) {
       return null;
     }
 

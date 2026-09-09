@@ -1,3 +1,5 @@
+import type { ParallelClientViewBinding } from '../../m-parallel/core/index.js';
+import type { ClientDataViewEvaluation } from '../../client-data-view/index.js';
 import type {
   ParallelFastPlotInstance,
   ParallelFastPlotOptions,
@@ -9,6 +11,8 @@ import type {
 } from '../core/index.js';
 
 export interface ParallelWebgpuPlotOptions extends ParallelFastPlotOptions {
+  /** Optional creation-bound client pipeline; source data remains immutable. */
+  clientView?: ParallelClientViewBinding;
   /** Exact CPU finalization preference. Rust/WASM falls back to TypeScript. */
   aggregationBackend?: ParallelWebgpuAggregationBackend;
   /** Pairwise screen-bin resolution. Creation-only. */
@@ -25,6 +29,7 @@ export interface ParallelWebgpuPlotOptions extends ParallelFastPlotOptions {
 
 export type ParallelWebgpuPlotUpdateOptions = Partial<Omit<
   ParallelWebgpuPlotOptions,
+  | 'clientView'
   | 'aggregationBackend'
   | 'binResolution'
   | 'directSegmentLimit'
@@ -36,7 +41,9 @@ export type ParallelWebgpuPlotUpdateOptions = Partial<Omit<
 export interface ParallelWebgpuPlotInstance extends ParallelFastPlotInstance {
   readonly interactive: Promise<void>;
   readonly ready: Promise<void>;
-  getWebgpuDiagnostics(): ParallelWebgpuDiagnostics;
+  /** Fence submitted GPU work; settle pending client-view updates before calling. */
+  waitForGpuIdle(): Promise<void>;
+  getWebgpuDiagnostics(): ParallelWebgpuDiagnostics & { clientView?: ClientDataViewEvaluation['metrics'] & { pending: boolean; sourceUploadBytes: number; totalSourceUploadBytes: number; sourceBufferBuildCount: number; viewUploadBytes: number; revision: number; sourceStyleMode: 'preserve' | 'ignore' } };
   update(options: ParallelWebgpuPlotUpdateOptions): void;
 }
 

@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   FastScatterPlotSpec,
   FastScatterPointColumns,
@@ -87,6 +88,7 @@ export function computeFastScatterOutOfRangeMarkers(
     const pointCount = Math.min(input.columns.x.length, yValues.length);
 
     for (let pointIndex = 0; pointIndex < pointCount; pointIndex += sampleStride) {
+      if (!clientRowIsActive(input.columns.activeMask, pointIndex)) continue;
       const x = input.columns.x[pointIndex];
       const y = yValues[pointIndex];
 

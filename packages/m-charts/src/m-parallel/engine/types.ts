@@ -49,6 +49,8 @@ export interface ParallelFastRendererLike {
     selectedSourceIndices: Uint32Array,
   ): ParallelWebgl2SelectedUpdateMetrics;
   updateTheme(theme: ParallelFastTheme | undefined): void;
+  /** @internal Optional resident-buffer update for creation-bound client views. */
+  updateClientViewBuffers?(buffers: ParallelBuffers): Promise<void>;
   updateAxisViewports?(
     axisViewports: ParallelAxisViewports,
     options?: { phase: 'commit' | 'preview' },

@@ -9,11 +9,16 @@ For copy-ready snippets, see [docs/examples](examples/README.md).
 
 ## Copy The Required Source
 
-Always copy the shared plot engine with any chart:
+Always copy the shared plot engine and client-data-view source with any chart:
 
 ```text
 packages/m-charts/src/plot-engine -> src/vendor/m-charts/plot-engine
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 ```
+
+The chart core exports import `client-data-view` even when no view is attached,
+including in WebGL2 integrations. Copy the whole folder, including its root
+`index.ts` and `core`; activating the pipeline and bundling its worker are optional.
 
 Then copy one or more framework-neutral chart slices. Use `core` and `engine`
 as the default required source. Add `adapters`, scatter `workers`, or chart
@@ -51,6 +56,7 @@ A recommended destination layout is:
 
 ```text
 src/vendor/m-charts/plot-engine
+src/vendor/m-charts/client-data-view
 src/vendor/m-charts/plot-engine-webgpu
 src/vendor/m-charts/m-scatter
 src/vendor/m-charts/m-scatter-webgpu
@@ -454,6 +460,38 @@ segment buffers. See
 and [the WebGPU parallel guide](../packages/m-charts/PARALLEL_WEBGPU.md) for
 fallback code, lifecycle, rendering, exact selection, diagnostics, and
 validation details.
+
+## Optional Client Data Views
+
+For repeated local exploration of a fully loaded dataset, attach a client view
+at WebGPU plot creation. Filters, calculations, and styles then update the
+resident view without refetching the source. Scatter/parallel keep GPU source
+coordinates; raw histograms reuse CPU/WASM columns and indexes and rebuild the
+resulting bins. The shared evaluator runs in TypeScript with an optional worker.
+Omit `clientView` to keep your existing update/streaming workflow.
+
+Import the chart-specific controller factory from the copied shared chart
+`core/index.js`, and its plot factory from the WebGPU `engine/index.js`:
+
+| Chart | Controller factory | Plot factory |
+| --- | --- | --- |
+| Scatter | `createFastScatterClientDataView` from `m-scatter/core` | `createScatterPlot` from `m-scatter-webgpu/engine` |
+| Parallel | `createParallelClientDataView` from `m-parallel/core` | `createParallelWebgpuPlot` from `m-parallel-webgpu/engine` |
+| Histogram | `createHistogramClientDataView` from `m-histogram/core` | `createHistogramWebgpuPlot` from `m-histogram-webgpu/engine` |
+
+Import shared controller types and `createClientDataViewWorkerEvaluator` from
+`client-data-view/index.js`. Bundle `client-data-view/core/worker.ts` as a module
+worker only if using asynchronous evaluation. The worker never needs a demo
+route or React hook. The existing scatter aggregation/selection workers are
+separate from this pipeline worker.
+
+See the [complete source-copy example](examples/client-data-view-source-copy.md)
+for lifecycle, filters, a calculated field, styles, updates, JSON persistence,
+and worker setup. The [API reference](../packages/m-charts/CLIENT_DATA_VIEW.md)
+covers mappings, supported expressions, source style preservation, and
+performance diagnostics. Source data is creation-bound while a view is attached:
+new rows/order require a new view and plot; `updateFields` supports same-row
+metadata changes. Streaming append and pre-aggregated bars cannot use the binding.
 
 ## Scatter Worker Files
 

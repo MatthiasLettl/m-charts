@@ -252,6 +252,7 @@ export async function createParallelWebgpuStreamingPlot(
                 }
               },
             );
+            buffers = nextBuffers;
             renderedCount = loadedCount;
             nextRenderCount = getNextRenderCount(
               renderedCount,

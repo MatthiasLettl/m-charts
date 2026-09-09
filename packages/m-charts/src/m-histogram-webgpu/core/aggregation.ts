@@ -38,6 +38,7 @@ interface HistogramWasmExports extends WebAssembly.Exports {
     domainMax: number,
   ): number;
   histogram_set_color(enabled: number): number;
+  histogram_set_active_mask(enabled: number): number;
   histogram_set_source_index(enabled: number): number;
   histogram_results_reset(): void;
   histogram_selection_reserve(length: number): number;
@@ -100,6 +101,8 @@ interface CachedWasmSubplot {
 export class HistogramWebgpuAggregationProvider implements HistogramAggregationProvider {
   private buildCount = 0;
   private columns: HistogramColumns | null = null;
+  private parameterSchemaKey = '';
+  private typescriptPreparation: { values: HistogramColumns['valuesByParameter']; schema: string; state: HistogramAggregationPreparedState } | null = null;
   private fallbackReason: string | undefined;
   private indexedRowCount = 0;
   private lastBuildMs = 0;
@@ -130,7 +133,11 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
     }
     this.resolvedBackend = 'typescript';
     this.wasmPreparedState = null;
-    return prepareHistogramAggregationState(columns, spec);
+    const schema = JSON.stringify(spec.parameters);
+    if (this.typescriptPreparation?.values === columns.valuesByParameter && this.typescriptPreparation.schema === schema) return this.typescriptPreparation.state;
+    const state = prepareHistogramAggregationState(columns, spec);
+    this.typescriptPreparation = { values: columns.valuesByParameter, schema, state };
+    return state;
   }
 
   build(
@@ -168,6 +175,7 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
 
   dispose(): void {
     this.columns = null;
+    this.typescriptPreparation = null;
     this.lastPlotSpec = null;
     this.parameterSlotByKey.clear();
     this.subplotCache.clear();
@@ -197,6 +205,9 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
     if (typeof WebAssembly === 'undefined' || columns.ids.length > 0xffff_ffff) {
       return this.fallback('WebAssembly is unavailable or the row count exceeds uint32.');
     }
+    if (columns.activeMask !== undefined && columns.activeMask.length !== Math.ceil(columns.ids.length / 32)) {
+      return this.fallback('Rust/WASM requires a visibility mask matching the resident row count.');
+    }
     if (
       parameters.some((parameter) => {
         const column = columns.valuesByParameter[parameter.key];
@@ -217,6 +228,27 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
       return this.fallback(
         'Rust/WASM color stacks require one packed rgba32 value per record.',
       );
+    }
+    const schemaKey = JSON.stringify(parameters);
+    if (this.wasm !== null && this.wasmPreparedState !== null &&
+      this.columns?.valuesByParameter === columns.valuesByParameter &&
+      this.columns.sourceIndex === columns.sourceIndex && this.parameterSchemaKey === schemaKey) {
+      // A view update changes masks/colors, never the immutable sorted indexes.
+      let bytes = 0;
+      if (this.columns.color !== columns.color) {
+        const pointer = this.wasm.histogram_set_color(columns.color === undefined ? 0 : 1);
+        if (columns.color !== undefined) { copyBytes(this.wasm.memory, pointer, columns.color); bytes += columns.color.byteLength; }
+      }
+      if (this.columns.activeMask !== columns.activeMask) {
+        const pointer = this.wasm.histogram_set_active_mask(columns.activeMask === undefined ? 0 : 1);
+        if (columns.activeMask !== undefined) { copyBytes(this.wasm.memory, pointer, columns.activeMask); bytes += columns.activeMask.byteLength; }
+      }
+      this.setupBytes = bytes;
+      this.setupMs = performance.now() - startedAt;
+      this.columns = columns;
+      this.subplotCache.clear();
+      this.lastPlotSpec = null;
+      return this.wasmPreparedState;
     }
     try {
       const instance = new WebAssembly.Instance(getModule());
@@ -260,12 +292,18 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
         copyBytes(wasm.memory, pointer, columns.color);
         setupBytes += columns.color.byteLength;
       }
+      if (columns.activeMask !== undefined) {
+        const pointer = wasm.histogram_set_active_mask(1);
+        copyBytes(wasm.memory, pointer, columns.activeMask);
+        setupBytes += columns.activeMask.byteLength;
+      }
       if (columns.sourceIndex !== undefined) {
         const pointer = wasm.histogram_set_source_index(1);
         copyBytes(wasm.memory, pointer, columns.sourceIndex);
         setupBytes += columns.sourceIndex.byteLength;
       }
       this.columns = columns;
+      this.parameterSchemaKey = schemaKey;
       this.indexedRowCount = indexedRowCount;
       this.wasm = wasm;
       this.setupBytes = setupBytes;

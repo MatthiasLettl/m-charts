@@ -13,6 +13,7 @@ export type FastScatterSelectionWorkerMode = 'sync' | 'worker';
 export type FastScatterSelectionWorkerRequestKind = 'rectangle' | 'lasso';
 
 export interface FastScatterSelectionWorkerColumns {
+  readonly activeMask?: Uint32Array;
   readonly sourceIndex?: Uint32Array;
   readonly x: FastScatterTypedNumericArray;
   readonly xOrder?: Uint32Array;
@@ -81,9 +82,10 @@ export interface FastScatterSelectionExecutionResult {
 }
 
 export function cloneFastScatterSelectionWorkerColumns(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
 ): FastScatterSelectionWorkerColumns {
   return {
+    activeMask: columns.activeMask?.slice(),
     sourceIndex:
       columns.sourceIndex === undefined
         ? undefined

@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   normalizeParallelBrushIntervals,
   selectParallelRecordIdsByBrushes,
@@ -145,6 +146,11 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   private disposed = false;
   private densityVisible = false;
   private gpu: ParallelGpuResources | null = null;
+  private clientUpdateTask: Promise<void> | null = null;
+  private requestedClientBuffers: ParallelBuffers | null = null;
+  private clientViewUploadBytes = 0;
+  private totalSourceUploadBytes = 0;
+  private sourceBufferBuildCount = 0;
   private hoverFallbackInFlight: Promise<ParallelHoverCandidate | null> | null = null;
   private hoverFallbackVersion = 0;
   private lineOpacityScale: number;
@@ -401,6 +407,101 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     }
   }
 
+  getClientViewStatus() {
+    return { pending: this.requestedClientBuffers !== null, viewUploadBytes: this.clientViewUploadBytes, sourceUploadBytes: 0, totalSourceUploadBytes: this.totalSourceUploadBytes, sourceBufferBuildCount: this.sourceBufferBuildCount };
+  }
+
+  /** Updates projected coordinates, visibility and styles on the resident device. */
+  updateClientViewBuffers(buffers: ParallelBuffers): Promise<void> {
+    if (buffers.recordCount !== this.buffers.recordCount || buffers.axisOrder !== this.buffers.axisOrder) {
+      return Promise.reject(new TypeError('Client views must retain the source row count and axes.'));
+    }
+    this.requestedClientBuffers = buffers;
+    if (this.clientUpdateTask !== null) return this.clientUpdateTask;
+    const task = Promise.resolve().then(async () => {
+      await this.ready;
+      while (!this.disposed && this.requestedClientBuffers !== null) {
+        await this.waitForAggregationIdle();
+        const next = this.requestedClientBuffers;
+        const previous = this.buffers;
+        const gpu = this.gpu; const context = this.context;
+        if (next === null || gpu === null || context === null) return;
+        this.hoverFallbackVersion += 1;
+        if (this.hoverFallbackInFlight !== null) await this.hoverFallbackInFlight;
+        if (this.disposed || this.gpu !== gpu) return;
+        const coordinatesChanged = next.rawValuesByAxis !== previous.rawValuesByAxis || next.domainsByAxis !== previous.domainsByAxis;
+        const visibilityChanged = next.activeMask !== previous.activeMask;
+        const stylesChanged = next.styleBuffers !== previous.styleBuffers;
+        this.buffers = next;
+        let uploadBytes = 0;
+        for (const page of gpu.pages) {
+          if (coordinatesChanged) {
+            const values = packRecordMajorValues(next, page.start, page.count);
+            context.device.queue.writeBuffer(page.valuesBuffer, 0, values);
+            uploadBytes += values.byteLength;
+          } else if (visibilityChanged) {
+            const mask = packClientVisibility(next, page.start, page.count);
+            const maskOffset = Math.max(1, Math.ceil(page.count * next.axisCount / 2)) * 4;
+            context.device.queue.writeBuffer(page.valuesBuffer, maskOffset, mask);
+            uploadBytes += mask.byteLength;
+          }
+          if (stylesChanged) {
+            const styles = packDensityStyles(next, this.theme, page.start, page.count);
+            context.device.queue.writeBuffer(page.styleBuffer, 0, styles);
+            uploadBytes += styles.byteLength;
+          }
+        }
+        for (const page of gpu.staticDirectPages) {
+          if (!page.representativeOnly) continue;
+          const indices = coordinatesChanged || visibilityChanged
+            ? await createParallelRepresentativeSourceIndices(next, this.diagnostics.representativeRecordCount)
+            : page.representativeSourceIndices!;
+          if (this.disposed || this.gpu !== gpu) return;
+          if (coordinatesChanged || visibilityChanged) {
+            const values = packSampledRecordMajorValues(next, indices);
+            context.device.queue.writeBuffer(page.valuesBuffer, 0, values);
+            if (indices.length) context.device.queue.writeBuffer(page.sourceIndicesBuffer, 0, new Uint32Array(indices));
+            uploadBytes += values.byteLength + indices.byteLength;
+          }
+          if (stylesChanged || coordinatesChanged || visibilityChanged) {
+            const styles = packSampledStyles(next, this.theme, indices);
+            context.device.queue.writeBuffer(page.styleBuffer, 0, styles);
+            uploadBytes += styles.byteLength;
+          }
+          page.count = indices.length;
+          page.representativeSourceIndices = indices;
+        }
+        gpu.directPages = gpu.staticDirectPages;
+        if (coordinatesChanged && this.options.aggregationBackend !== 'typescript') {
+          this.wasmSelection = ParallelWebgpuWasmSelectionSession.create(next);
+        }
+        this.writeAxisConfigs();
+        this.writeMask('selected', this.selectedSourceIndices);
+        this.writeMask('preselected', this.preselectedSourceIndices);
+        await this.aggregate(this.selectionFromBrushes);
+        await context.device.queue.onSubmittedWorkDone();
+        this.clientViewUploadBytes = uploadBytes;
+        this.diagnostics = { ...this.diagnostics,
+          aggregationBackend: this.wasmSelection === null ? 'typescript' : 'rust-wasm',
+          styleMode: next.styleBuffers === undefined ? 'uniform' : 'continuous-aggregate-plus-representatives' };
+        if (this.requestedClientBuffers === next) this.requestedClientBuffers = null;
+      }
+    }).finally(() => {
+      this.clientUpdateTask = null;
+      this.requestedClientBuffers = null;
+      this.drainAggregationRequests();
+      this.draw();
+    });
+    this.clientUpdateTask = task;
+    return task;
+  }
+
+  /** Wait for work already submitted to this plot's GPU queue. */
+  async waitForGpuIdle(): Promise<void> {
+    await this.ready;
+    await this.context?.device.queue.onSubmittedWorkDone();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -410,7 +511,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   }
 
   draw(): ParallelWebgl2RendererDrawMetrics | null {
-    if (this.disposed || this.context === null || this.gpu === null) return null;
+    if (this.disposed || this.requestedClientBuffers !== null || this.context === null || this.gpu === null) return null;
     const rect = this.canvas.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return null;
     const startedAt = performance.now();
@@ -618,6 +719,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     buffers: ParallelBuffers,
     brushIntervals: ParallelBrushIntervals,
   ): Promise<ParallelBrushSelectionResult> {
+    if (this.clientUpdateTask !== null) await this.clientUpdateTask;
     this.brushIntervals = brushIntervals;
     this.selectionFromBrushes = true;
     this.writeAxisConfigs();
@@ -645,7 +747,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     // selection only revisits those candidates instead of scanning every row.
     await yieldToMainThread();
     const exact =
-      this.wasmSelection?.select(brushIntervals) ??
+      this.wasmSelection?.select(brushIntervals, buffers.activeMask) ??
       (candidateMask === null
         ? selectParallelRecordIdsByBrushes(buffers, brushIntervals)
         : selectParallelRecordsFromCandidateMask(
@@ -661,6 +763,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   async resolveInspection(
     query: ParallelHoverQuery,
   ): Promise<ParallelNearestRecordResult | null> {
+    if (this.requestedClientBuffers !== null) return null;
     const startedAt = performance.now();
     const result = await this.resolveInspectionOnGpu(query) ??
       (this.gpu === null
@@ -871,6 +974,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       uints[8] = page.valueEncoding;
       uints[9] = page.representativeOnly === true ? 1 : 0;
       uints[10] = pairRange.count;
+      uints[11] = page.representativeOnly !== true && this.buffers.activeMask !== undefined ? 1 : 0;
       context.device.queue.writeBuffer(uniform, 0, data);
       uniforms.push(uniform);
       bindGroups.push(
@@ -951,6 +1055,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     }
     this.context = context;
     const gpu = await this.createGpuResources(context);
+    this.sourceBufferBuildCount += 1;
+    this.totalSourceUploadBytes += this.diagnostics.uploadBytes;
     if (this.disposed || this.context !== context) {
       destroyParallelGpuResources(gpu);
       return;
@@ -1267,7 +1373,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       );
       const expectedStyleWords = Math.max(1, Math.ceil(count / 2));
       if (
-        packedValues.length !== expectedValueWords ||
+        packedValues.length !== expectedValueWords + (this.buffers.activeMask === undefined ? 0 : Math.ceil(count / 32)) ||
         packedStyles.length !== expectedStyleWords
       ) {
         throw new Error(
@@ -1466,7 +1572,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   private scheduleAggregation(pairRange?: ParallelPairRange): void {
     if (this.disposed || this.gpu === null) return;
     this.densityVisible = false;
-    if (this.aggregationInFlight !== null) {
+    if (this.aggregationInFlight !== null || this.clientUpdateTask !== null) {
       this.aggregationRequestedRange = this.aggregationRequested
         ? mergeRequestedPairRanges(this.aggregationRequestedRange, pairRange)
         : pairRange ?? null;
@@ -1535,7 +1641,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
 
   private scheduleSelectionAggregation(selectionFromBrushes: boolean): void {
     if (this.disposed || this.gpu === null) return;
-    if (this.aggregationInFlight !== null) {
+    if (this.aggregationInFlight !== null || this.clientUpdateTask !== null) {
       this.selectionAggregationRequested = selectionFromBrushes;
       return;
     }
@@ -1549,6 +1655,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   }
 
   private drainAggregationRequests(): void {
+    if (this.clientUpdateTask !== null) return;
     if (this.aggregationRequested) {
       const pairRange = this.aggregationRequestedRange;
       this.aggregationRequested = false;
@@ -1900,6 +2007,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       uints[floatOffset + 13] =
         metadata?.kind === 'categorical' || metadata?.kind === 'boolean' ? 1 : 0;
       uints[floatOffset + 14] = this.axisViewports[axis] == null ? 0 : 1;
+      uints[floatOffset + 15] = this.buffers.activeMask === undefined ? 0 : 1;
     }
     this.context.device.queue.writeBuffer(this.gpu.axisBuffer, 0, data);
   }
@@ -1915,7 +2023,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         : this.gpu.preselectedMaskBuffer;
     const words = new Uint32Array(Math.max(4, Math.ceil(this.buffers.recordCount / 32)));
     for (const sourceIndex of sourceIndices) {
-      if (sourceIndex >= this.buffers.recordCount) continue;
+      if (sourceIndex >= this.buffers.recordCount || !clientRowIsActive(this.buffers.activeMask, sourceIndex)) continue;
       words[sourceIndex >>> 5] |= 1 << (sourceIndex & 31);
     }
     this.context.device.queue.writeBuffer(
@@ -1998,6 +2106,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     uints[7] = page.valueEncoding;
     uints[8] = this.buffers.styleBuffers === undefined ? 1 : 0;
     uints[9] = packRgba8(this.theme.lineColor);
+    uints[10] = this.buffers.activeMask === undefined ? 0 : 1;
+    uints[11] = 1;
     this.context.device.queue.writeBuffer(page.directUniformBuffer, 0, data);
     return representativeCount;
   }
@@ -2424,17 +2534,28 @@ function uniformEntry(
   return { binding, buffer: { type: 'uniform' }, visibility };
 }
 
+function packClientVisibility(buffers: ParallelBuffers, start: number, count: number): Uint32Array<ArrayBuffer> {
+  const mask = new Uint32Array(Math.ceil(count / 32));
+  for (let row = 0; row < count; row += 1) {
+    if (clientRowIsActive(buffers.activeMask, start + row)) mask[row >>> 5]! |= 1 << (row & 31);
+  }
+  return mask;
+}
+
 function packRecordMajorValues(
   buffers: ParallelBuffers,
   start: number,
   count: number,
 ): Uint32Array<ArrayBuffer> {
   const valueCount = count * buffers.axisCount;
+  const maskOffset = Math.max(1, Math.ceil(valueCount / 2));
+  const maskWords = buffers.activeMask === undefined ? 0 : Math.ceil(count / 32);
   const packed = new Uint32Array(
-    new ArrayBuffer(Math.max(1, Math.ceil(valueCount / 2)) * 4),
+    new ArrayBuffer((maskOffset + maskWords) * 4),
   );
   const readers = createParallelNormalizedValueReaders(buffers);
   for (let recordOffset = 0; recordOffset < count; recordOffset += 1) {
+    if (maskWords > 0 && clientRowIsActive(buffers.activeMask, start + recordOffset)) packed[maskOffset + (recordOffset >>> 5)]! |= 1 << (recordOffset & 31);
     for (let axisIndex = 0; axisIndex < buffers.axisCount; axisIndex += 1) {
       const linearIndex = recordOffset * buffers.axisCount + axisIndex;
       const normalized = readers[axisIndex]!(start + recordOffset);

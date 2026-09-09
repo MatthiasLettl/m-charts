@@ -4,10 +4,16 @@ This example starts from an existing WebGL2 scatter integration. Keep the copied
 `plot-engine`, `m-scatter/core`, and `m-scatter/engine` folders, then add:
 
 ```text
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-scatter-webgpu/core -> src/vendor/m-charts/m-scatter-webgpu/core
 packages/m-charts/src/m-scatter-webgpu/engine -> src/vendor/m-charts/m-scatter-webgpu/engine
 ```
+
+The shared `client-data-view` folder is required by current chart core exports.
+Enabling the pipeline remains optional; see the
+[resident client-view example](client-data-view-source-copy.md) before adding
+`clientView`. Its binding cannot be forwarded to the WebGL2 fallback below.
 
 Copy `m-scatter-webgpu/adapters` for unknown- or known-count live typed batches,
 streamed JSON record encoding, or the legacy preloading adapter. Add

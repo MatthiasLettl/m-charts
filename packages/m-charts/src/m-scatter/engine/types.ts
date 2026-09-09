@@ -1,6 +1,7 @@
 import type { Disposable, Unsubscribe } from '../../plot-engine/core/index.js';
 import type {
   FastScatterDataDomain,
+  FastScatterClientViewEvaluation,
   FastScatterAggregationSet,
   FastScatterController,
   FastScatterControllerOptions,
@@ -24,6 +25,7 @@ import type {
 } from './scatterReferenceLines.js';
 
 export interface FastScatterRendererLike extends FastScatterController {
+  applyClientView?(evaluation: FastScatterClientViewEvaluation): Promise<void> | void;
   appendData?(options: FastScatterRendererAppendOptions): Promise<void> | void;
   finishDataAppend?(): Promise<void> | void;
   getAggregation?(): FastScatterAggregationSet | null;

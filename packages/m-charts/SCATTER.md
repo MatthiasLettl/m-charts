@@ -18,7 +18,7 @@ signatures, event payload types, provenance, and migration notes.
 
 ## Source-Copy Imports
 
-For public source-copy integration, copy `plot-engine` plus
+For public source-copy integration, copy `plot-engine` and `client-data-view` plus
 `m-scatter/core` and `m-scatter/engine` into the host app. Add
 `m-scatter/adapters`, `m-scatter/workers`, or `m-scatter/react` only when the
 host uses those optional helpers. Import from copied `core` and `engine` paths:

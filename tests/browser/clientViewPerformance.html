@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Client pipeline performance gate</title>
+<style>body{font:15px system-ui;margin:24px;color:#17202a}table{border-collapse:collapse}td,th{border:1px solid #ccd;padding:8px;text-align:right}.host{position:relative;width:800px;height:400px}pre{white-space:pre-wrap}.fail{color:#a11}</style></head>
+<body><h1>Client pipeline performance gate</h1><p id="status" role="status">Running…</p><p>Worker evaluation → chart projection → GPU completion and two presentation frames. Source arrays are never written to disk.</p><div id="charts"></div><pre id="results"></pre>
+<script type="module">
+import RefreshRuntime from '/@react-refresh';
+RefreshRuntime.injectIntoGlobalHook(window);
+window.$RefreshReg$ = () => {};
+window.$RefreshSig$ = () => (type) => type;
+window.__vite_plugin_react_preamble_installed__ = true;
+</script>
+<script type="module" src="./clientViewPerformance.browser.ts"></script></body></html>

@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   materializeFastScatterBubbleSourceIndices,
   materializeFastScatterHeatmapCellSourceIndices,
@@ -72,7 +73,7 @@ export interface FastScatterAggregateSelectionResult
 const DEFAULT_SELECTION_SAMPLE_SIZE = 5;
 
 export function selectFastScatterSourceIndicesInBounds(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
   bounds: FastScatterSelectionBounds,
 ): Uint32Array {
   const y = columns.y[bounds.yKey];
@@ -97,6 +98,7 @@ export function selectFastScatterSourceIndicesInBounds(
     sortedIndex += 1
   ) {
     const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
+      if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
     const yValue = y[pointIndex];
 
     if (Number.isFinite(yValue) && yValue >= yRange.min && yValue <= yRange.max) {
@@ -132,7 +134,7 @@ export function estimateFastScatterSelectionCandidateCount(
 }
 
 export function selectFastScatterSourceIndicesInPolygon(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
   polygon: FastScatterSelectionPolygon,
 ): FastScatterPolygonSelectionResult {
   const y = columns.y[polygon.yKey];
@@ -162,6 +164,7 @@ export function selectFastScatterSourceIndicesInPolygon(
     sortedIndex += 1
   ) {
     const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
+      if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
     const point = {
       x: columns.x[pointIndex],
       y: y[pointIndex],

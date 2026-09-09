@@ -270,3 +270,55 @@ The compatibility and aggregation unit tests verify export parity, shared
 engine separation, WASM/TypeScript descriptors and metrics, categorical
 invalid values, colors, hover, selected counts, domains, indexed visible-row
 visits, exact WASM membership, subplot reuse, and custom source-index fallback.
+
+## Optional resident client pipeline
+
+Create `createHistogramClientDataView({ columns })` and pass `clientView: { view }`
+to the WebGPU factory to enable source filters → ordered transforms →
+post-transform filters → styles.
+It preserves source record identities and source colors by default; color and
+opacity are the applicable computed channels. Source data is creation-bound
+only while this option is attached. Existing callers, streaming integrations,
+and WebGL2 APIs need no change. Read [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
+for examples, mapping options, lifecycle, selection behavior and diagnostics.
+The resident demo includes controls and state export/import for this pipeline.
+
+Use this optional API for repeated exploration of large loaded datasets without
+refetching and rebuilding source buffers on every edit. Start with the
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md)
+for controller updates, persistence, worker setup, and disposal, and the
+[README diagram](../../README.md#optional-client-side-data-views) for the architecture.
+Histogram filtering reuses resident CPU/WASM columns and sorted indexes,
+reaggregates affected bins, and uploads bar geometry. This raw-row binding does
+not apply to pre-aggregated bars or streaming append. Rule evaluation remains
+TypeScript even when bin aggregation uses WASM.
+
+Client views decode source category/boolean/datetime metadata and regenerate
+transformed domains and kinds. Shared expressions support arithmetic, text,
+conditions, field comparisons and post-transform filtering. Optional module-worker
+batches, same-row `updateFields`, mapped-field validation, and content fingerprints
+are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
+APIs remain available; streaming/new row identities require a new resident view.
+Histogram specs can relabel/reorder resident parameters/subplots. Style-only
+edits preserve selection and the original unstyled stack colors.
+
+
+Client-view updates are covered by the `pnpm test:release` GPU/latency gate.
+`waitForGpuIdle()` fences submitted GPU work after the requested view settles.
+See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation)
+for mask residency, source-upload counters, predicate semantics, demo controls and
+the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
+indexes; scatter/parallel masks retain GPU source coordinates.
+
+## Shared demo pipeline panel
+
+The resident WebGPU demos use the same panel header, summary, rule lists,
+diagnostics, and state download/import controls. Reset all clears rules and
+selection, restores dataset styles, and resets the viewport. Keep-inside/outside
+buttons and Alt+I / Alt+O capture source identities and clear the selection.
+
+Numeric-field range bounds follow the selected source/result stage. Transform edits
+fit the complete resident domain before fitting the bin counts.
+
+Pipeline selection actions use the selected row count to enable controls and resolve
+deferred source membership on demand before freezing row identities in a filter.

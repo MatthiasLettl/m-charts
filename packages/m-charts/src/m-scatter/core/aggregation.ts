@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   FastScatterAggregationRequest,
   FastScatterAggregationSet,
@@ -45,7 +46,7 @@ export interface FastScatterHeatmapCellAxisBounds {
 export function buildFastScatterAggregation(
   columns: Pick<
     FastScatterPointColumns,
-    'color' | 'colorFormat' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'color' | 'colorFormat' | 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
   request: FastScatterAggregationRequest,
 ): FastScatterAggregationSet {
@@ -57,7 +58,7 @@ export function buildFastScatterAggregation(
 export function buildFastScatterBubbleAggregation(
   columns: Pick<
     FastScatterPointColumns,
-    'color' | 'colorFormat' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'color' | 'colorFormat' | 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
   request: FastScatterBubbleAggregationRequest,
 ): FastScatterBubbleAggregationSet {
@@ -94,7 +95,7 @@ export function buildFastScatterBubbleAggregation(
 export function buildFastScatterHeatmapAggregation(
   columns: Pick<
     FastScatterPointColumns,
-    'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
   request: FastScatterHeatmapAggregationRequest,
 ): FastScatterHeatmapAggregationSet {
@@ -403,7 +404,7 @@ export function collectFastScatterAggregationTransferables(
 function buildBubbleSubplotAggregation(
   columns: Pick<
     FastScatterPointColumns,
-    'color' | 'colorFormat' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'color' | 'colorFormat' | 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
   subplot: FastScatterAggregationSubplotRequest,
   xRange: FastScatterRange,
@@ -453,6 +454,7 @@ function buildBubbleSubplotAggregation(
 
     for (let runIndex = sortedIndex; runIndex < runEndIndex; runIndex += 1) {
       const pointIndex = getPointIndexAtXOrder(columns, runIndex);
+      if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
       const yValue = yColumn[pointIndex];
 
       if (
@@ -537,7 +539,7 @@ function buildBubbleSubplotAggregation(
 }
 
 function buildHeatmapSubplotAggregation(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>,
   subplot: FastScatterAggregationSubplotRequest,
   xRange: FastScatterRange,
   heatBinPx: number,
@@ -562,6 +564,7 @@ function buildHeatmapSubplotAggregation(
       sortedIndex += 1
     ) {
       const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
+      if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
       const xValue = readX(pointIndex);
       const yValue = yColumn[pointIndex];
 
@@ -608,6 +611,7 @@ function buildHeatmapSubplotAggregation(
       sortedIndex += 1
     ) {
       const pointIndex = getPointIndexAtXOrder(columns, sortedIndex);
+      if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
       const xValue = readX(pointIndex);
       const yValue = yColumn[pointIndex];
       if (

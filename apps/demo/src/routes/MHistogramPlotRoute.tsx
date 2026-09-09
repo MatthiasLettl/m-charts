@@ -1,3 +1,7 @@
+import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
+import { createHistogramClientDataView, type HistogramClientViewBinding } from 'm-charts/m-histogram-webgpu';
+import { ClientViewControls } from '../components/ClientViewControls';
+import { demoClientFields } from '../state/demoClientView';
 import {
   useCallback,
   useEffect,
@@ -709,6 +713,13 @@ export function MHistogramPlotRoute({
     webgpuStreamingKind,
   ]);
 
+  const clientViewBinding = useMemo<HistogramClientViewBinding | undefined>(() => {
+    if (rendererBackend !== 'webgpu' || datasetState.status !== 'loaded' || datasetState.streamingSource !== undefined || histMode !== 'histogram' || datasetState.columns === undefined) return undefined;
+    const columns = datasetState.columns;
+    return { view: createHistogramClientDataView({ columns, datasetKey: 'histogram-webgpu-demo',
+      fingerprint: true, asyncEvaluator: createDemoAsyncEvaluator(), fields: demoClientFields(columns.ids.length, columns.sourceIndex) }) };
+  }, [datasetState, histMode, rendererBackend]);
+  useDisposeClientView(clientViewBinding?.view);
   const binSizes = useMemo(() => {
     if (datasetState.status !== 'loaded' || histMode !== 'histogram') {
       return [];
@@ -1034,6 +1045,7 @@ export function MHistogramPlotRoute({
             })
           : rendererBackend === 'webgpu'
             ? createHistogramWebgpuPlot(host, {
+                clientView: clientViewBinding,
                 ...commonOptions,
                 aggregationBackend: webgpuAggregationBackend,
               })
@@ -1265,6 +1277,7 @@ export function MHistogramPlotRoute({
   // route-state change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    clientViewBinding,
     datasetState,
     handleMetrics,
     initialSelectedSourceIndices,
@@ -1646,6 +1659,19 @@ export function MHistogramPlotRoute({
       return;
     }
 
+    // A transformed field may be far outside the original viewport. Seed the
+    // aggregation from the complete resident domain before fitting its bins.
+    const fitSeed = { subplotById: { ...cloneHistogramViewport(resetSeed).subplotById } };
+    if (clientViewBinding !== undefined) {
+      for (const subplot of plot.commands.getStateSnapshot().aggregation.subplots) {
+        const domain = subplot.domain;
+        const previous = fitSeed.subplotById[subplot.subplotId];
+        if (domain !== undefined && previous !== undefined) {
+          const padding = Math.max(domain.max - domain.min, 1) * 0.05;
+          fitSeed.subplotById[subplot.subplotId] = { ...previous, x: { min: domain.min - padding, max: domain.max + padding } };
+        }
+      }
+    }
     cancelPendingViewportWrite();
     cancelPendingViewportReconcile();
     viewportHistoryRef.current = [];
@@ -1654,7 +1680,7 @@ export function MHistogramPlotRoute({
     lastViewportApplySourceRef.current = 'reset';
     plot.update({
       focusedSubplotId: null,
-      viewport: resetSeed,
+      viewport: fitSeed,
     });
     const fullAggregation = plot.commands.getStateSnapshot().aggregation;
     const defaultViewport = createDefaultHistogramViewport(fullAggregation);
@@ -1678,7 +1704,7 @@ export function MHistogramPlotRoute({
       }
       return nextParams;
     });
-  }, [cancelPendingViewportReconcile, cancelPendingViewportWrite, setSearchParams]);
+  }, [cancelPendingViewportReconcile, cancelPendingViewportWrite, clientViewBinding, setSearchParams]);
 
   const handleRouteLevelMiddleUndo = useCallback(() => {
     window.setTimeout(() => {
@@ -2168,6 +2194,17 @@ export function MHistogramPlotRoute({
               </button>
               <p className="histogram-fast-export-status">{exportStatus}</p>
             </section>
+            {clientViewBinding && <ClientViewControls chart="histogram" view={clientViewBinding.view} selectedSourceIndices={selection?.sourceIndices ?? []}
+              selectedCount={selection?.selectedSourceCount ?? 0}
+              resolveSelectedSourceIndices={() => plotRef.current?.commands.materializeSelectionSourceIndices()?.sourceIndices ?? []}
+              onApplied={(action) => {
+              if (action === 'reset' || action === 'selection' || action === 'import') clearSelection();
+              if (action === 'reset' || action === 'transformation' || action === 'import') resetViewport();
+              const next = plotRef.current?.commands.getStateSnapshot();
+              setSnapshot(next ?? null);
+              if (!next?.selectedSourceIndices.length) setSelection(null);
+              if (next?.hover == null) setHover(null);
+            }} />}
             <section className="control-section">
               <details className="control-disclosure route-advanced-diagnostics">
                 <summary>

@@ -88,6 +88,26 @@ rather than deletes, records that do not belong to the active X coordinate
 space.
 See [SCATTER.md](./SCATTER.md#x-reference-lines) for the complete shared API.
 
+The WebGPU scatter also accepts the additive creation-only `clientView` option
+for declarative source/result filtering, ordered calculations, and
+computed point styles. Source rows remain in their GPU buffers and selection
+does not become a filter unless the host explicitly wires that action. Embedded
+and packed source styles remain the default base, including paged packed style
+sources; client rules override only assigned channels unless the host selects
+`sourceStyleMode: 'ignore'`. See the
+complete [client data-view contract](./CLIENT_DATA_VIEW.md), including typed
+AST examples, application query adapters, persistence callbacks, arbitrary
+metadata columns, state synchronization, performance behavior, and demo flows.
+
+Use this optional API for repeated exploration of large loaded datasets without
+refetching and rebuilding source buffers on every edit. Start with the
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md)
+for controller updates, persistence, worker setup, and disposal, and the
+[README diagram](../../README.md#optional-client-side-data-views) for the architecture.
+GPU source coordinates remain resident; visibility and changed derived
+coordinates/styles still require updates. Rules evaluate in TypeScript, with an
+optional module worker. Streaming append requires omitting the binding.
+
 The WebGPU entry point is a superset of the `m-scatter` entry point. Existing
 WebGL2 imports can therefore switch the module path while retaining the same
 factory name, option object, bindings, overlay helpers, commands, events, and
@@ -116,9 +136,12 @@ and its [copy-ready example](../../docs/examples/scatter-webgpu-migration.md).
 The WebGL2 creation-only fields `forceWebglUnavailable`,
 `preserveDrawingBuffer`, and `rendererFactory` are accepted and ignored by the
 WebGPU factory so a shared option object does not require conditional cleanup.
-WebGPU adds four creation-only fields: `aggregationBackend`, `indexedStyle`,
-`packedStyles`, and `requestTimestampQuery`. Recreate the plot to change any of
-those four; `plot.update(...)` remains for the shared mutable scatter options.
+WebGPU adds five creation-only fields: `aggregationBackend`, `clientView`,
+`indexedStyle`, `packedStyles`, and `requestTimestampQuery`. Recreate the plot
+to change the attached view controller; mutate its typed state to update the
+resident projection. The attached view and source `columns` form one immutable
+dataset identity, so recreate both to replace the columns. `plot.update(...)`
+remains for the other shared mutable options.
 
 Creation remains synchronous so it fits the existing scatter lifecycle.
 `plot.interactive` resolves after the first displayed frame. `plot.ready`
@@ -504,3 +527,48 @@ adapter diagnostics, cached/exact GPU time when supported, and median/p95/p99
 animation-frame intervals, including the active rendered sample size and stride.
 Aggregate-mode runs also report the Rust/WASM backend, one-time residency setup,
 zero-copy build count/time, and linear-memory footprint.
+
+The resident demo pipeline exposes finite scale/offset inputs, forward/backward
+and grouped difference options, and independent color/opacity/size/shape/rotation
+rules with all five glyphs. Rectangle/lasso completion opens keep-inside and
+keep-outside actions. These filters freeze source-row membership so transformed
+selections remain correct; repeated actions combine and each rule is removable.
+See `CLIENT_DATA_VIEW.md` for ordering, shortcuts, and GPU validation commands.
+
+### Client-view update guarantees
+
+Client-view stage results and derived GPU buffers are retained when unchanged.
+Queued GPU updates coalesce to the latest revision. Conditional styles preserve
+unassigned source/theme channels, including live theme changes. Unsorted X and
+nonfinite coordinate values use a stable display index without changing source
+IDs. Transformed coordinates bypass source hover indexes until reset.
+Streaming without a view grows its visibility mask along with point capacity;
+streaming append with a creation-bound client view is rejected before mutation.
+Subscriber failures are isolated via the optional `onListenerError` callback.
+See [Client data views](CLIENT_DATA_VIEW.md) for optional worker evaluation,
+batching, and the dedicated GPU regression command.
+
+Client views decode source category/boolean/datetime metadata and regenerate
+transformed domains and kinds. Shared expressions support arithmetic, text,
+conditions, field comparisons and post-transform filtering. Optional module-worker
+batches, same-row `updateFields`, mapped-field validation, and content fingerprints
+are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
+APIs remain available; streaming/new row identities require a new resident view.
+
+
+Client-view updates are covered by the `pnpm test:release` GPU/latency gate.
+`waitForGpuIdle()` fences submitted GPU work after the requested view settles.
+See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation)
+for mask residency, source-upload counters, predicate semantics, demo controls and
+the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
+indexes; scatter/parallel masks retain GPU source coordinates.
+
+## Shared demo pipeline panel
+
+The resident WebGPU demos use the same panel header, summary, rule lists,
+diagnostics, and state download/import controls. Reset all clears rules and
+selection, restores dataset styles, and resets the viewport. Keep-inside/outside
+buttons and Alt+I / Alt+O capture source identities and clear the selection.
+
+Scatter retains its selection menu and glyph channels. Transform toggles and
+reordering refit the projected viewport, just like adding or removing transforms.

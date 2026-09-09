@@ -1,4 +1,5 @@
 import type {
+  FastScatterClientViewEvaluation,
   FastScatterControllerOptions,
   FastScatterDataDomain,
   FastScatterRendererOptions,
@@ -22,6 +23,10 @@ export interface FastScatterWebgpuRendererOptions
   /** Optional initial allocation capacity for progressive append sources. */
   pointCapacity?: number;
   requestTimestampQuery?: boolean;
+  /** Internal initial client-view projection. */
+  initialClientView?: FastScatterClientViewEvaluation;
+  /** Internal immutable source columns retained while a client view is active. */
+  sourceColumns?: FastScatterControllerOptions['columns'];
 }
 
 export interface FastScatterWebgpuRendererLifecycle {
@@ -92,6 +97,23 @@ export interface FastScatterWebgpuDiagnostics {
   lastExactGpuMs?: number;
   lastCachedGpuMs?: number;
   uploadBytes: number;
+  clientView?: {
+    activePointCount: number;
+    evaluationBackend: FastScatterClientViewEvaluation['metrics']['backend'];
+    evaluationMs: number;
+    /** Latest revision requested by the controller. */
+    revision: number;
+    /** Last projection installed in GPU buffers, or null during startup. */
+    appliedRevision: number | null;
+    /** True while the requested projection (including theme changes) is uploading. */
+    pending: boolean;
+    sourceUploadBytes: number;
+    /** Cumulative source-resource uploads, including initial setup and any rebuild. */
+    totalSourceUploadBytes: number;
+    sourceBufferBuildCount: number;
+    styleSource: 'client-composed' | 'client-only' | 'source';
+    viewUploadBytes: number;
+  };
 }
 
 export type FastScatterWebgpuControllerOptions = FastScatterControllerOptions;

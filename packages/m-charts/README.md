@@ -26,12 +26,46 @@ The package metadata and exports support local workspace and demo builds. This
 package is private and has no npm publishing or package-release workflow. The
 supported external integration path is source-copy.
 
+## Optional Client-Side Data Views
+
+Attach `clientView: { view }` at WebGPU plot creation to filter, transform, and
+style a fully loaded dataset without refetching or replacing its source buffers.
+This is useful for low-latency exploration of large resident datasets. Omitting
+the option preserves existing data replacement and streaming workflows.
+
+Create the shared controller with `createFastScatterClientDataView({ columns })`,
+`createParallelClientDataView({ buffers })`, or
+`createHistogramClientDataView({ columns })` from the corresponding WebGPU entry.
+Edit it with `addFilter`, `addTransformation`, and `addStyle`; charts subscribe
+and redraw automatically. The pipeline applies source filters, ordered
+transformations, post-transform filters, then styles. Export/import versioned
+JSON state for application-owned persistence and synchronization.
+
+Scatter and parallel reuse GPU source coordinates; edits update visibility and
+changed derived buffers. Raw histograms reuse CPU/WASM columns and indexes,
+reaggregate affected bins, and upload bar geometry. Rule evaluation is TypeScript
+with an optional module worker, so residency reduces source-transfer costs but
+does not remove evaluation, allocation, or derived-upload costs. Source styling
+is the default base; scatter renders all five style channels, parallel and
+histogram render color/opacity.
+
+The binding requires complete resident rows and excludes streaming append and
+pre-aggregated bars. Recreate view and plot for a new dataset; use `updateFields`
+for same-row metadata. Dispose plots before the controller.
+
+See the [architecture overview](../../README.md#optional-client-side-data-views),
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md),
+and [client data-view API guide](CLIENT_DATA_VIEW.md) for setup, expressions,
+worker evaluation, lifecycle, performance, and diagnostics.
+
 ## Source-Copy Setup
 
-For another app, copy the shared plot engine plus the framework-neutral chart
-folders you need:
+For another app, copy the shared plot engine, the entire `client-data-view`
+folder, and the framework-neutral chart folders you need. Current chart core
+exports depend on `client-data-view` even when its optional pipeline is omitted:
 
 ```text
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine -> src/vendor/m-charts/plot-engine
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-scatter/core   -> src/vendor/m-charts/m-scatter/core
@@ -400,6 +434,8 @@ filter preserves exact nearest-point results with lower resident memory.
   names.
 - [PARALLEL_WEBGPU.md](PARALLEL_WEBGPU.md): compatible WebGPU/Wasm density,
   selection, hover, zoom, demo, and validation contracts.
+- [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md): optional resident filtering,
+  transformations, styling, worker evaluation, and state persistence.
 - [llms.md](llms.md): detailed integration reference for commands, events,
   overlays, provenance, and performance notes.
 
@@ -413,7 +449,28 @@ package.
 
 ## Package Build Checks
 
+The repository's full `pnpm build` also requires rustup and the pinned Rust
+toolchain from `rust-toolchain.toml` (including the WASM target, rustfmt, and
+Clippy). It verifies the checked-in aggregation binary before building the
+package and demo; see the root README for toolchain upgrade steps.
+
 ```sh
 pnpm --filter m-charts build
 pnpm --filter m-charts typecheck
 ```
+
+### Client pipeline release checks
+
+Client filters remain a generic AST; application query parsing stays outside the
+library. Scatter interaction filtering and histogram aggregation consume row masks
+without copying source coordinate columns. Histogram retains sorted indexes across
+filter/style edits; scatter theme changes retain GPU source buffers. Difference
+overflow becomes a missing value. All three demos support pipeline import/export,
+rule enable/reorder, and style presets over the selected base.
+
+Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
+actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
+The same browser fixtures can be opened in the in-app browser; see
+[Client data views](CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
+GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
+client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.

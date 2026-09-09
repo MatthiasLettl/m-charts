@@ -192,6 +192,14 @@ try {
   for await (const page of loaded.buffers.webgpuPackedData!.createPages()) {
     streamedPages.push(page);
   }
+  const resident = await loadParallelWebgpuDataset({
+    fixtureUrl: '/data/mixed-table-fixture.json', pointCount: 4,
+    signal: new AbortController().signal, startedAt: performance.now(),
+    tableMode: 'multi', residentClientView: true,
+  });
+  assert.equal(resident.buffers.webgpuPackedData, undefined);
+  assert.deepEqual(Array.from({ length: 4 }, (_, row) => resident.buffers.rawValuesByAxis.phase![row]), [0, 1, 2, 3],
+    'client views must see finalized lazy CPU columns before evaluating fields');
   assert.equal(streamedPages.length, 1);
   assert.deepEqual(
     await loaded.buffers.webgpuPackedData!.representativeSourceIndices,
