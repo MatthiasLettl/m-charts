@@ -6,6 +6,23 @@ should remain unchanged.
 
 ## WebGPU Parallel and Histogram Client Data Views
 
+- Pinned Rust 1.98.1 with the WASM target, rustfmt, and Clippy, documented local
+  toolchain setup, and regenerated the aggregation binary with that compiler.
+
+- Added client expression calculations (arithmetic, math, text, coalesce, case),
+  field/expression comparisons, text predicates, transformed-stage filters and
+  direct field style channels. Extended state uses version 2; legacy state and
+  synchronous APIs remain compatible.
+- Added optional bounded module-worker evaluation, atomic async batches, same-row
+  field updates, precommit chart validators, disposal and content fingerprints.
+  Demos use workers and content identity and expose the extended controls.
+- Fixed semantic category/boolean/datetime decoding, transformed axis metadata,
+  indexed scatter style inheritance, histogram unmatched colors and style-only
+  selection preservation, and parallel mask-only coordinate reuse. Histogram
+  specs can update resident subplots/parameters with a client view attached.
+- Added real-worker unit regressions and an in-app-compatible actual WebGPU/WASM
+  browser fixture, covered by the opt-in GPU E2E suite and TypeScript checks.
+
 - Added optional creation-bound parallel and raw histogram client-view bindings,
   dataset/projection helpers, shared state/events, filtering, ordered numeric
   transformations, and color/opacity composition with source-style opt-out.

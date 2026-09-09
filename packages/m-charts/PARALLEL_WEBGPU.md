@@ -296,3 +296,10 @@ only while this option is attached. Existing callers, streaming integrations,
 and WebGL2 APIs need no change. Read [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
 for examples, mapping options, lifecycle, selection behavior and diagnostics.
 The resident demo includes controls and state export/import for this pipeline.
+
+Client views decode source category/boolean/datetime metadata and regenerate
+transformed domains and kinds. Shared expressions support arithmetic, text,
+conditions, field comparisons and post-transform filtering. Optional module-worker
+batches, same-row `updateFields`, mapped-field validation, and content fingerprints
+are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
+APIs remain available; streaming/new row identities require a new resident view.

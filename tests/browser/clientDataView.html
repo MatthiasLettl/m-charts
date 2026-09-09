@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Client data view regressions</title>
+<style>body{font:14px system-ui;margin:20px;background:#fafafa;color:#222}li{padding:5px}button{margin:8px;padding:10px}#charts{display:grid;grid-template-columns:repeat(2,540px);gap:16px}#charts>div{grid-column:1/-1}.host{position:relative;width:540px;height:300px;background:white}h2{font-size:17px}.pass{color:#176b32}.fail{color:#a11}</style>
+</head><body><h1>Client data view regressions</h1><p id="status" role="status">Running…</p><ol id="results"></ol><main id="charts"></main>
+<script type="module">
+import RefreshRuntime from '/@react-refresh';
+RefreshRuntime.injectIntoGlobalHook(window);
+window.$RefreshReg$ = () => {};
+window.$RefreshSig$ = () => (type) => type;
+window.__vite_plugin_react_preamble_installed__ = true;
+</script>
+<script type="module" src="./clientDataView.browser.ts"></script></body></html>

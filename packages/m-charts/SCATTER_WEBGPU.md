@@ -536,5 +536,12 @@ IDs. Transformed coordinates bypass source hover indexes until reset.
 Streaming without a view grows its visibility mask along with point capacity;
 streaming append with a creation-bound client view is rejected before mutation.
 Subscriber failures are isolated via the optional `onListenerError` callback.
-See [Client data views](CLIENT_DATA_VIEW.md) for synchronous evaluation costs,
+See [Client data views](CLIENT_DATA_VIEW.md) for optional worker evaluation,
 batching, and the dedicated GPU regression command.
+
+Client views decode source category/boolean/datetime metadata and regenerate
+transformed domains and kinds. Shared expressions support arithmetic, text,
+conditions, field comparisons and post-transform filtering. Optional module-worker
+batches, same-row `updateFields`, mapped-field validation, and content fingerprints
+are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
+APIs remain available; streaming/new row identities require a new resident view.

@@ -211,7 +211,7 @@ assert.match(shader, /@compute @workgroup_size\(256\)/u);
 assert.match(shader, /sourceStyles\[index\] & ~mask/u);
 assert.match(shader, /overrideStyle & mask/u);
 assert.doesNotMatch(shader, /sizeDelta/u);
-assert.match(shader, /select\(pointIndex, 0u, STYLE_MODE != 0u\)/);
+assert.match(shader, /select\(pointIndex, 0u, STYLE_MODE == 1u \|\| STYLE_MODE == 2u\)/);
 assert.match(shader, /indexedStyle = STYLE_MODE == 2u/);
 assert.match(shader, /shape = pointIndex % 5u/);
 assert.match(shader, /fn aggregateVertex/u);

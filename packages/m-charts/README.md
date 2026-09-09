@@ -441,7 +441,20 @@ package.
 
 ## Package Build Checks
 
+The repository's full `pnpm build` also requires rustup and the pinned Rust
+toolchain from `rust-toolchain.toml` (including the WASM target, rustfmt, and
+Clippy). It verifies the checked-in aggregation binary before building the
+package and demo; see the root README for toolchain upgrade steps.
+
 ```sh
 pnpm --filter m-charts build
 pnpm --filter m-charts typecheck
 ```
+
+Client views also support source/post-transform filter stages, field comparisons,
+text predicates, and typed calculation expressions (arithmetic, text, null handling,
+and conditions). Existing styles and semantic category/boolean/datetime fields are
+preserved. Optional worker evaluation keeps costly edits off the UI thread;
+`updateFields` replaces same-row metadata, and content fingerprints protect saved
+state from same-size dataset mismatches. Histogram specs remain mutable for
+resident parameters. See [Client data views](CLIENT_DATA_VIEW.md).

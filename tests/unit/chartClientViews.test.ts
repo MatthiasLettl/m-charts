@@ -119,8 +119,8 @@ assert.deepEqual(Array.from(evaluateHistogramClientView(opacityView, packedArray
 const unstyledColumns = { ...columns, color: undefined };
 const conditionalView = { view: createHistogramClientDataView({ columns: unstyledColumns }) };
 conditionalView.view.addStyle({ id: 'conditional', when: { op: 'eq', field: 'value', value: 1 }, channels: { color: { op: 'constant', value: '#ff0000' } } });
-assert.deepEqual(Array.from(evaluateHistogramClientView(conditionalView, unstyledColumns, [1, 2, 3, 255]).columns.color!), [0xff0000ff, 0x010203ff, 0x010203ff, 0x010203ff]);
-assert.deepEqual(Array.from(evaluateHistogramClientView(conditionalView, unstyledColumns, [4, 5, 6, 255]).columns.color!), [0xff0000ff, 0x040506ff, 0x040506ff, 0x040506ff], 'unmatched computed rules follow the current theme');
+assert.deepEqual(Array.from(evaluateHistogramClientView(conditionalView, unstyledColumns, [1, 2, 3, 255]).columns.color!), [0xff0000ff, 0xffffffff, 0xffffffff, 0xffffffff]);
+assert.deepEqual(Array.from(evaluateHistogramClientView(conditionalView, unstyledColumns, [4, 5, 6, 255]).columns.color!), [0xff0000ff, 0xffffffff, 0xffffffff, 0xffffffff], 'preserve mode retains the legacy uncolored stack');
 
 // Histogram color edits preserve indexes while changing the aggregate stacks.
 const cachedHistogram = { view: createHistogramClientDataView({ columns }) };

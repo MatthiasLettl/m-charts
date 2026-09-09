@@ -1,3 +1,4 @@
+import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import {
   startTransition,
   useCallback,
@@ -886,17 +887,22 @@ export function MScatterPlotRoute({
       glyphGroup: { kind: 'categorical', values: Uint8Array.from({ length: pointCount }, (_, i) => i % 5) },
       isReferenceMember: { kind: 'boolean', values: isReferenceMember },
     };
-    const phase = clientViewColumns.y.phase;
-    if (phase !== undefined) fields.phase = { kind: 'categorical', values: phase };
-    const accepted = clientViewColumns.y.accepted;
-    if (accepted !== undefined) fields.accepted = { kind: 'boolean', values: accepted };
     return createFastScatterClientDataView({
       columns: clientViewColumns,
       datasetKey: 'scatter-webgpu-demo',
-      datasetVersion: `${pointCount}:${clientViewColumns.xKey ?? 'x'}`,
+      fingerprint: true, asyncEvaluator: createDemoAsyncEvaluator(),
       fields,
     });
   }, [clientViewColumns]);
+  useDisposeClientView(clientView);
+  const [clientMutationError, setClientMutationError] = useState('');
+  const applyClientMutation = useCallback(async (action: () => void) => {
+    if (clientView === null) return false;
+    try { const applied = await clientView.batchAsync(action); if (applied) setClientMutationError(''); return applied; }
+    catch (error) { setClientMutationError(error instanceof Error ? error.message : String(error)); return false; }
+  }, [clientView]);
+  const [clientFilterStage, setClientFilterStage] = useState<'source' | 'transformed'>('source');
+  const [clientCalculation, setClientCalculation] = useState<'abs' | 'log10' | 'sqrt' | 'round'>('abs');
   const [affineFactor, setAffineFactor] = useState('1.25');
   const [affineOffset, setAffineOffset] = useState('-0.15');
   const [deltaDirection, setDeltaDirection] = useState<'forward' | 'backward'>('forward');
@@ -1685,33 +1691,35 @@ export function MScatterPlotRoute({
     }));
   }, []);
 
-  const resetClientView = useCallback(() => {
+  const resetClientView = useCallback(async () => {
     if (clientView === null) return;
     clearSelectedSourceIndices();
     setSelectionMenu(null);
     const current = clientView.getState();
-    clientView.replaceState({
+    await applyClientMutation(() => clientView.replaceState({
       ...current,
       filters: [],
       revision: current.revision,
       sourceStyleMode: 'preserve',
       styles: [],
       transformations: [],
-    });
+    }));
     if (defaultFastViewport !== null) {
       setTransientFastViewport(defaultFastViewport);
     }
     const nextParams = new URLSearchParams(searchParamsRef.current);
     clearFastScatterViewportSearchParams(nextParams);
     setSearchParams(nextParams, { replace: true });
-  }, [clientView, defaultFastViewport, clearSelectedSourceIndices, setSearchParams]);
+  }, [applyClientMutation, clientView, defaultFastViewport, clearSelectedSourceIndices, setSearchParams]);
 
-  const upsertClientFilter = useCallback((filter: ClientDataViewState['filters'][number]) => {
+  const upsertClientFilter = useCallback(async (filter: ClientDataViewState['filters'][number]) => {
     if (clientView === null) return;
+    await applyClientMutation(() => {
     const existing = clientView.getFilters().some((candidate) => candidate.id === filter.id);
     if (existing) clientView.updateFilter(filter.id, filter);
     else clientView.addFilter(filter);
-  }, [clientView]);
+    });
+  }, [clientView, applyClientMutation]);
 
   const getClientViewProjectedDomain = useCallback(() => {
     if (clientView === null || clientViewColumns === null || plottedDataset === null) return null;
@@ -1719,27 +1727,8 @@ export function MScatterPlotRoute({
       { view: clientView },
       clientViewColumns,
     );
-    const axisByColumn = { ...(plottedDataset.columns.axisByColumn ?? {}) };
-    const transformedKeys = new Set(projection.transformedYKeys);
-    if (projection.transformedX) {
-      transformedKeys.add(plottedDataset.columns.xKey ?? 'x');
-    }
-    for (const key of transformedKeys) {
-      const axis = axisByColumn[key];
-      if (axis === undefined) continue;
-      const values = key === (plottedDataset.columns.xKey ?? 'x')
-        ? projection.interactionColumns.x
-        : projection.interactionColumns.y[key];
-      if (values !== undefined) {
-        axisByColumn[key] = { ...axis, domain: calculateTypedArrayDomain(values) };
-      }
-    }
-    const projectedColumns: FastScatterDisplayColumns = {
-      ...projection.interactionColumns,
-      axisByColumn,
-    };
     return calculateFastScatterDomain(
-      projectedColumns,
+      projection.interactionColumns,
       plottedDataset.spec,
     );
   }, [clientView, clientViewColumns, plottedDataset]);
@@ -1750,33 +1739,37 @@ export function MScatterPlotRoute({
     setTransientFastViewport(createDefaultFastScatterViewport(domain));
   }, [getClientViewProjectedDomain]);
 
-  const removeClientTransformation = useCallback((id: string) => {
+  const removeClientTransformation = useCallback(async (id: string) => {
     if (clientView === null) return;
-    clientView.removeTransformation(id);
+    if (!await applyClientMutation(() => clientView.removeTransformation(id))) return;
     fitClientViewViewport();
-  }, [clientView, fitClientViewViewport]);
+  }, [applyClientMutation, clientView, fitClientViewViewport]);
 
   const applyClientRangeFilter = useCallback(() => {
     const plot = clientViewNumericPlot;
-    const range = plot === null ? undefined : scatterDomain?.yByPlot[plot.id];
-    if (plot === null || range === undefined) return;
-    const span = range.max - range.min;
-    upsertClientFilter({
-      id: 'demo-range',
-      predicate: {
-        field: plot.yKey,
-        min: range.min + span * 0.25,
-        max: range.max - span * 0.25,
-        op: 'between',
-      },
+    if (plot === null || clientView === null) return;
+    const fields = clientFilterStage === 'source' ? clientView.dataset.fields : clientView.evaluate().fields;
+    const values = fields[plot.yKey]?.values;
+    let min = Infinity; let max = -Infinity;
+    if (values) for (let i = 0; i < values.length; i++) {
+      const value = values[i];
+      if (typeof value === 'number' && Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+    }
+    if (!Number.isFinite(min)) return;
+    const span = max - min;
+    void upsertClientFilter({
+      id: 'demo-range', stage: clientFilterStage,
+      predicate: { field: plot.yKey, min: min + span * 0.25, max: max - span * 0.25, op: 'between' },
     });
-  }, [clientViewNumericPlot, scatterDomain, upsertClientFilter]);
+  }, [clientViewNumericPlot, clientView, clientFilterStage, upsertClientFilter]);
 
   const applyClientCategoricalFilter = useCallback(() => {
     if (plottedDataset?.columns.y.phase === undefined) return;
+    const axis = plottedDataset.columns.axisByColumn?.phase;
+    const values = axis?.kind === 'categorical' ? axis.categories.slice(0, 2).map((category) => category.value) : [0, 1];
     upsertClientFilter({
       id: 'demo-category',
-      predicate: { field: 'phase', op: 'in', values: [0, 1] },
+      predicate: { field: 'phase', op: 'in', values },
     });
   }, [plottedDataset, upsertClientFilter]);
 
@@ -1788,7 +1781,7 @@ export function MScatterPlotRoute({
     });
   }, [plottedDataset, upsertClientFilter]);
 
-  const applyClientAffineTransformation = useCallback(() => {
+  const applyClientAffineTransformation = useCallback(async () => {
     const yKey = clientViewNumericPlot?.yKey;
     if (clientView === null || yKey === undefined || !affineValid) return;
     const transformation = {
@@ -1799,13 +1792,15 @@ export function MScatterPlotRoute({
       op: 'affine' as const,
       output: yKey,
     };
+    if (!await applyClientMutation(() => {
     if (clientView.getTransformations().some((item) => item.id === transformation.id)) {
       clientView.updateTransformation(transformation.id, transformation);
     } else clientView.addTransformation(transformation);
+    })) return;
     fitClientViewViewport();
-  }, [affineFactor, affineOffset, affineValid, clientView, clientViewNumericPlot, fitClientViewViewport]);
+  }, [applyClientMutation, affineFactor, affineOffset, affineValid, clientView, clientViewNumericPlot, fitClientViewViewport]);
 
-  const applyClientDeltaTransformation = useCallback(() => {
+  const applyClientDeltaTransformation = useCallback(async () => {
     const yKey = clientViewNumericPlot?.yKey;
     const xKey = plottedDataset?.columns.xKey ?? 'x';
     if (clientView === null || yKey === undefined) return;
@@ -1819,13 +1814,24 @@ export function MScatterPlotRoute({
       orderBy: xKey,
       output: yKey,
     };
+    if (!await applyClientMutation(() => {
     if (clientView.getTransformations().some((item) => item.id === transformation.id)) {
       clientView.updateTransformation(transformation.id, transformation);
     } else clientView.addTransformation(transformation);
+    })) return;
     fitClientViewViewport();
-  }, [clientView, clientViewNumericPlot, fitClientViewViewport, plottedDataset, deltaDirection, deltaMissing, deltaPartition]);
+  }, [applyClientMutation, clientView, clientViewNumericPlot, fitClientViewViewport, plottedDataset, deltaDirection, deltaMissing, deltaPartition]);
 
-  const applyClientStylePreset = useCallback(() => {
+  const applyClientCalculation = useCallback(async () => {
+    const field = clientViewNumericPlot?.yKey;
+    if (clientView === null || field === undefined) return;
+    if (await applyClientMutation(() => clientView.addTransformation({
+      id: `calculate-${clientView.getState().revision + 1}`, op: 'calculate', output: field,
+      expression: { op: clientCalculation, input: { op: 'field', field } },
+    }))) fitClientViewViewport();
+  }, [applyClientMutation, clientView, clientViewNumericPlot, clientCalculation, fitClientViewViewport]);
+
+  const applyClientStylePreset = useCallback(async () => {
     const plot = clientViewNumericPlot;
     const range = plot === null
       ? undefined
@@ -1873,13 +1879,13 @@ export function MScatterPlotRoute({
     const styles = [...current.styles];
     if (existingIndex < 0) styles.push(enabledRule);
     else styles[existingIndex] = enabledRule;
-    clientView.replaceState({
+    await applyClientMutation(() => clientView.replaceState({
       ...current,
       revision: current.revision,
       sourceStyleMode: 'ignore',
       styles,
-    });
-  }, [clientView, clientViewNumericPlot, getClientViewProjectedDomain, plottedDataset, styleColorMode, styleShape, styleChannels]);
+    }));
+  }, [applyClientMutation, clientView, clientViewNumericPlot, getClientViewProjectedDomain, plottedDataset, styleColorMode, styleShape, styleChannels]);
 
   const inspectClientGlyphs = useCallback(() => {
     if (clientView === null || clientViewColumns === null || plottedDataset === null) return;
@@ -1901,18 +1907,18 @@ export function MScatterPlotRoute({
     }));
   }, [clientView, clientViewColumns, plottedDataset, clientViewNumericPlot, getClientViewProjectedDomain]);
 
-  const setClientSourceStyleMode = useCallback((sourceStyleMode: 'ignore' | 'preserve') => {
+  const setClientSourceStyleMode = useCallback(async (sourceStyleMode: 'ignore' | 'preserve') => {
     if (clientView === null) return;
     const current = clientView.getState();
     if (current.sourceStyleMode === sourceStyleMode) return;
-    clientView.replaceState({
+    await applyClientMutation(() => clientView.replaceState({
       ...current,
       revision: current.revision,
       sourceStyleMode,
-    });
-  }, [clientView]);
+    }));
+  }, [applyClientMutation, clientView]);
 
-  const keepSelectionWithClientFilter = useCallback((mode: 'inside' | 'outside') => {
+  const keepSelectionWithClientFilter = useCallback(async (mode: 'inside' | 'outside') => {
     if (clientView === null || latestSelectionEvent === null) return;
     if (latestSelectionEvent.sourceIndices.length === 0) return;
     // Selection coordinates may be transformed. Freeze the exact source rows
@@ -1920,14 +1926,14 @@ export function MScatterPlotRoute({
     const ids = new Set(clientView.getFilters().map((filter) => filter.id));
     let id = 'demo-selection';
     for (let suffix = 2; ids.has(id); suffix += 1) id = `demo-selection-${suffix}`;
-    clientView.addFilter({
+    if (!await applyClientMutation(() => clientView.addFilter({
       id,
       predicate: { field: 'sourceRow', op: mode === 'inside' ? 'in' : 'notIn',
         values: Array.from(latestSelectionEvent.sourceIndices) },
-    });
+    }))) return;
     clearSelectedSourceIndices();
     setSelectionMenu(null);
-  }, [clientView, latestSelectionEvent, clearSelectedSourceIndices]);
+  }, [clientView, latestSelectionEvent, clearSelectedSourceIndices, applyClientMutation]);
 
   useEffect(() => {
     if (rendererBackend !== 'webgpu') return;
@@ -3586,6 +3592,7 @@ export function MScatterPlotRoute({
 
                   <div className="scatter-client-view-summary" aria-label="Client pipeline summary">
                     <span>{formatCount(clientViewEvaluation?.metrics.activeRowCount ?? 0)} visible</span>
+                    {clientMutationError && <p role="alert">{clientMutationError}</p>}
                     <span>{clientViewState.filters.length} filters</span>
                     <span>{clientViewState.transformations.length} transforms</span>
                     <span>{clientViewState.styles.length} styles</span>
@@ -3597,7 +3604,8 @@ export function MScatterPlotRoute({
                   <details className="control-disclosure" open>
                     <summary>Filters</summary>
                     <div className="control-disclosure-body">
-                      <p className="compact-note">Right-drag a selection to open keep-inside / keep-outside actions. Filters combine; remove a rule to restore rows. Numeric range uses original values.</p>
+                      <p className="compact-note">Right-drag a selection to open keep-inside / keep-outside actions. Filters combine; remove a rule to restore rows. Choose original or transformed values for the numeric range.</p>
+                      <label>Filter values<select aria-label="Filter stage" value={clientFilterStage} onChange={(event) => setClientFilterStage(event.target.value as typeof clientFilterStage)}><option value="source">Before transformations</option><option value="transformed">After transformations</option></select></label>
                       <div className="button-row scatter-client-view-actions">
                         <button data-testid="client-filter-range" onClick={applyClientRangeFilter} type="button">
                           Middle numeric range
@@ -3641,7 +3649,7 @@ export function MScatterPlotRoute({
                       </div>
                       <ClientViewItemList
                         items={clientViewState.filters}
-                        onRemove={(id) => clientView.removeFilter(id)}
+                        onRemove={(id) => { void applyClientMutation(() => clientView.removeFilter(id)); }}
                       />
                     </div>
                   </details>
@@ -3670,6 +3678,10 @@ export function MScatterPlotRoute({
                       </select></label>
                       <p className="compact-note">Differences use visible rows ordered by {plottedDataset?.columns.xKey ?? 'x'}. To scale a delta, apply the difference first, then the linear transform. Updating a transform keeps its position.</p>
                       <button data-testid="client-transform-delta" disabled={clientViewNumericPlot === null} onClick={applyClientDeltaTransformation} type="button">Apply difference</button>
+                      <label>Calculation<select aria-label="Client calculation" value={clientCalculation} onChange={(event) => setClientCalculation(event.target.value as typeof clientCalculation)}>
+                        <option value="abs">Absolute value</option><option value="log10">Logarithm (base 10)</option><option value="sqrt">Square root</option><option value="round">Round</option>
+                      </select></label>
+                      <button type="button" disabled={clientViewNumericPlot === null} onClick={applyClientCalculation}>Apply calculation</button>
                       <ClientViewItemList
                         items={clientViewState.transformations}
                         onRemove={removeClientTransformation}
@@ -3734,7 +3746,7 @@ export function MScatterPlotRoute({
                         onClick={inspectClientGlyphs}>Inspect glyphs · zoom to 200 rows</button>
                       <ClientViewItemList
                         items={clientViewState.styles}
-                        onRemove={(id) => clientView.removeStyle(id)}
+                        onRemove={(id) => { void applyClientMutation(() => clientView.removeStyle(id)); }}
                       />
                     </div>
                   </details>

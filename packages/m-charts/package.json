@@ -24,7 +24,9 @@
     "parallel-coordinates",
     "typescript"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/client-data-view/core/worker.js"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -80,7 +82,10 @@
       "types": "./dist/m-histogram/index.d.ts",
       "import": "./dist/m-histogram/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client-data-view/worker": {
+      "import": "./dist/client-data-view/core/worker.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -9,6 +9,7 @@ export default defineConfig({
   plugins: [react(), webgpuServerStreamDevelopmentPlugin()],
   resolve: {
     alias: {
+      'm-charts/client-data-view': new URL('../../packages/m-charts/src/client-data-view/index.ts', import.meta.url).pathname,
       'm-charts/plot-engine': new URL('../../packages/m-charts/src/plot-engine/index.ts', import.meta.url).pathname,
       'm-charts/plot-engine-webgpu': new URL('../../packages/m-charts/src/plot-engine-webgpu/index.ts', import.meta.url).pathname,
       'm-charts/m-scatter': new URL('../../packages/m-charts/src/m-scatter/index.ts', import.meta.url).pathname,

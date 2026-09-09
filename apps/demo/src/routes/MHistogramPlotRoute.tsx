@@ -1,3 +1,4 @@
+import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import { createHistogramClientDataView, type HistogramClientViewBinding } from 'm-charts/m-histogram-webgpu';
 import { ClientViewControls } from '../components/ClientViewControls';
 import { demoClientFields } from '../state/demoClientView';
@@ -716,8 +717,9 @@ export function MHistogramPlotRoute({
     if (rendererBackend !== 'webgpu' || datasetState.status !== 'loaded' || datasetState.streamingSource !== undefined || histMode !== 'histogram' || datasetState.columns === undefined) return undefined;
     const columns = datasetState.columns;
     return { view: createHistogramClientDataView({ columns, datasetKey: 'histogram-webgpu-demo',
-      datasetVersion: String(columns.ids.length), fields: demoClientFields(columns.ids.length, columns.sourceIndex) }) };
+      fingerprint: true, asyncEvaluator: createDemoAsyncEvaluator(), fields: demoClientFields(columns.ids.length, columns.sourceIndex) }) };
   }, [datasetState, histMode, rendererBackend]);
+  useDisposeClientView(clientViewBinding?.view);
   const binSizes = useMemo(() => {
     if (datasetState.status !== 'loaded' || histMode !== 'histogram') {
       return [];
@@ -2136,9 +2138,10 @@ export function MHistogramPlotRoute({
               </div>
             </section>
             {clientViewBinding && <ClientViewControls view={clientViewBinding.view} selectedSourceIndices={selection?.sourceIndices ?? []} onApplied={() => {
-              setSnapshot(plotRef.current?.commands.getStateSnapshot() ?? null);
-              setSelection(null);
-              setHover(null);
+              const next = plotRef.current?.commands.getStateSnapshot();
+              setSnapshot(next ?? null);
+              if (!next?.selectedSourceIndices.length) setSelection(null);
+              if (next?.hover == null) setHover(null);
             }} />}
             <InteractionCheatSheet
               groups={HISTOGRAM_SHORTCUT_GROUPS}

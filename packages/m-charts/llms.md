@@ -1074,7 +1074,11 @@ diagnostics rather than a separate interaction API.
 For resident filtering, transformations, and styling, create a view with
 `createFastScatterClientDataView({ columns, fields, datasetKey,
 datasetVersion })` and pass `clientView: { view }` at plot creation. Pipeline
-order is filters, then transformations over remaining rows, then styles.
+order is source filters, ordered transformations, transformed filters, then styles.
+Filter `stage` defaults to `source`; `transformed` filters do not feed back into
+difference neighbors. `calculate` supports typed field/literal arithmetic, unary
+math, text, coalesce, and case expressions. `compare` supports field/expression
+comparisons; contains/startsWith/endsWith support optional case-insensitive text.
 `getFilters/getTransformations/getStyles/getState/exportState` inspect it;
 `add/update/remove/reorder` methods and `replaceState` mutate it; and
 `change/filterchange/transformationchange/stylechange` callbacks let the host
@@ -1094,8 +1098,14 @@ or roll back committed state; reentrant notifications preserve revision order.
 The synchronous evaluator caches unchanged stages. Style-only edits reuse masks,
 transformed coordinates, and masked interaction columns; GPU updates reuse those
 buffers and coalesce rapid revisions. Use one `replaceState` to batch related
-edits. First evaluation and changed stages still scan resident rows; expensive
-pipelines should be applied on explicit actions rather than every input event.
+edits, or configure `asyncEvaluator: createClientDataViewWorkerEvaluator(worker)`
+and await `batchAsync(() => { /* ordinary setters */ })` / `replaceStateAsync`.
+Bundle the `m-charts/client-data-view/worker` entry as a dedicated module worker.
+It clones source data once, preserves unchanged result references, bounds requests
+to one running plus latest queued, and discards stale results. Worker methods
+return false if superseded; failures preserve committed state. Dispose charts,
+then the view. Dataset decoding/fingerprinting and chart projection still have
+main-thread costs; the optional worker uses additional memory.
 Unsorted X and invalid coordinates retain stable source IDs. Source hover indexes
 are bypassed while coordinates are transformed and restored on reset.
 
@@ -2880,6 +2890,11 @@ interpret it.
 
 ## Validation In This Repo
 
+Install Rust using rustup; `rust-toolchain.toml` pins Rust 1.98.1 and installs
+the WASM target, rustfmt, and Clippy. Full builds verify the embedded WASM
+artifact byte-for-byte. After an intentional toolchain upgrade, regenerate it
+with `pnpm build:aggregation-wasm`, then run unit and WebGPU browser validation.
+
 Useful focused checks after changing reusable code or this guide:
 
 ```sh
@@ -2907,8 +2922,8 @@ routes, route state, app data modules, and demo-only fixtures.
 - Import `createParallelClientDataView({ buffers, fields?, datasetKey?, datasetVersion?, state?, onListenerError? })`
   from `m-charts/m-parallel-webgpu`, or `createHistogramClientDataView({ columns, ... })`
   from `m-charts/m-histogram-webgpu`. Pass `clientView: { view }` at creation.
-- Shared controller semantics match scatter: filter → transform → style; typed
-  predicates, affine and grouped/ordered differences; transactional JSON state
+- Shared controller semantics match scatter: source filters → transforms → result filters → styles; typed
+  predicates, generic calculations, affine and grouped/ordered differences; transactional JSON state
   mutations, read-only snapshots and isolated listener errors.
 - Parallel binding: `fieldByAxis`. Histogram binding: `fieldByParameter`.
   Additional fields must follow immutable source-row order. Helpers
@@ -2923,12 +2938,14 @@ routes, route state, app data modules, and demo-only fixtures.
   Its `clientView.pending` diagnostic indicates outstanding GPU projection work.
 - Histogram excludes filtered rows before binning/membership, recalculates
   transformed numeric domains, retains viewport/bin-size controls, and clears
-  obsolete selection after pipeline edits. Style-only edits reuse sorted
-  coordinate indexes. Eligible typed columns retain WASM aggregation; existing
+  obsolete selection after data/filter edits. Style-only edits preserve selection
+  and reuse sorted coordinate indexes. Eligible typed columns retain WASM aggregation; existing
   exact TypeScript fallback rules still apply.
 - A client binding is creation-bound: source buffers/columns cannot be replaced;
-  histogram spec and aggregation overrides are also creation-bound. Finish all
-  lazy CPU decoding first. Recreate the view and chart for new data.
+  histogram aggregation overrides are also creation-bound. Histogram specs may
+  update resident raw parameters/subplots. Finish all lazy CPU decoding first.
+  `updateFields` atomically replaces same-row fields; recreate the view and chart
+  for changed row identities. Attached bindings reject removal of mapped outputs.
 - Omit `clientView` to keep all pre-existing data replacement, WebGL2, streaming
   and pre-aggregated bar contracts. A raw-row view cannot attach to a bar plot.
   Streaming constructors do not expose this option.
@@ -2936,3 +2953,15 @@ routes, route state, app data modules, and demo-only fixtures.
   controls, source-style toggles, color/opacity presets, item enable/remove/
   reorder, reset, and dataset-validated JSON export/import. They perform no
   source refetch on pipeline edits. See `CLIENT_DATA_VIEW.md` for examples.
+
+- All chart client factories decode semantic category, boolean, datetime-ns and
+  numeric scale metadata. Transforms regenerate kind/domain/encoding metadata.
+  Indexed scatter styles and unmatched histogram colors preserve legacy output.
+- Prefer a content-aware `datasetVersion`, or `fingerprint: true` at view creation.
+  Row count alone is unsafe. Fingerprints include source content/order/IDs, update
+  on `updateFields`, and are checksums rather than authentication. Host-provided
+  versions must be updated by the host. State automatically uses version 2 for
+  extended operations; existing version 1 imports and synchronous APIs still work.
+- Direct style `field` expressions consume existing/calculated style columns.
+  See `CLIENT_DATA_VIEW.md` for the full expression grammar, worker and lifecycle
+  contracts. The demos use workers and content fingerprints.

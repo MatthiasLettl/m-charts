@@ -1,3 +1,5 @@
+import { createClientDataFingerprint } from '../../client-data-view/core/fingerprint.js';
+import { decodeClientField, projectClientField } from '../../client-data-view/core/encoding.js';
 import {
   createClientDataView, type ClientDataField, type ClientDataSet,
   type ClientDataView, type ClientDataViewEvaluation, type CreateClientDataViewOptions,
@@ -11,10 +13,13 @@ export interface ParallelClientViewBinding {
 }
 export interface CreateParallelClientDataViewOptions {
   readonly buffers: ParallelBuffers;
+  /** Compute a content/identity fingerprint once when no server version is supplied. */
+  readonly fingerprint?: boolean;
   readonly datasetKey?: string;
   readonly datasetVersion?: string;
   readonly fields?: Readonly<Record<string, ClientDataField>>;
   readonly state?: CreateClientDataViewOptions['state'];
+  readonly asyncEvaluator?: CreateClientDataViewOptions['asyncEvaluator'];
   readonly onListenerError?: CreateClientDataViewOptions['onListenerError'];
 }
 export interface ParallelClientViewEvaluation extends ClientDataViewEvaluation {
@@ -32,20 +37,14 @@ export function createParallelClientDataSet(options: CreateParallelClientDataVie
     const metadata = buffers.axisMetadataByAxis?.[key];
     const kind = metadata?.kind ?? 'numeric';
     const raw = buffers.rawValuesByAxis[key]!;
-    const values = kind === 'numeric' ? raw : Array.from({ length: buffers.recordCount }, (_, row) => {
-      if (!Number.isFinite(raw[row])) return null;
-      if (metadata?.kind === 'datetime-ns') return metadata.epochNsValues[row] ?? null;
-      if (metadata?.kind === 'boolean') return raw[row] === 1;
-      if (metadata?.kind === 'categorical') return metadata.categories.find((c) => c.encoded === raw[row])?.value ?? null;
-      return raw[row];
-    });
+    const { values } = decodeClientField(raw, metadata);
     if (values !== raw) decodedSources.set(values, raw);
     fields[key] = { kind, values };
   }
-  return { fields, rowCount: buffers.recordCount, datasetKey: options.datasetKey, datasetVersion: options.datasetVersion };
+  return { fields, rowCount: buffers.recordCount, datasetKey: options.datasetKey, datasetVersion: options.datasetVersion ?? (options.fingerprint ? createClientDataFingerprint({ fields, rowCount: buffers.recordCount }, buffers.ids) : undefined) };
 }
 export function createParallelClientDataView(options: CreateParallelClientDataViewOptions): ClientDataView {
-  return createClientDataView({ dataset: createParallelClientDataSet(options), state: options.state, onListenerError: options.onListenerError });
+  return createClientDataView({ dataset: createParallelClientDataSet(options), state: options.state, asyncEvaluator: options.asyncEvaluator, onListenerError: options.onListenerError });
 }
 const caches = new WeakMap<ParallelClientViewBinding, {
   source: ParallelBuffers; fields: ClientDataViewEvaluation['fields']; mapping: string;
@@ -71,25 +70,16 @@ export function evaluateParallelClientView(
       const metadata = source.axisMetadataByAxis?.[key];
       const values = field.values;
       if (values === source.rawValuesByAxis[key] || decodedSources.get(values) === source.rawValuesByAxis[key]) { rawValuesByAxis[key] = source.rawValuesByAxis[key]!; continue; }
-      const output = new Float64Array(source.recordCount);
-      const categories = metadata?.kind === 'categorical' || metadata?.kind === 'boolean'
-        ? new Map(metadata.categories.map((c) => [c.value, c.encoded])) : null;
-      let min = Infinity; let max = -Infinity;
-      for (let row = 0; row < output.length; row += 1) {
-        const value = values[row];
-        let numeric = value == null ? NaN : Number(value);
-        if (field.kind === 'categorical') numeric = value == null ? NaN : categories?.get(String(value)) ?? NaN;
-        if (field.kind === 'boolean') numeric = value == null ? NaN : value === true || value === 1 ? 1 : 0;
-        if (field.kind === 'datetime-ns' && metadata?.kind === 'datetime-ns') numeric = value == null ? NaN : Number(BigInt(value as string | number | bigint) - metadata.datetimeOriginNsBigInt) / 1_000_000;
-        output[row] = numeric;
-        if (Number.isFinite(numeric)) { min = Math.min(min, numeric); max = Math.max(max, numeric); }
-      }
+      const projection = projectClientField(field, source.rawValuesByAxis[key]!, metadata);
+      const output = Float64Array.from(projection.values);
       rawValuesByAxis[key] = output;
-      if (field.kind === 'numeric' && Number.isFinite(min)) {
-        const domain = { min, max, span: max - min };
-        domainsByAxis[key] = domain;
-        if (metadata) axisMetadataByAxis[key] = { ...metadata, kind: 'numeric', domain };
-      }
+      const range = projection.encoding.domain ?? { min: 0, max: 1 };
+      const domain = { ...range, span: range.max - range.min };
+      domainsByAxis[key] = domain;
+      axisMetadataByAxis[key] = { ...metadata, ...projection.encoding, domain,
+        ...(projection.encoding.datetimeOriginNs === undefined ? {} : { datetimeOriginNsBigInt: BigInt(projection.encoding.datetimeOriginNs) }),
+      } as NonNullable<ParallelBuffers['axisMetadataByAxis']>[string];
+
     }
     coordinates = { ...source, rawValuesByAxis, domainsByAxis, axisMetadataByAxis,
       normalizedValuesDerivedFromRaw: true, normalizedValuesByAxis: {}, webgpuPackedData: undefined, webglSegmentBuffers: undefined };

@@ -25,6 +25,7 @@ struct PackedStyle {
 @group(0) @binding(8) var<storage, read> visibleMembership: array<u32>;
 
 override STYLE_MODE: u32 = 0u;
+override CLIENT_MASK_OFFSET: u32 = 0u;
 override X_STORAGE_MODE: u32 = 0u;
 override STYLE_SPLIT_POINT: u32 = 0xffffffffu;
 
@@ -112,8 +113,8 @@ fn pointVertex(
     (selectedMembership[pointIndex >> 5u] & (1u << (pointIndex & 31u))) != 0u;
   let clientVisible =
     (visibleMembership[pointIndex >> 5u] & (1u << (pointIndex & 31u))) != 0u;
-  let indexedStyle = STYLE_MODE == 2u;
-  let styleIndex = select(pointIndex, 0u, STYLE_MODE != 0u);
+  let indexedStyle = STYLE_MODE == 2u || STYLE_MODE == 3u;
+  let styleIndex = select(pointIndex, 0u, STYLE_MODE == 1u || STYLE_MODE == 2u);
   var style: PackedStyle;
   if (styleIndex < STYLE_SPLIT_POINT) {
     style = styles[styleIndex];
@@ -137,6 +138,19 @@ fn pointVertex(
     let indexedRotation = f32(pointIndex % 360u) / 180.0 * 3.141592653589793;
     rotationVector = vec2f(cos(indexedRotation), sin(indexedRotation));
     pointSize = 2.0 + f32(pointIndex % 7u) * 0.5;
+  }
+
+  if (STYLE_MODE == 3u) {
+    let assigned = visibleMembership[CLIENT_MASK_OFFSET + pointIndex];
+    if ((assigned & 0x0000ffffu) != 0u) { rawColor = decodeRgb565(style.packed); }
+    if ((assigned & 0x000fffffu) != 0u) {
+      opacity = f32((style.packed >> 16u) & 0xfu) / 15.0;
+      // Packed alpha already contains the source/computed color alpha.
+      rawColor.a = 1.0;
+    }
+    if ((assigned & 0x00700000u) != 0u) { shape = (style.packed >> 20u) & 0x7u; }
+    if ((assigned & 0x1f800000u) != 0u) { rotationVector = decodeRotationVector(style.packed); }
+    if ((assigned & 0xe0000000u) != 0u) { pointSize = decodePointSize(style.packed); }
   }
 
   let xRange = uniforms.ranges.xy;

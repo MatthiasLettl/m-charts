@@ -137,6 +137,12 @@ export function createParallelWebgpuPlot(
     interactive: initialRenderer.interactive,
     ready: initialRenderer.ready,
   });
+  if (clientView !== undefined) plot.use(() => clientView.view.validateWith((next) => {
+    if (next.metrics.rowCount !== sourceBuffers.recordCount) throw new TypeError('Client view must retain source row identities.');
+    for (const key of sourceBuffers.axisOrder.map((key) => clientView.fieldByAxis?.[key] ?? key)) {
+      if (!Object.hasOwn(next.fields, key)) throw new TypeError(`Cannot remove plotted client field "${key}" while a chart is attached.`);
+    }
+  }));
   const updatePlot = webgpuPlot.update.bind(webgpuPlot);
   if (clientView !== undefined) {
     const apply = (mutable: ParallelWebgpuPlotUpdateOptions = {}) => {

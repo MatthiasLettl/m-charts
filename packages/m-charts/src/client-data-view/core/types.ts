@@ -22,7 +22,18 @@ export interface ClientDataSet {
   readonly rowCount: number;
 }
 
+/** A serializable expression; invalid arithmetic produces null, never infinity. */
+export type ClientDataExpression =
+  | { readonly op: 'field'; readonly field: string }
+  | { readonly op: 'literal'; readonly value: ClientDataScalar | null }
+  | { readonly op: 'add' | 'subtract' | 'multiply' | 'divide' | 'modulo' | 'power' | 'min' | 'max'; readonly left: ClientDataExpression; readonly right: ClientDataExpression }
+  | { readonly op: 'abs' | 'negate' | 'log' | 'log10' | 'sqrt' | 'exp' | 'round' | 'floor' | 'ceil' | 'lower' | 'upper' | 'trim'; readonly input: ClientDataExpression }
+  | { readonly op: 'coalesce' | 'concat'; readonly args: readonly ClientDataExpression[] }
+  | { readonly op: 'case'; readonly branches: readonly { readonly when: ClientDataPredicate; readonly value: ClientDataExpression }[]; readonly fallback: ClientDataExpression };
+
 export type ClientDataPredicate =
+  | { readonly op: 'compare'; readonly left: ClientDataExpression; readonly right: ClientDataExpression; readonly comparison: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' }
+  | { readonly op: 'contains' | 'startsWith' | 'endsWith'; readonly field: string; readonly value: string; readonly caseSensitive?: boolean }
   | { readonly op: 'and'; readonly args: readonly ClientDataPredicate[] }
   | { readonly op: 'or'; readonly args: readonly ClientDataPredicate[] }
   | { readonly op: 'not'; readonly arg: ClientDataPredicate }
@@ -52,6 +63,8 @@ export type ClientDataPredicate =
   | { readonly op: 'isNull' | 'isValid'; readonly field: string };
 
 export interface ClientDataFilter {
+  /** Defaults to source. Transformed filters do not feed back into differences. */
+  readonly stage?: 'source' | 'transformed';
   readonly enabled?: boolean;
   readonly id: string;
   readonly predicate: ClientDataPredicate;
@@ -80,6 +93,7 @@ export interface ClientDataDifferenceTransformation {
 }
 
 export type ClientDataTransformation =
+  | { readonly op: 'calculate'; readonly id: string; readonly enabled?: boolean; readonly output: string; readonly expression: ClientDataExpression }
   | ClientDataAffineTransformation
   | ClientDataDifferenceTransformation;
 
@@ -87,6 +101,7 @@ export type ClientStyleChannel = 'color' | 'opacity' | 'rotation' | 'shape' | 's
 export type ClientStyleValue = number | string;
 
 export type ClientStyleExpression =
+  | { readonly op: 'field'; readonly field: string }
   | { readonly op: 'constant'; readonly value: ClientStyleValue }
   | {
       readonly op: 'categorical';
@@ -127,7 +142,7 @@ export interface ClientDataViewState {
   readonly sourceStyleMode?: 'ignore' | 'preserve';
   readonly styles: readonly ClientStyleRule[];
   readonly transformations: readonly ClientDataTransformation[];
-  readonly version: 1;
+  readonly version: 1 | 2;
 }
 
 export type ClientDataViewChangeTarget = 'filter' | 'state' | 'style' | 'transformation';
@@ -183,12 +198,19 @@ export interface ClientDataViewEvaluation {
 export type ClientDataViewListener = (event: ClientDataViewChangeEvent) => void;
 export type ClientDataViewUnsubscribe = () => void;
 
+export interface ClientDataAsyncEvaluator {
+  evaluate(dataset: ClientDataSet, state: ClientDataViewState): Promise<ClientDataViewEvaluation>;
+  dispose?(): void;
+}
+
 export interface ClientDataView {
   readonly dataset: ClientDataSet;
   addFilter(filter: ClientDataFilter): void;
   addStyle(style: ClientStyleRule): void;
   addTransformation(transformation: ClientDataTransformation): void;
   evaluate(): ClientDataViewEvaluation;
+  /** Reject a mutation before it becomes visible to any subscriber. */
+  validateWith(validator: (evaluation: ClientDataViewEvaluation, state: ClientDataViewState) => void): ClientDataViewUnsubscribe;
   exportState(): ClientDataViewState;
   getFilters(): readonly ClientDataFilter[];
   getState(): Readonly<ClientDataViewState>;
@@ -205,12 +227,21 @@ export interface ClientDataView {
   reorderStyles(ids: readonly string[]): void;
   reorderTransformations(ids: readonly string[]): void;
   replaceState(state: ClientDataViewState): void;
+  /** Atomic worker evaluation. Resolves false if superseded by another mutation. */
+  replaceStateAsync(state: ClientDataViewState): Promise<boolean>;
+  /** Stage ordinary mutations synchronously, evaluate once in the configured worker. */
+  batchAsync(action: () => void): Promise<boolean>;
+  /** Replace same-row metadata columns; attached plots validate their mappings first. */
+  updateFields(fields: Readonly<Record<string, ClientDataField>>, datasetVersion?: string): void;
+  /** Releases the optional evaluator and all subscriptions. Dispose plots first. */
+  dispose(): void;
   updateFilter(id: string, filter: ClientDataFilter): void;
   updateStyle(id: string, style: ClientStyleRule): void;
   updateTransformation(id: string, transformation: ClientDataTransformation): void;
 }
 
 export interface CreateClientDataViewOptions {
+  readonly asyncEvaluator?: ClientDataAsyncEvaluator;
   /** Receives subscriber errors after commit; other subscribers still run. Defaults to console.error. */
   readonly onListenerError?: (error: unknown, event: ClientDataViewChangeEvent) => void;
   readonly dataset: ClientDataSet;

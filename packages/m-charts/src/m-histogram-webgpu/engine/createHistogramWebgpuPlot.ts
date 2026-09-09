@@ -1,4 +1,4 @@
-import { calculateHistogramDomain, evaluateHistogramClientView } from '../../m-histogram/core/index.js';
+import { evaluateHistogramClientView } from '../../m-histogram/core/index.js';
 import type { HistogramWebgpuPlotUpdateOptions } from './types.js';
 import { createHistogramEngine } from '../../m-histogram/engine/createHistogramEngine.js';
 import {
@@ -31,6 +31,7 @@ export function createHistogramWebgpuPlot(
   if (clientView !== undefined && (sourceColumns === undefined || histogramOptions.spec.mode !== 'histogram')) {
     throw new TypeError('Histogram clientView requires raw columns in histogram mode; pre-aggregated bars have no row pipeline.');
   }
+  let sourceSpec = histogramOptions.spec;
   let theme = histogramOptions.theme;
   const evaluate = () => clientView === undefined ? null : evaluateHistogramClientView(
     clientView, sourceColumns!, theme?.defaultBarColor?.map((v) => Math.round(v * 255)),
@@ -39,16 +40,16 @@ export function createHistogramWebgpuPlot(
   let specFields: import('../../client-data-view/index.js').ClientDataViewEvaluation['fields'] | undefined;
   let cachedSpec = histogramOptions.spec;
   const projectedSpec = () => {
-    if (evaluation === null) return histogramOptions.spec;
+    if (evaluation === null) return sourceSpec;
     if (specFields === evaluation.fields) return cachedSpec;
     specFields = evaluation.fields;
     cachedSpec = {
-    ...histogramOptions.spec,
-    parameters: histogramOptions.spec.parameters.map((parameter) => {
-      const field = evaluation!.fields[clientView!.fieldByParameter?.[parameter.key] ?? parameter.key];
-      if (field?.kind !== 'numeric' || field.values === sourceColumns!.valuesByParameter[parameter.key]) return parameter;
-      const numericParameter = { ...parameter, kind: 'numeric' as const, domain: undefined };
-      return { ...numericParameter, domain: calculateHistogramDomain(evaluation!.columns, numericParameter).range };
+    ...sourceSpec,
+    parameters: sourceSpec.parameters.map((parameter) => {
+      const projected = evaluation!.columns.parameters?.find((p) => p.key === parameter.key);
+      const original = sourceColumns!.parameters?.find((p) => p.key === parameter.key);
+      return projected !== undefined && projected !== original
+        ? { ...projected, label: parameter.label } : parameter;
     }),
     };
     return cachedSpec;
@@ -93,6 +94,12 @@ export function createHistogramWebgpuPlot(
     throw new Error('The WebGPU histogram renderer was not created.');
   }
   const activeRenderer: HistogramWebgpuRenderer = renderer;
+  if (clientView !== undefined) plot.use(() => clientView.view.validateWith((next) => {
+    if (next.metrics.rowCount !== sourceColumns!.ids.length) throw new TypeError('Client view must retain source row identities.');
+    for (const key of Object.keys(sourceColumns!.valuesByParameter).map((key) => clientView.fieldByParameter?.[key] ?? key)) {
+      if (!Object.hasOwn(next.fields, key)) throw new TypeError(`Cannot remove plotted client field "${key}" while a chart is attached.`);
+    }
+  }));
   const updatePlot = plot.update.bind(plot);
   const instance = Object.assign(plot, {
     getWebgpuDiagnostics: () => {
@@ -115,20 +122,25 @@ export function createHistogramWebgpuPlot(
       if (next.columns !== undefined && next.columns !== sourceColumns) throw new TypeError(
         'WebGPU histogram source columns are immutable while clientView is attached; recreate the view and plot for a new dataset.',
       );
-      if (next.spec !== undefined && next.spec !== histogramOptions.spec) throw new TypeError('Histogram spec is creation-bound while clientView is attached.');
       if (next.aggregation !== undefined) throw new TypeError('An aggregation override is unavailable while clientView is attached.');
+      if (next.spec !== undefined) {
+        if (next.spec.mode !== 'histogram' || next.spec.parameters.some((p) => !Object.hasOwn(sourceColumns!.valuesByParameter, p.key))) throw new TypeError('Client histogram specs require resident raw parameters.');
+        sourceSpec = next.spec; specFields = undefined;
+      }
       const { columns: _source, spec: _spec, ...mutable } = next;
       void _source;
       void _spec;
       if (next.theme !== undefined && next.theme !== theme) {
         theme = next.theme; evaluation = evaluate();
         updatePlot({ ...mutable, columns: evaluation!.columns, spec: projectedSpec() });
-      } else updatePlot(mutable);
+      } else updatePlot({ ...mutable, ...(next.spec === undefined ? {} : { spec: projectedSpec() }) });
     },
   });
   if (clientView !== undefined) plot.use(() => clientView.view.on('change', () => {
+    const previous = evaluation;
     evaluation = evaluate();
-    updatePlot({ columns: evaluation!.columns, spec: projectedSpec(), selectedSourceIndices: [], hoverSourceIndex: null });
+    const dataChanged = previous?.columns.valuesByParameter !== evaluation!.columns.valuesByParameter;
+    updatePlot({ columns: evaluation!.columns, spec: projectedSpec(), ...(dataChanged ? { selectedSourceIndices: [], hoverSourceIndex: null } : {}) });
     plot.commands.render();
   }));
   return instance;

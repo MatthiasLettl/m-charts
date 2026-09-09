@@ -336,7 +336,7 @@ const revisionBeforeInvalidMutation = detachedStateView.getState().revision;
 assert.throws(
   () => detachedStateView.addFilter({
     id: 'invalid-op',
-    predicate: { field: 'value', op: 'contains', value: 1 } as never,
+    predicate: { field: 'value', op: 'unsupported-op', value: 1 } as never,
   }),
   /Unsupported client predicate op/u,
 );

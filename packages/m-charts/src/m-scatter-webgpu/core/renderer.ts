@@ -151,6 +151,8 @@ interface GpuResources {
   clientViewAppliedEvaluation: FastScatterClientViewEvaluation | null;
   clientViewIndexBuffer: GPUBuffer | null;
   clientViewStyleBuffers: Set<GPUBuffer>;
+  clientIndexedStyle: boolean;
+  visibleMaskWords: number;
   visibleBuffer: GPUBuffer;
   visibleBufferBytes: number;
 }
@@ -1079,6 +1081,12 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         evaluation.activeMask.byteOffset,
         evaluation.activeMask.byteLength,
       );
+      if (gpu.clientIndexedStyle && !reuseStyles) {
+        const masks = Uint32Array.from({ length: evaluation.metrics.rowCount }, (_, row) =>
+          evaluation.sourceStyleMode === 'ignore' ? 0xffff_ffff : createFastScatterWebgpuClientStyleMask(evaluation.styles, row));
+        if (masks.byteLength > 0) context.device.queue.writeBuffer(gpu.visibleBuffer, gpu.visibleMaskWords * 4, masks);
+        viewUploadBytes += masks.byteLength;
+      }
       const previousBuffers = gpu.clientViewBuffers;
       gpu.clientViewBuffers = nextBuffers;
       gpu.clientViewDrawIndices = drawIndices;
@@ -2683,14 +2691,17 @@ async function createGpuResources(
     size: EMPTY_BUFFER_BYTES,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
   });
-  const visibleWordCount = Math.max(1, Math.ceil(pointCapacity / 32));
+  const clientIndexedStyle = clientViewEnabled && indexedStyle && packedStyles === undefined &&
+    columns.color === undefined && columns.opacity === undefined && columns.rotation === undefined && columns.rotationRadians === undefined && columns.shape === undefined && columns.size === undefined;
+  const visibleMaskWords = Math.max(1, Math.ceil(pointCapacity / 32));
+  const visibleWordCount = visibleMaskWords + (clientIndexedStyle ? pointCapacity : 0);
   const visibleBuffer = device.createBuffer({
     label: 'm-scatter-webgpu/client-view-visible-mask',
     mappedAtCreation: true,
     size: visibleWordCount * Uint32Array.BYTES_PER_ELEMENT,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.STORAGE,
   });
-  new Uint32Array(visibleBuffer.getMappedRange()).fill(0xffff_ffff);
+  new Uint32Array(visibleBuffer.getMappedRange()).fill(0xffff_ffff, 0, visibleMaskWords);
   visibleBuffer.unmap();
   const bindGroupLayout = device.createBindGroupLayout({
     entries: [
@@ -2760,7 +2771,8 @@ async function createGpuResources(
       primitive: { topology: 'triangle-strip' },
       vertex: {
         constants: {
-          STYLE_MODE: styles.constant ? (indexedStyle ? 2 : 1) : 0,
+          STYLE_MODE: clientIndexedStyle ? 3 : styles.constant ? (indexedStyle ? 2 : 1) : 0,
+          CLIENT_MASK_OFFSET: visibleMaskWords,
           STYLE_SPLIT_POINT: styleSplitBytes === 0
             ? 0xffff_ffff
             : styleSplitBytes / STYLE_STRIDE_BYTES,
@@ -3001,7 +3013,7 @@ async function createGpuResources(
     compositeSampler,
     identitySourceOrder: sourceMapping.identity,
     inverseSourceIndex: sourceMapping.inverse,
-    maxPointSize: indexedStyle && styles.constant ? 5 : styles.maxPointSize,
+    maxPointSize: clientIndexedStyle || indexedStyle && styles.constant ? 5 : styles.maxPointSize,
     pipelines: [pointPipeline, pointPipeline, pointPipeline],
     plots,
     pointCapacity,
@@ -3023,7 +3035,7 @@ async function createGpuResources(
     sourceStyleByteLength: styles.byteLength,
     sourceStyleMode: styles.constant ? (indexedStyle ? 2 : 1) : 0,
     sourceStyleSplitBytes: styleSplitBytes,
-    sourceMaxPointSize: styles.maxPointSize,
+    sourceMaxPointSize: clientIndexedStyle ? 5 : styles.maxPointSize,
     styleComposeBindGroupLayout,
     styleComposePipeline,
     uploadBytes: x.byteLength + uniqueYBytes + styles.byteLength + overviewBytes,
@@ -3038,6 +3050,8 @@ async function createGpuResources(
     clientViewAppliedEvaluation: null,
     clientViewIndexBuffer: null,
     clientViewStyleBuffers: new Set(),
+    clientIndexedStyle,
+    visibleMaskWords,
     visibleBuffer,
     visibleBufferBytes: visibleWordCount * Uint32Array.BYTES_PER_ELEMENT,
   };
@@ -3535,7 +3549,7 @@ async function createStyleBuffer(
   }
   const constant = !forcePerPoint &&
     columns.color === undefined && columns.opacity === undefined &&
-    columns.rotation === undefined && columns.shape === undefined && columns.size === undefined;
+    columns.rotation === undefined && columns.rotationRadians === undefined && columns.shape === undefined && columns.size === undefined;
   const styleCount = constant ? 1 : pointCapacity;
   const byteLength = Math.max(STYLE_STRIDE_BYTES, styleCount * STYLE_STRIDE_BYTES);
   const buffers = createStyleGpuBuffers(device, byteLength, true);

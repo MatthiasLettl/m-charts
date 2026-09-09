@@ -1,3 +1,4 @@
+import { createClientDataFingerprint } from './fingerprint.js';
 import { createCachedClientDataViewEvaluator } from './evaluator.js';
 import type {
   ClientDataView,
@@ -13,7 +14,12 @@ type EventName = 'change' | 'filterchange' | 'stylechange' | 'transformationchan
 
 export function createClientDataView(options: CreateClientDataViewOptions): ClientDataView {
   let state = freezeState(createInitialState(options));
-  const evaluate = createCachedClientDataViewEvaluator(options.dataset);
+  let dataset = options.dataset;
+  let evaluate = createCachedClientDataViewEvaluator(dataset);
+  let mutationSequence = 0;
+  let staging = false;
+  let disposed = false;
+  const validators = new Set<Parameters<ClientDataView['validateWith']>[0]>();
   const listeners = new Map<EventName, Set<ClientDataViewListener>>();
   let cachedEvaluation: ReturnType<typeof evaluate> | null = null;
 
@@ -24,6 +30,7 @@ export function createClientDataView(options: CreateClientDataViewOptions): Clie
     targetId?: string,
     origin: 'import' | 'local' = 'local',
   ): void {
+    if (disposed) throw new Error('Client data view is disposed.');
     const previousState = state;
     const nextState: ClientDataViewState = freezeState(cloneState({
       ...next,
@@ -32,7 +39,10 @@ export function createClientDataView(options: CreateClientDataViewOptions): Clie
     // Validate and materialize once before publishing the state. The renderer's
     // change listener can then consume the same cached result without a second
     // full scan of a multi-million-row dataset.
+    if (staging) { state = nextState; return; }
     const nextEvaluation = evaluate(nextState);
+    for (const validator of validators) validator(nextEvaluation, nextState);
+    mutationSequence += 1;
     state = nextState;
     cachedEvaluation = nextEvaluation;
     const event: ClientDataViewChangeEvent = {
@@ -44,6 +54,27 @@ export function createClientDataView(options: CreateClientDataViewOptions): Clie
       ...(targetId === undefined ? {} : { targetId }),
     };
     publish(event);
+  }
+
+  async function replaceStateAsync(next: ClientDataViewState): Promise<boolean> {
+    if (disposed) throw new Error('Client data view is disposed.');
+    if (staging) throw new Error('replaceStateAsync cannot run inside batchAsync.');
+    if (options.asyncEvaluator === undefined) {
+      commit(next, 'state', 'replace', undefined, 'import');
+      return true;
+    }
+    const token = ++mutationSequence;
+    const previousState = state;
+    const nextState = freezeState(cloneState({ ...next, revision: state.revision + 1 }));
+    let nextEvaluation: Awaited<ReturnType<NonNullable<CreateClientDataViewOptions['asyncEvaluator']>['evaluate']>>;
+    try { nextEvaluation = await options.asyncEvaluator.evaluate(dataset, nextState); }
+    catch (error) { if (disposed || token !== mutationSequence) return false; throw error; }
+    if (disposed || token !== mutationSequence) return false;
+    for (const validator of validators) validator(nextEvaluation, nextState);
+    state = nextState;
+    cachedEvaluation = nextEvaluation;
+    publish({ previousState, state, target: 'state', operation: 'replace', origin: 'import' });
+    return true;
   }
 
   function updateById<T extends { readonly id: string }>(
@@ -121,7 +152,38 @@ export function createClientDataView(options: CreateClientDataViewOptions): Clie
   }
 
   return {
-    dataset: options.dataset,
+    get dataset() { return dataset; },
+    dispose() { disposed = true; mutationSequence += 1; options.asyncEvaluator?.dispose?.(); listeners.clear(); validators.clear(); },
+    updateFields(fields, datasetVersion) {
+      if (staging) throw new Error('updateFields cannot run inside batchAsync.');
+      const oldDataset = dataset; const oldEvaluate = evaluate;
+      dataset = { ...dataset, fields: { ...dataset.fields, ...fields }, datasetVersion: datasetVersion ?? dataset.datasetVersion };
+      if (datasetVersion === undefined && dataset.datasetVersion?.startsWith('content-v1-')) {
+        const originalIdentity = dataset.datasetVersion.split(':fields-')[0]!;
+        dataset = { ...dataset, datasetVersion: `${originalIdentity}:fields-${createClientDataFingerprint(dataset)}` };
+      }
+      evaluate = createCachedClientDataViewEvaluator(dataset);
+      try { commit({ ...state, datasetVersion: dataset.datasetVersion }, 'state', 'replace'); }
+      catch (error) { dataset = oldDataset; evaluate = oldEvaluate; throw error; }
+    },
+    replaceStateAsync,
+    async batchAsync(action) {
+      if (staging) throw new Error('Nested async batches are unavailable.');
+      const original = state;
+      let next: ClientDataViewState;
+      staging = true;
+      try {
+        const result = action() as unknown;
+        if (result && typeof (result as { then?: unknown }).then === 'function') throw new TypeError('batchAsync action must be synchronous.');
+        next = state;
+      } finally { state = original; staging = false; }
+      return replaceStateAsync(next!);
+    },
+    validateWith(validator) {
+      validator(cachedEvaluation ??= evaluate(state), state);
+      validators.add(validator);
+      return () => validators.delete(validator);
+    },
     addFilter(filter) {
       commit({ ...state, filters: [...state.filters, filter] }, 'filter', 'add', filter.id);
     },
@@ -256,9 +318,8 @@ function createInitialState(options: CreateClientDataViewOptions): ClientDataVie
 }
 
 function cloneState(state: ClientDataViewState): ClientDataViewState {
-  return typeof structuredClone === 'function'
-    ? structuredClone(state)
-    : JSON.parse(JSON.stringify(state)) as ClientDataViewState;
+  const copy = typeof structuredClone === 'function' ? structuredClone(state) : JSON.parse(JSON.stringify(state)) as ClientDataViewState;
+  return { ...copy, version: copy.version === 1 && requiresExtendedState(copy) ? 2 : copy.version };
 }
 
 // Configuration is small, detached JSON data; resident typed columns are never frozen.
@@ -268,4 +329,14 @@ function freezeState<T>(value: T): T {
     Object.freeze(value);
   }
   return value;
+}
+
+function requiresExtendedState(state: ClientDataViewState): boolean {
+  const extended = new Set(['calculate', 'compare', 'contains', 'startsWith', 'endsWith', 'field']);
+  const visit = (value: unknown): boolean => {
+    if (value === null || typeof value !== 'object') return false;
+    if ('op' in value && extended.has(String(value.op))) return true;
+    return Object.values(value).some(visit);
+  };
+  return state.filters.some((f) => f.stage === 'transformed') || visit(state.filters) || visit(state.transformations) || visit(state.styles);
 }

@@ -1,3 +1,4 @@
+import { compileDataExpression, datetimeBigInt, validFieldValue } from './expressions.js';
 import type {
   ClientComputedStyles,
   ClientDataField,
@@ -26,6 +27,9 @@ type CompiledStyleExpression = (rowIndex: number) => ClientStyleValue | undefine
 interface EvaluationCache {
   filters: string;
   transformations: string;
+  postFilters: string;
+  sourceMask: Uint32Array;
+  sourceIndices: Uint32Array;
   styles: string;
   evaluation: ClientDataViewEvaluation;
 }
@@ -56,23 +60,25 @@ function evaluateStages(
   validateClientDataSet(dataset);
   validateClientDataViewState(dataset, state);
   const rowCount = dataset.rowCount;
-  const filtersKey = JSON.stringify(state.filters);
+  const filtersKey = JSON.stringify(state.filters.filter((filter) => filter.stage !== 'transformed'));
   const transformationsKey = JSON.stringify(state.transformations);
   const stylesKey = JSON.stringify(state.styles);
   const reuseFilters = previous !== undefined && previous.filters === filtersKey;
-  const reuseTransformations = reuseFilters && previous.transformations === transformationsKey;
-  const reuseStyles = reuseTransformations && previous.styles === stylesKey;
+  const hasTransforms = state.transformations.some((t) => t.enabled !== false);
+  const reuseTransformations = previous !== undefined && (reuseFilters || !hasTransforms) && previous.transformations === transformationsKey;
+  const postFiltersKey = JSON.stringify(state.filters.filter((filter) => filter.stage === 'transformed'));
+  const reusePostFilters = reuseFilters && reuseTransformations && previous.postFilters === postFiltersKey;
+  const reuseStyles = reusePostFilters && previous.styles === stylesKey;
   const filterStartedAt = performance.now();
   let activeMask: Uint32Array;
   let activeSourceIndices: Uint32Array;
   let activeRowCount: number;
   if (reuseFilters) {
-    ({ activeMask, activeSourceIndices } = previous.evaluation);
-    activeRowCount = activeSourceIndices.length;
+    ({ sourceMask: activeMask, sourceIndices: activeSourceIndices } = previous);
   } else {
     activeMask = new Uint32Array(Math.ceil(rowCount / 32));
     const enabledFilters = state.filters
-      .filter((filter) => filter.enabled !== false)
+      .filter((filter) => filter.enabled !== false && filter.stage !== 'transformed')
       .map((filter) => compilePredicate(filter.predicate, dataset.fields));
     activeRowCount = 0;
     for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
@@ -87,12 +93,14 @@ function evaluateStages(
       }
     }
   }
-  const filterMs = reuseFilters ? 0 : performance.now() - filterStartedAt;
+  let filterMs = reuseFilters ? 0 : performance.now() - filterStartedAt;
+  const sourceMask = activeMask;
+  const sourceIndices = activeSourceIndices;
 
   const transformationStartedAt = performance.now();
   const fields: Record<string, ClientDataField> = reuseTransformations
     ? previous.evaluation.fields
-    : { ...dataset.fields };
+    : hasTransforms ? { ...dataset.fields } : dataset.fields;
   if (!reuseTransformations) {
     for (const transformation of state.transformations) {
       if (transformation.enabled === false) continue;
@@ -102,6 +110,20 @@ function evaluateStages(
     }
   }
   const transformationMs = reuseTransformations ? 0 : performance.now() - transformationStartedAt;
+  const postStartedAt = performance.now();
+  if (reusePostFilters) {
+    ({ activeMask, activeSourceIndices } = previous.evaluation);
+  } else {
+    const predicates = state.filters.filter((f) => f.enabled !== false && f.stage === 'transformed')
+      .map((f) => compilePredicate(f.predicate, fields));
+    if (predicates.length > 0) {
+      activeSourceIndices = sourceIndices.filter((row) => predicates.every((p) => p(row)));
+      activeMask = new Uint32Array(Math.ceil(rowCount / 32));
+      for (const row of activeSourceIndices) activeMask[row >>> 5]! |= 1 << (row & 31);
+    }
+    filterMs += performance.now() - postStartedAt;
+  }
+  activeRowCount = activeSourceIndices.length;
   const styleStartedAt = performance.now();
   const styles = reuseStyles
     ? previous.evaluation.styles
@@ -109,6 +131,9 @@ function evaluateStages(
   const styleMs = reuseStyles ? 0 : performance.now() - styleStartedAt;
   return {
     filters: filtersKey,
+    postFilters: postFiltersKey,
+    sourceMask,
+    sourceIndices,
     transformations: transformationsKey,
     styles: stylesKey,
     evaluation: {
@@ -135,7 +160,8 @@ export function evaluateClientDataPredicate(
   fields: Readonly<Record<string, ClientDataField>>,
   rowIndex: number,
 ): boolean {
-  return evaluatePredicate(predicate, fields, rowIndex);
+  validatePredicateDefinition(predicate, fields);
+  return compilePredicate(predicate, fields)(rowIndex);
 }
 
 function evaluateTransformation(
@@ -144,6 +170,16 @@ function evaluateTransformation(
   activeSourceIndices: Uint32Array,
   rowCount: number,
 ): ClientDataField {
+  if (transformation.op === 'calculate') {
+    const expression = compileDataExpression(transformation.expression, fields, validatedPredicate);
+    const values = expression.kind === 'numeric' ? new Float64Array(rowCount).fill(NaN) : new Array<ClientDataValue>(rowCount).fill(null);
+    for (const row of activeSourceIndices) {
+      const value = expression.read(row);
+      if (values instanceof Float64Array) values[row] = value == null ? NaN : Number(value);
+      else values[row] = value;
+    }
+    return { kind: expression.kind, values };
+  }
   const input = requireField(fields, transformation.input);
   if (input.kind !== 'numeric' && input.kind !== 'datetime-ns') {
     throw new TypeError(
@@ -154,9 +190,10 @@ function evaluateTransformation(
   values.fill(Number.NaN);
   if (transformation.op === 'affine') {
     for (const rowIndex of activeSourceIndices) {
-      const inputValue = toFiniteNumber(input.values[rowIndex]);
+      const inputValue = toFiniteNumber(input.kind === 'datetime-ns' ? datetimeBigInt(input.values[rowIndex]) : input.values[rowIndex]);
       if (inputValue !== null) {
-        values[rowIndex] = inputValue * transformation.factor + transformation.offset;
+        const result = inputValue * transformation.factor + transformation.offset;
+        values[rowIndex] = Number.isFinite(result) ? result : NaN;
       }
     }
     return { kind: 'numeric', values };
@@ -282,6 +319,10 @@ function compileStyleExpression(
   expression: ClientStyleExpression,
   fields: Readonly<Record<string, ClientDataField>>,
 ): CompiledStyleExpression {
+  if (expression.op === 'field') {
+    const field = requireField(fields, expression.field);
+    return (row) => { const value = field.values[row]; return typeof value === 'string' || typeof value === 'number' && Number.isFinite(value) ? value : undefined; };
+  }
   if (expression.op === 'constant') return () => expression.value;
   if (expression.op === 'hashedColor') {
     const values = requireField(fields, expression.field).values;
@@ -360,6 +401,27 @@ function compilePredicate(
   predicate: ClientDataPredicate,
   fields: Readonly<Record<string, ClientDataField>>,
 ): CompiledPredicate {
+  if (predicate.op === 'compare') {
+    const left = compileDataExpression(predicate.left, fields, validatedPredicate);
+    const right = compileDataExpression(predicate.right, fields, validatedPredicate);
+    const kind = left.kind === 'datetime-ns' || right.kind === 'datetime-ns' ? 'datetime-ns' : left.kind;
+    return (row) => {
+      const a = left.read(row); const b = right.read(row);
+      if (!validFieldValue(a, kind) || !validFieldValue(b, kind)) return false;
+      const comparison = compareValues(a, b, kind);
+      return matchesComparison(comparison, predicate.comparison);
+    };
+  }
+  if (predicate.op === 'contains' || predicate.op === 'startsWith' || predicate.op === 'endsWith') {
+    const values = requireField(fields, predicate.field).values;
+    const needle = predicate.caseSensitive === false ? predicate.value.toLowerCase() : predicate.value;
+    return (row) => {
+      const value = values[row];
+      if (typeof value !== 'string') return false;
+      const text = predicate.caseSensitive === false ? value.toLowerCase() : value;
+      return predicate.op === 'contains' ? text.includes(needle) : predicate.op === 'startsWith' ? text.startsWith(needle) : text.endsWith(needle);
+    };
+  }
   if (predicate.op === 'and' || predicate.op === 'or') {
     const args = predicate.args.map((argument) => compilePredicate(argument, fields));
     return predicate.op === 'and'
@@ -383,10 +445,10 @@ function compilePredicate(
   const field = requireField(fields, predicate.field);
   const values = field.values;
   if (predicate.op === 'isNull') {
-    return (rowIndex) => isNullish(values[rowIndex]) || isInvalidNumber(values[rowIndex]);
+    return (rowIndex) => !validFieldValue(values[rowIndex], field.kind);
   }
   if (predicate.op === 'isValid') {
-    return (rowIndex) => !isNullish(values[rowIndex]) && !isInvalidNumber(values[rowIndex]);
+    return (rowIndex) => validFieldValue(values[rowIndex], field.kind);
   }
   if (predicate.op === 'in' || predicate.op === 'notIn') {
     // Normalize once so large selection membership filters remain linear in
@@ -400,7 +462,7 @@ function compilePredicate(
     const members = new Set(predicate.values.map(key));
     return (rowIndex) => {
       const value = values[rowIndex];
-      if (isNullish(value) || isInvalidNumber(value)) return false;
+      if (!validFieldValue(value, field.kind)) return false;
       const matches = members.has(key(value));
       return predicate.op === 'in' ? matches : !matches;
     };
@@ -408,7 +470,7 @@ function compilePredicate(
   if (predicate.op === 'between') {
     return (rowIndex) => {
       const value = values[rowIndex];
-      if (isNullish(value) || isInvalidNumber(value)) return false;
+      if (!validFieldValue(value, field.kind)) return false;
       const lower = compareValues(value, predicate.min, field.kind);
       const upper = compareValues(value, predicate.max, field.kind);
       return predicate.inclusive === false ? lower > 0 && upper < 0 : lower >= 0 && upper <= 0;
@@ -419,7 +481,7 @@ function compilePredicate(
   const comparisonOperation = predicate.op;
   return (rowIndex) => {
     const value = values[rowIndex];
-    if (isNullish(value) || isInvalidNumber(value)) return false;
+    if (!validFieldValue(value, field.kind)) return false;
     const comparison = compareValues(value, comparisonValue, field.kind);
     if (comparisonOperation === 'eq') return comparison === 0;
     if (comparisonOperation === 'ne') return comparison !== 0;
@@ -428,48 +490,6 @@ function compilePredicate(
     if (comparisonOperation === 'lt') return comparison < 0;
     return comparison <= 0;
   };
-}
-
-function evaluatePredicate(
-  predicate: ClientDataPredicate,
-  fields: Readonly<Record<string, ClientDataField>>,
-  rowIndex: number,
-): boolean {
-  if (predicate.op === 'and' || predicate.op === 'or') {
-    return predicate.op === 'and'
-      ? predicate.args.every((argument) => evaluatePredicate(argument, fields, rowIndex))
-      : predicate.args.some((argument) => evaluatePredicate(argument, fields, rowIndex));
-  }
-  if (predicate.op === 'not') return !evaluatePredicate(predicate.arg, fields, rowIndex);
-  if (predicate.op === 'pointInPolygon') {
-    const x = toFiniteNumber(requireField(fields, predicate.xField).values[rowIndex]);
-    const y = toFiniteNumber(requireField(fields, predicate.yField).values[rowIndex]);
-    return x !== null && y !== null && pointInPolygon(x, y, predicate.points);
-  }
-  const field = requireField(fields, predicate.field);
-  const value = field.values[rowIndex];
-  if (predicate.op === 'isNull') return isNullish(value) || isInvalidNumber(value);
-  if (predicate.op === 'isValid') return !isNullish(value) && !isInvalidNumber(value);
-  if (isNullish(value) || isInvalidNumber(value)) return false;
-  if (predicate.op === 'in' || predicate.op === 'notIn') {
-    const matches = predicate.values.some(
-      (candidate) => compareValues(value, candidate, field.kind) === 0,
-    );
-    return predicate.op === 'in' ? matches : !matches;
-  }
-  if (predicate.op === 'between') {
-    const lower = compareValues(value, predicate.min, field.kind);
-    const upper = compareValues(value, predicate.max, field.kind);
-    return predicate.inclusive === false ? lower > 0 && upper < 0 : lower >= 0 && upper <= 0;
-  }
-  if (!('value' in predicate)) return false;
-  const comparison = compareValues(value, predicate.value, field.kind);
-  if (predicate.op === 'eq') return comparison === 0;
-  if (predicate.op === 'ne') return comparison !== 0;
-  if (predicate.op === 'gt') return comparison > 0;
-  if (predicate.op === 'gte') return comparison >= 0;
-  if (predicate.op === 'lt') return comparison < 0;
-  return comparison <= 0;
 }
 
 function pointInPolygon(
@@ -665,15 +685,11 @@ function isNullish(value: ClientDataValue): value is null | undefined {
   return value === null || value === undefined;
 }
 
-function isInvalidNumber(value: ClientDataValue): boolean {
-  return typeof value === 'number' && !Number.isFinite(value);
-}
-
 function requireField(
   fields: Readonly<Record<string, ClientDataField>>,
   key: string,
 ): ClientDataField {
-  const field = fields[key];
+  const field = Object.hasOwn(fields, key) ? fields[key] : undefined;
   if (field === undefined) throw new TypeError(`Unknown client data field "${key}".`);
   return field;
 }
@@ -695,7 +711,7 @@ function validateClientDataSet(dataset: ClientDataSet): void {
 }
 
 function validateClientDataViewState(dataset: ClientDataSet, state: ClientDataViewState): void {
-  if (state.version !== 1) {
+  if (state.version !== 1 && state.version !== 2) {
     throw new TypeError(`Unsupported client data-view state version "${String(state.version)}".`);
   }
   if ((state.datasetKey !== undefined && typeof state.datasetKey !== 'string') ||
@@ -719,9 +735,18 @@ function validateClientDataViewState(dataset: ClientDataSet, state: ClientDataVi
     }
     ids.add(item.id);
   }
-  for (const filter of state.filters) validatePredicateDefinition(filter.predicate, dataset.fields);
+  for (const filter of state.filters) {
+    if (filter.stage !== undefined && filter.stage !== 'source' && filter.stage !== 'transformed') throw new TypeError('Unknown client filter stage.');
+    if (filter.stage !== 'transformed') validatePredicateDefinition(filter.predicate, dataset.fields);
+  }
   const availableFields: Record<string, ClientDataField> = { ...dataset.fields };
   for (const transformation of state.transformations) {
+    if (typeof transformation.output !== 'string' || !transformation.output || ['__proto__', 'constructor', 'prototype'].includes(transformation.output)) throw new TypeError('Client transformations require a valid output field.');
+    if (transformation.op === 'calculate') {
+      const expression = compileDataExpression(transformation.expression, availableFields, validatedPredicate);
+      if (transformation.enabled !== false) availableFields[transformation.output] = { kind: expression.kind, values: [] };
+      continue;
+    }
     if (transformation.op !== 'affine' && transformation.op !== 'difference') {
       throw new TypeError(
         `Client transformation "${transformation.id}" has unsupported op "${String(transformation.op)}".`,
@@ -759,6 +784,7 @@ function validateClientDataViewState(dataset: ClientDataSet, state: ClientDataVi
       availableFields[transformation.output] = { kind: 'numeric', values: [] };
     }
   }
+  for (const filter of state.filters) if (filter.stage === 'transformed') validatePredicateDefinition(filter.predicate, availableFields);
   for (const style of state.styles) {
     if (style.channels === null || typeof style.channels !== 'object' || Array.isArray(style.channels)) {
       throw new TypeError(`Client style "${style.id}" channels must be an object.`);
@@ -794,6 +820,20 @@ function validatePredicateDefinition(
 ): void {
   if (predicate === null || typeof predicate !== 'object') {
     throw new TypeError('Client data predicates must be objects.');
+  }
+  if (predicate.op === 'compare') {
+    if (!['eq', 'ne', 'gt', 'gte', 'lt', 'lte'].includes(predicate.comparison)) throw new TypeError('Unknown client comparison.');
+    const left = compileDataExpression(predicate.left, fields, validatedPredicate);
+    const right = compileDataExpression(predicate.right, fields, validatedPredicate);
+    if (left.kind !== right.kind && !(left.kind === 'datetime-ns' && predicate.right.op === 'literal') && !(right.kind === 'datetime-ns' && predicate.left.op === 'literal')) throw new TypeError('Client comparison operands must have compatible types.');
+    if (left.kind === 'datetime-ns' && predicate.right.op === 'literal') validatePredicateValue(predicate.right.value, { kind: left.kind, values: [] }, 'compare');
+    if (right.kind === 'datetime-ns' && predicate.left.op === 'literal') validatePredicateValue(predicate.left.value, { kind: right.kind, values: [] }, 'compare');
+    return;
+  }
+  if (predicate.op === 'contains' || predicate.op === 'startsWith' || predicate.op === 'endsWith') {
+    if (requireField(fields, predicate.field).kind !== 'categorical' || typeof predicate.value !== 'string') throw new TypeError('Client string predicates require a categorical field and string operand.');
+    if (predicate.caseSensitive !== undefined && typeof predicate.caseSensitive !== 'boolean') throw new TypeError('caseSensitive must be boolean.');
+    return;
   }
   if (predicate.op === 'and' || predicate.op === 'or') {
     if (!Array.isArray(predicate.args)) {
@@ -891,6 +931,11 @@ function validateStyleExpression(
   if (expression === null || typeof expression !== 'object') {
     throw new TypeError(`Client style channel "${channel}" requires an expression object.`);
   }
+  if (expression.op === 'field') {
+    const field = requireField(fields, expression.field);
+    if (channel !== 'color' && field.kind !== 'numeric') throw new TypeError('Numeric style channels require numeric fields.');
+    return;
+  }
   if (expression.op === 'constant') {
     validateStyleLiteral(channel, expression.value);
     return;
@@ -966,4 +1011,12 @@ function validateStyleLiteral(channel: ClientStyleChannel, value: ClientStyleVal
   if (!Number.isFinite(numeric)) {
     throw new TypeError(`Client style channel "${channel}" requires a numeric value.`);
   }
+}
+
+function validatedPredicate(predicate: ClientDataPredicate, fields: Readonly<Record<string, ClientDataField>>): CompiledPredicate {
+  validatePredicateDefinition(predicate, fields);
+  return compilePredicate(predicate, fields);
+}
+function matchesComparison(value: number, op: 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte'): boolean {
+  return op === 'eq' ? value === 0 : op === 'ne' ? value !== 0 : op === 'gt' ? value > 0 : op === 'gte' ? value >= 0 : op === 'lt' ? value < 0 : value <= 0;
 }

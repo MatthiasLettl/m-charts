@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { ClientDataView, ClientDataViewState, ClientStyleRule } from 'm-charts/client-data-view';
+import type { ClientDataView, ClientDataViewState, ClientStyleRule, ClientDataExpression } from 'm-charts/client-data-view';
 import { useClientViewState } from '../state/demoClientView';
 
 export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
@@ -10,9 +10,9 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
   const state = useClientViewState(view)!;
   const evaluation = view.evaluate();
   const numericFields = Object.entries(evaluation.fields).filter(([key, field]) => field.kind === 'numeric' && key !== 'sourceRow').map(([key]) => key);
-  const [fieldChoice, setFieldChoice] = useState('');
+  const [fieldChoice, setFieldChoice] = useState(numericFields[0] ?? '');
   const field = numericFields.includes(fieldChoice) ? fieldChoice : numericFields[0] ?? 'sourceRow';
-  const sourceFields = useMemo(() => view.evaluate().fields, [view]);
+  const sourceFields = view.dataset.fields;
   const defaultRange = useMemo(() => {
     const values = sourceFields[field]?.values;
     let low = Infinity; let high = -Infinity;
@@ -36,10 +36,21 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
   const [colorEnabled, setColorEnabled] = useState(true);
   const [opacityEnabled, setOpacityEnabled] = useState(true);
   const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
+  const [filterStage, setFilterStage] = useState<'source' | 'transformed'>('source');
+  const [calculation, setCalculation] = useState('abs');
+  const [otherField, setOtherField] = useState('');
+  const [textField, setTextField] = useState('');
+  const [textQuery, setTextQuery] = useState('');
+  const textFields = Object.entries(filterStage === 'transformed' ? evaluation.fields : sourceFields)
+    .filter(([, field]) => field.kind === 'categorical' && Array.from({ length: Math.min(field.values.length, 32) }, (_, row) => field.values[row]).some((value) => typeof value === 'string'))
+    .map(([key]) => key);
+  const selectedTextField = textFields.includes(textField) ? textField : textFields[0];
   const [importText, setImportText] = useState('');
   const apply = (action: () => void) => {
-    try { action(); setError(''); onApplied?.(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    setPending(true);
+    void view.batchAsync(action).then((applied) => { if (applied) { setError(''); onApplied?.(); } },
+      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setPending(false));
   };
   const nextId = (prefix: string) => `${prefix}-${state.revision + 1}`;
   const valid = (...values: string[]) => values.every((v) => v.trim() !== '' && Number.isFinite(Number(v)));
@@ -67,26 +78,34 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
   );
   return <section className="control-section scatter-client-view-panel chart-client-view-panel" data-testid="client-view-panel">
     <h2>Client data pipeline</h2>
-    <p className="compact-note">Optional application state: filter → transform → style. Changes use resident data and retain source record identities.</p>
+    <p className="compact-note">Optional application state: source filters → transform → result filters → style. Changes use resident data and retain source record identities.</p>
+    <fieldset disabled={pending} style={{ border: 0, padding: 0, margin: 0 }}>
+    {pending && <p role="status">Applying pipeline…</p>}
     <div className="button-row"><button type="button" data-testid="client-view-reset" onClick={() => apply(reset)}>Reset pipeline</button></div>
     <label>Numeric field<select aria-label="Client numeric field" value={field} onChange={(event) => setFieldChoice(event.target.value)}>
       {numericFields.map((key) => <option key={key}>{key}</option>)}
     </select></label>
     {error && <p role="alert">{error}</p>}
     <details className="control-disclosure" open><summary>Filters</summary><div className="control-disclosure-body">
+      <label>Filter values<select aria-label="Filter stage" value={filterStage} onChange={(e) => setFilterStage(e.target.value as typeof filterStage)}><option value="source">Before transformations</option><option value="transformed">After transformations</option></select></label>
       <div className="scatter-client-inputs">
         <label>Minimum<input type="number" step="any" aria-label="Client filter minimum" value={min} onChange={(e) => setMin(e.target.value)} /></label>
         <label>Maximum<input type="number" step="any" aria-label="Client filter maximum" value={max} onChange={(e) => setMax(e.target.value)} /></label>
       </div>
       <div className="button-row scatter-client-view-actions">
-        <button type="button" data-testid="client-filter-range" disabled={!valid(min, max) || Number(min) > Number(max)} onClick={() => apply(() => view.addFilter({ id: nextId('range'), predicate: { op: 'between', field, min: Number(min), max: Number(max) } }))}>Keep range</button>
+        <button type="button" data-testid="client-filter-range" disabled={!valid(min, max) || Number(min) > Number(max)} onClick={() => apply(() => view.addFilter({ id: nextId('range'), stage: filterStage, predicate: { op: 'between', field, min: Number(min), max: Number(max) } }))}>Keep range</button>
         <button type="button" data-testid="client-filter-category" onClick={() => apply(() => view.addFilter({ id: nextId('group'), predicate: { op: 'in', field: 'group', values: [0, 1] } }))}>Keep groups 0 + 1</button>
         <button type="button" data-testid="client-filter-boolean" onClick={() => apply(() => view.addFilter({ id: nextId('reference'), predicate: { op: 'eq', field: 'isReferenceMember', value: true } }))}>Keep reference members</button>
       </div>
       <div className="button-row scatter-client-view-actions">
         <button type="button" data-testid="client-filter-selection-inside" disabled={selectedSourceIndices.length === 0} onClick={() => keepSelection(true)}>Keep selection</button>
         <button type="button" data-testid="client-filter-selection-outside" disabled={selectedSourceIndices.length === 0} onClick={() => keepSelection(false)}>Exclude selection</button>
-      </div>{items('filters')}
+      </div>
+      {textFields.length > 0 && <div>
+        <label>Text field<select value={selectedTextField} onChange={(e) => setTextField(e.target.value)}>{textFields.map((key) => <option key={key}>{key}</option>)}</select></label>
+        <label>Contains text<input value={textQuery} onChange={(e) => setTextQuery(e.target.value)} /></label>
+        <button type="button" disabled={!textQuery} onClick={() => apply(() => view.addFilter({ id: nextId('text'), stage: filterStage, predicate: { op: 'contains', field: selectedTextField!, value: textQuery, caseSensitive: false } }))}>Keep matching text</button>
+      </div>}{items('filters')}
     </div></details>
     <details className="control-disclosure"><summary>Transformations</summary><div className="control-disclosure-body">
       <p className="compact-note">Applied to {field}, in the order listed, after filtering.</p>
@@ -99,6 +118,17 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
       <label>Missing neighbor<select aria-label="Missing neighbor" value={missingValue} onChange={(e) => setMissingValue(e.target.value as typeof missingValue)}><option value="null">Missing</option><option value="zero">Zero</option></select></label>
       <label>Partition by<select aria-label="Difference partition" value={partitionBy} onChange={(e) => setPartitionBy(e.target.value)}><option value="">All rows</option><option value="group">Group</option><option value="isReferenceMember">Reference membership</option></select></label>
       <button type="button" data-testid="client-transform-delta" onClick={() => apply(() => view.addTransformation({ id: nextId('difference'), op: 'difference', input: field, output: field, direction, missingValue, ...(partitionBy ? { partitionBy: [partitionBy] } : {}) }))}>Apply difference</button>
+      <label>Calculation<select aria-label="Client calculation" value={calculation} onChange={(e) => setCalculation(e.target.value)}>
+        {['abs', 'log', 'log10', 'sqrt', 'round', 'add', 'subtract', 'multiply', 'divide'].map((op) => <option key={op}>{op}</option>)}
+      </select></label>
+      <label>Other numeric field<select aria-label="Other numeric field" value={otherField || field} onChange={(e) => setOtherField(e.target.value)}>{numericFields.map((key) => <option key={key}>{key}</option>)}</select></label>
+      <button type="button" onClick={() => apply(() => {
+        const input: ClientDataExpression = { op: 'field', field };
+        const expression: ClientDataExpression = ['add', 'subtract', 'multiply', 'divide'].includes(calculation)
+          ? { op: calculation as 'add' | 'subtract' | 'multiply' | 'divide', left: input, right: { op: 'field', field: otherField || field } }
+          : { op: calculation as 'abs' | 'log' | 'log10' | 'sqrt' | 'round', input };
+        view.addTransformation({ id: nextId('calculate'), op: 'calculate', output: field, expression });
+      })}>Apply calculation</button>
       {items('transformations')}
     </div></details>
     <details className="control-disclosure"><summary>Styles</summary><div className="control-disclosure-body">
@@ -135,5 +165,6 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
       <button type="button" disabled={!importText.trim()} onClick={() => apply(() => view.replaceState(JSON.parse(importText) as ClientDataViewState))}>Import state</button>
       <pre className="compact-code-block" data-testid="client-view-state-json"><code>{JSON.stringify(state, (_key, value: unknown) => Array.isArray(value) && value.length > 200 ? [...value.slice(0, 200), '…'] : value, 2)}</code></pre>
     </div></details>
+    </fieldset>
   </section>;
 }

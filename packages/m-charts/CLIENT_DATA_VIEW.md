@@ -19,12 +19,13 @@ no-op for the resident data.
 The immutable source dataset and mutable view state are separate:
 
 1. Source columns are loaded once and retained in CPU/GPU storage.
-2. All enabled filters are ANDed to form a visibility mask.
-3. Transformations execute, in array order, only over rows that passed the
-   filters.
-4. Style rules execute, in array order, over filtered and transformed fields.
+2. Enabled source filters (`stage: 'source'`, the default) are ANDed.
+3. Transformations execute, in array order, over those source-filtered rows.
+4. Enabled `stage: 'transformed'` filters are ANDed over the resulting fields.
+   They do not recalculate neighbors or feed back into transformations.
+5. Style rules execute, in array order, over the final visible rows.
    Later matching rules override only the channels they assign.
-5. WebGPU scatter swaps only its compact mask, X-ordered active-index list,
+6. WebGPU scatter swaps only its compact mask, X-ordered active-index list,
    and any derived coordinate or style buffers. It never removes filtered rows
    from source buffers. The active list receives the renderer's full LOD budget,
    so sparse filters remain representative above one million resident rows.
@@ -44,13 +45,52 @@ GPU work coalesces rapid revisions and retains at most one in-flight projection
 plus the latest request. Constant style literals are encoded once, and difference
 transforms avoid sorting already-ordered input.
 
-Evaluation remains synchronous: first evaluation and changed stages still scan
-resident rows. Batch related edits into one `replaceState(...)` and apply costly
-pipelines on an explicit action or after debouncing input. `metrics` reports zero
-time for reused stages. No frame-time guarantee applies to arbitrary rules or
-row counts; measure representative pipelines on the deployment devices. The declarative AST and
-columnar field boundary are suitable for future WASM/WGSL compilers without an
-application-state change.
+Synchronous methods remain available and cache unchanged stages. For expensive
+pipelines, configure the optional module worker and use `batchAsync` or
+`replaceStateAsync`; the demos do this. First dataset construction, semantic
+decoding, optional fingerprinting, and chart projection/upload preparation still
+involve main-thread work. No frame-time guarantee applies to arbitrary rules or
+row counts; measure representative pipelines on deployment devices.
+
+### Optional worker evaluation
+
+```ts
+import { createClientDataViewWorkerEvaluator } from 'm-charts/client-data-view';
+
+// workerUrl points to the bundled m-charts/client-data-view/worker entry.
+// Resolve/bundle it with your application's module-worker tooling.
+const asyncEvaluator = createClientDataViewWorkerEvaluator(
+  new Worker(workerUrl, { type: 'module' }),
+);
+const view = createFastScatterClientDataView({ columns, asyncEvaluator });
+const applied = await view.batchAsync(() => {
+  view.addTransformation({
+    id: 'ratio', op: 'calculate', output: 'ratio',
+    expression: { op: 'divide',
+      left: { op: 'field', field: 'pressure' },
+      right: { op: 'field', field: 'baseline' } },
+  });
+  view.addFilter({ id: 'high-ratio', stage: 'transformed',
+    predicate: { op: 'gt', field: 'ratio', value: 1.1 } });
+});
+// applied === false means a newer mutation superseded this request.
+```
+
+Use a dedicated evaluator per controller. The worker clones source columns once
+per dataset identity; it never detaches caller buffers. This costs additional
+memory, so large datasets should be measured before opting in. Unchanged masks,
+fields, and styles retain their references when returned to the host. Requests
+are bounded to one running evaluation plus the latest queued request. Stale
+results cannot overwrite newer synchronous or asynchronous changes. Worker or
+validation failures reject the promise and preserve the committed state.
+
+`batchAsync` stages ordinary setters in a synchronous callback, evaluates once,
+and emits one `change` event (`target: 'state'`). Do not await inside the callback
+or nest batches. Separate overlapping batches start from the last committed
+state; await dependent edits. Without an async evaluator these methods use the
+same synchronous evaluator. Ordinary setters always remain synchronous, even
+when a worker is configured. Dispose attached plots before `view.dispose()` to
+release subscriptions and the worker. See the demo's worker URL setup for Vite.
 
 ## Creating And Attaching A View
 
@@ -90,11 +130,15 @@ resulting boolean column. The chart assigns no business meaning to it.
 
 Every field has `rowCount` values and a kind of `numeric`, `datetime-ns`,
 `categorical`, or `boolean`. Nanosecond source columns may use `bigint`;
-serialized datetime predicate values should be decimal strings. Boolean typed
+serialized datetime predicate values should be decimal strings. Chart factories
+decode category codes to semantic values, boolean codes to booleans, and
+datetime display offsets to epoch nanoseconds; supplied `epochNsValues` preserve
+sub-millisecond precision. Numeric scale/offset metadata is decoded too. Boolean typed
 columns may use booleans or compact `Uint8Array` 0/1 values.
 
 Data without style fields is valid. In `preserve` mode the renderer uses source
-styles when present and theme defaults otherwise. Client rules are computed
+styles when present and each chart’s existing unstyled behavior otherwise
+(including procedural indexed scatter styling and white histogram stacks). Client rules are computed
 before the first frame, so no unstyled intermediate frame appears.
 `sourceStyleMode: 'ignore'` starts from theme defaults. Conditional rules leave
 unassigned channels at their source/theme values. Theme updates also refresh the
@@ -108,7 +152,8 @@ style pages.
 
 The primary contract is a typed JSON AST, not SQL or Elasticsearch syntax. It
 supports `and`, `or`, `not`, `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `between`,
-`in`, `notIn`, `isNull`, `isValid`, and `pointInPolygon`:
+`in`, `notIn`, `isNull`, `isValid`, `pointInPolygon`, `contains`, `startsWith`,
+`endsWith`, and expression-to-expression `compare`:
 
 ```ts
 view.addFilter({
@@ -132,6 +177,14 @@ membership tests; `isNull` matches them and `isValid` does not. `not` is a
 logical negation of that two-valued result, so use an explicit `isValid` clause
 when invalid values must also stay excluded from a negated predicate.
 
+String predicates take `field`, `value`, and optional `caseSensitive` (default
+`true`). Combine them with `not` for exclusions. `compare` takes `left` and
+`right` calculation expressions and `comparison: 'eq' | 'ne' | 'gt' | 'gte' |
+'lt' | 'lte'`, allowing field-to-field or calculated comparisons. Each filter
+selects a stage; source-stage predicates cannot reference derived fields. Use
+one `or` predicate for disjunctions within a stage, and `stage: 'transformed'`
+when a clause combines source and derived fields.
+
 An application that stores Elasticsearch query text, SQL, or another language
 owns the adapter into this AST. It should translate supported semantics and
 keep/refetch server-only clauses; unsupported clauses must never be silently
@@ -147,7 +200,7 @@ demo exposes both actions and binds them to `Alt+I` and `Alt+O`.
 
 ## Transformations
 
-Affine and difference transformations may overwrite a plotted field or create
+Affine, difference, and `calculate` transformations may overwrite a plotted field or create
 a new field:
 
 ```ts
@@ -178,12 +231,37 @@ subtract bigint inputs before converting the delta to a numeric output, so
 small nanosecond deltas are preserved; affine datetime outputs are numeric and
 therefore have JavaScript number precision.
 
+`calculate` has an `output` and a serializable `expression`:
+
+- Inputs: `field` and JSON `literal` (including `null`).
+- Binary arithmetic: `add`, `subtract`, `multiply`, `divide`, `modulo`, `power`,
+  `min`, `max`, with `left` and `right` expressions.
+- Unary math: `abs`, `negate`, `log` (natural), `log10`, `sqrt`, `exp`, `round`,
+  `floor`, `ceil`, with `input`.
+- Text: `lower`, `upper`, `trim` with `input`; `concat` with `args`.
+- Missing values: `coalesce` chooses the first valid value from `args`.
+- Conditional values: `case` takes ordered `{ when, value }` branches and a
+  `fallback`. Non-null branches must have compatible types.
+
+Output kind is inferred. Invalid arithmetic (division by zero, invalid logarithm,
+overflow) becomes missing; numeric materialization uses `NaN`, other kinds use
+`null`. `concat` treats missing inputs as empty strings. Subtracting two datetime
+fields subtracts bigint epochs first, then returns a numeric nanosecond delta.
+There is no arbitrary code execution. Transformed chart metadata is regenerated:
+kind, categories, datetime encoding, and domains match displayed values. Explicit
+host viewports remain under host control; fit/reset them after transforms when
+desired. Removing a derived field still mapped to an attached chart is rejected
+before the state/revision changes; replace the transform under the same output
+name or recreate the binding to change its field mapping.
+
 ## Style Expressions
 
 Rules set `color`, `opacity`, `rotation` (radians), `shape` (scatter shape
 code), and `size`. Expressions are `constant`, explicit `categorical` maps,
 `hashedColor`, numeric/color `continuous` interpolation, or predicate-driven
-`case`. Hashed colors depend solely on the canonical field value, so the same
+`case`. Direct `field` expressions read a supplied or calculated color/number
+column, so calculations and conditions can drive every supported channel.
+Hashed colors depend solely on the canonical field value, so the same
 category always gets the same color and no user seed can change it.
 
 ```ts
@@ -238,7 +316,26 @@ back state. Set `onListenerError(error, event)` in `createClientDataView(...)` o
 `createFastScatterClientDataView(...)` to report them through the host; the
 default logs them with `console.error`. Reentrant changes are queued for
 notification until all subscribers have seen the current event. `datasetKey`/`datasetVersion` prevent importing state for a
-different resident dataset. A host may send the small snapshot through
+different resident dataset. Use a server/query content version that includes row
+ordering, not just the row count. The chart factories optionally accept
+`fingerprint: true` to compute `datasetVersion` from fields and row IDs once
+(unless an explicit version was supplied). `createClientDataFingerprint` is
+also exported. This deterministic checksum is for accidental mismatch detection,
+not authentication; its full content scan has a startup cost.
+
+`view.updateFields({ membership: { kind: 'boolean', values } }, newVersion?)`
+replaces/adds same-row columns atomically and reevaluates the current pipeline.
+The row count and order must stay unchanged. Content fingerprints update
+automatically; hosts using their own dataset versions must supply an updated
+version when relevant content changes. Do not mutate resident arrays in place.
+For a new row identity/order, recreate both view and plot. `validateWith` adds a
+precommit validator and returns an unsubscribe function; chart bindings use this
+to prevent invalid mapped-field removals. Exported state remains version 1 for
+legacy operations and automatically advances to version 2 when extended
+expressions or transformed filters are used. Both versions can be imported;
+older readers reject version 2 instead of applying different semantics.
+
+A host may send the small snapshot through
 `BroadcastChannel`, WebSocket, persistence, or another transport and call
 `replaceState` in another chart/window. The dataset is never part of the state
 or synchronization interface.
@@ -328,8 +425,8 @@ network requests are needed to edit the view.
 | Parallel | `createParallelClientDataView({ buffers })` | `fieldByAxis` | color, opacity |
 | Histogram | `createHistogramClientDataView({ columns })` | `fieldByParameter` | color, opacity (embedded in stack color alpha) |
 
-Each factory also accepts `fields`, `datasetKey`, `datasetVersion`, `state`, and
-`onListenerError`. `createParallelClientDataSet` / `createHistogramClientDataSet`
+Each factory also accepts `fields`, `datasetKey`, `datasetVersion`, `fingerprint`,
+`state`, `asyncEvaluator`, and `onListenerError`. `createParallelClientDataSet` / `createHistogramClientDataSet`
 construct datasets for a separately managed shared controller.
 `evaluateParallelClientView` / `evaluateHistogramClientView` expose projections
 for host inspection, with unchanged source indices, IDs, and record identities.
@@ -411,8 +508,9 @@ rows. Computed colors use packed RGBA32 stacks; encoded categorical filters
 retain the WASM-compatible unsigned representation. Numeric transformations
 recalculate parameter domains rather than excluding values using old domains.
 The existing viewport and requested bin sizes remain under host control.
-A pipeline edit redraws automatically and clears histogram hover and selection so stale bin descriptors cannot refer
-to a previous distribution. Source-index membership still identifies original
+A pipeline edit redraws automatically. Data/filter changes clear histogram hover
+and selection so stale bin descriptors cannot refer to a previous distribution;
+style-only edits retain them. Source-index membership still identifies original
 records, including a supplied `columns.sourceIndex` mapping.
 
 WASM remains an aggregation/selection backend; the shared view evaluator is
@@ -424,17 +522,29 @@ row range). Histogram diagnostics include `clientView` evaluation metrics and
 
 With a binding attached, replace a dataset by disposing and recreating both
 view and chart. Parallel rejects replacement `buffers`; histogram rejects
-replacement `columns`, `spec`, and aggregation overrides. Passing the original
+replacement `columns` and aggregation overrides. Histogram `spec` updates may
+relabel/reorder subplots and configure resident raw parameters in histogram mode. Passing the original
 source object again is harmless. Without a binding, existing data replacement,
 streaming, bar mode, and WebGL2 behavior remain supported. Pre-aggregated
 histogram bars have no raw-row pipeline and reject `clientView`; streaming
 factories do not accept this creation-bound option.
 
 The resident `/m-parallel-webgpu` and `/m-histogram-webgpu` demos include range,
-category, boolean and exact-selection filters; configurable linear/difference
-transformations; color/opacity styles; source-style base toggles; enable/remove/
+category, boolean, text and exact-selection filters; source/transformed filter
+stages; configurable linear/difference and generic calculation transformations; color/opacity styles; source-style base toggles; enable/remove/
 reorder controls; reset; and JSON state export/import with dataset validation.
 Synthetic `group` and `isReferenceMember` fields demonstrate application metadata.
 Default numeric filter bounds cover the middle half of the chosen source field.
 Parallel waits for its decoder's CPU columns to finish before attaching the view.
-Streaming and pre-aggregated bar demos continue using their existing paths.
+The demos evaluate edits in a module worker and bind persisted state to a content
+fingerprint. Streaming and pre-aggregated bar demos continue using their existing
+paths. Streaming is a loading mode: complete CPU decoding before attaching a
+resident view; append/new row identities require a fresh view and chart.
+
+The browser regression fixture `tests/browser/clientDataView.html` can be opened
+through the demo Vite server’s `/@fs/` route in the in-app browser. It runs actual
+WebGPU, WASM/TypeScript histogram, selection, worker, and lifecycle checks, with
+side-by-side scatter style controls. `?rows=1000000` increases the parallel test
+size. The same fixture is covered by `tests/e2e/clientViewExtensions.spec.ts` in
+the opt-in GPU suite. Unit tests also execute the published module in a real
+worker thread; typechecking includes the browser fixture.

@@ -37,7 +37,10 @@ export function createFastScatterWebgpuPlot(
     'data' in packedStyles
     ? unpackFastScatterWebgpuStyleColumns(packedStyles, sourceColumns.x.length)
     : undefined;
-  const clientViewSourceColumns = expandedPackedStyles !== undefined
+  const indexedBase = clientView !== undefined && indexedStyle === true && packedStyles === undefined &&
+    sourceColumns.color === undefined && sourceColumns.opacity === undefined && sourceColumns.rotation === undefined && sourceColumns.rotationRadians === undefined && sourceColumns.shape === undefined && sourceColumns.size === undefined
+    ? createIndexedClientBase(sourceColumns.x.length) : undefined;
+  const clientViewSourceColumns = indexedBase !== undefined ? { ...sourceColumns, ...indexedBase } : expandedPackedStyles !== undefined
     ? {
         ...sourceColumns,
         ...expandedPackedStyles,
@@ -98,6 +101,12 @@ export function createFastScatterWebgpuPlot(
     throw new Error('The WebGPU scatter renderer was not created.');
   }
   const activeRenderer: FastScatterWebgpuRenderer = renderer;
+  if (clientView !== undefined) plot.use(() => clientView.view.validateWith((next) => {
+    if (next.metrics.rowCount !== sourceColumns.x.length) throw new TypeError('Client view must retain source row identities.');
+    for (const key of Object.keys(sourceColumns.y).map((key) => clientView.yFieldByKey?.[key] ?? key).concat(clientView.xField ?? sourceColumns.xKey ?? 'x')) {
+      if (!Object.hasOwn(next.fields, key)) throw new TypeError(`Cannot remove plotted client field "${key}" while a chart is attached.`);
+    }
+  }));
   const updatePlot = plot.update.bind(plot);
   const instance = Object.assign(plot, {
     getWebgpuDiagnostics: () => activeRenderer.getDiagnostics(),
@@ -144,3 +153,14 @@ export function createFastScatterWebgpuPlot(
 export const createScatterWebgpuPlot = createFastScatterWebgpuPlot;
 export const createFastScatterPlot = createFastScatterWebgpuPlot;
 export const createScatterPlot = createFastScatterWebgpuPlot;
+
+function createIndexedClientBase(count: number) {
+  return {
+    color: Uint32Array.from({ length: count }, (_, i) => (((35 + (i * 17) % 190) << 24) | ((55 + (i * 29) % 170) << 16) | ((75 + (i * 43) % 160) << 8) | 235) >>> 0),
+    colorFormat: 'rgba32' as const,
+    opacity: Float32Array.from({ length: count }, (_, i) => 0.36 + (i % 5) * 0.13),
+    shape: Uint8Array.from({ length: count }, (_, i) => i % 5),
+    rotation: Float32Array.from({ length: count }, (_, i) => (i % 360) / 180 * Math.PI),
+    size: Float32Array.from({ length: count }, (_, i) => 2 + (i % 7) * 0.5),
+  };
+}

@@ -1,3 +1,6 @@
+import { createClientDataFingerprint } from '../../client-data-view/core/fingerprint.js';
+import { decodeClientField, projectClientField, originalClientValues } from '../../client-data-view/core/encoding.js';
+import type { FastScatterEncodedAxis } from './axisSchema.js';
 import {
   createClientDataView,
   type ClientComputedStyleChannel,
@@ -30,8 +33,11 @@ export interface FastScatterClientViewEvaluation {
 }
 
 export interface CreateFastScatterClientDataViewOptions {
+  readonly asyncEvaluator?: CreateClientDataViewOptions['asyncEvaluator'];
   readonly onListenerError?: CreateClientDataViewOptions['onListenerError'];
   readonly columns: FastScatterPointColumns;
+  /** Compute a content/identity fingerprint once when no server version is supplied. */
+  readonly fingerprint?: boolean;
   readonly datasetKey?: string;
   readonly datasetVersion?: string;
   readonly fields?: Readonly<Record<string, ClientDataField>>;
@@ -44,24 +50,25 @@ export function createFastScatterClientDataView(
   return createClientDataView({
     dataset: createFastScatterClientDataSet(options),
     state: options.state,
-    onListenerError: options.onListenerError,
+    asyncEvaluator: options.asyncEvaluator, onListenerError: options.onListenerError,
   });
 }
 
 export function createFastScatterClientDataSet(
   options: Omit<CreateFastScatterClientDataViewOptions, 'state'>,
 ): ClientDataSet {
+  const axisByColumn = (options.columns as FastScatterPointColumns & { axisByColumn?: Record<string, FastScatterEncodedAxis> }).axisByColumn;
   const xKey = options.columns.xKey ?? 'x';
   const fields: Record<string, ClientDataField> = {
     ...options.fields,
-    [xKey]: options.fields?.[xKey] ?? { kind: 'numeric', values: options.columns.x },
+    [xKey]: options.fields?.[xKey] ?? decodeClientField(options.columns.x, axisByColumn?.[xKey]),
   };
   for (const [key, values] of Object.entries(options.columns.y)) {
-    fields[key] ??= { kind: 'numeric', values };
+    fields[key] ??= decodeClientField(values, axisByColumn?.[key]);
   }
   return {
     datasetKey: options.datasetKey,
-    datasetVersion: options.datasetVersion,
+    datasetVersion: options.datasetVersion ?? (options.fingerprint ? createClientDataFingerprint({ fields, rowCount: options.columns.x.length }, options.columns.ids) : undefined),
     fields,
     rowCount: options.columns.x.length,
   };
@@ -94,24 +101,33 @@ export function evaluateFastScatterClientView(
     previous.fields === evaluation.fields && previous.mapping === mapping;
   const xFieldKey = binding.xField ?? sourceColumns.xKey ?? 'x';
   const xField = requireScatterCoordinateField(evaluation, xFieldKey);
-  const transformedX = xField.values !== sourceColumns.x;
+  const transformedX = xField.values !== sourceColumns.x && originalClientValues(xField) !== sourceColumns.x;
   const transformedYKeys = reuseCoordinates ? previous.result.transformedYKeys : new Set<string>();
   let coordinates: FastScatterPointColumns;
   if (reuseCoordinates) {
     coordinates = previous.coordinates;
   } else {
+    const sourceAxes = (sourceColumns as FastScatterPointColumns & { axisByColumn?: Record<string, FastScatterEncodedAxis> }).axisByColumn;
+    const axisByColumn = { ...sourceAxes };
+    const project = (key: string, field: ClientDataField, source: FastScatterPointColumns['x']) => {
+      const projection = projectClientField(field, source, sourceAxes?.[key]);
+      if (projection.changed) {
+        const old = sourceAxes?.[key];
+        axisByColumn[key] = { columnKey: key, title: old?.title ?? key, parameterName: old?.parameterName ?? key, source: old?.source, ...projection.encoding, ...(projection.encoding.datetimeOriginNs === undefined ? {} : { datetimeOriginNsBigInt: BigInt(projection.encoding.datetimeOriginNs) }) } as FastScatterEncodedAxis;
+      }
+      return toScatterNumericArray(projection.values, source);
+    };
     const y: Record<string, FastScatterPointColumns['x']> = {};
     for (const [yKey, sourceValues] of Object.entries(sourceColumns.y)) {
       const fieldKey = binding.yFieldByKey?.[yKey] ?? yKey;
       const field = requireScatterCoordinateField(evaluation, fieldKey);
-      y[yKey] = toScatterNumericArray(field.values, sourceValues);
-      if (field.values !== sourceValues) (transformedYKeys as Set<string>).add(yKey);
+      y[yKey] = project(yKey, field, sourceValues);
+      if (field.values !== sourceValues && originalClientValues(field) !== sourceValues) (transformedYKeys as Set<string>).add(yKey);
     }
     // Always establish sorted display order, including an unchanged unsorted
     // source. Source indices/IDs and source buffers keep their original order.
-    coordinates = withProjectedXOrder({
-      ...sourceColumns, x: toScatterNumericArray(xField.values, sourceColumns.x), y,
-    });
+    const x = project(sourceColumns.xKey ?? 'x', xField, sourceColumns.x);
+    coordinates = withProjectedXOrder(Object.assign({ ...sourceColumns, x, y }, { axisByColumn }));
   }
   const sourceStyleMode = binding.view.getState().sourceStyleMode ?? 'preserve';
   const fallbackColor = ((defaultPointColor[0] << 24) | (defaultPointColor[1] << 16) |
@@ -120,7 +136,7 @@ export function evaluateFastScatterClientView(
     previous.result.styles === evaluation.styles &&
     previous.result.sourceStyleMode === sourceStyleMode && previous.fallbackColor === fallbackColor;
   const renderColumns = reuseStyles
-    ? { ...previous.result.renderColumns, x: coordinates.x, xOrder: coordinates.xOrder, y: coordinates.y }
+    ? Object.assign({ ...previous.result.renderColumns, x: coordinates.x, xOrder: coordinates.xOrder, y: coordinates.y }, { axisByColumn: (coordinates as FastScatterPointColumns & { axisByColumn?: Record<string, FastScatterEncodedAxis> }).axisByColumn })
     : applyComputedStyles(coordinates, evaluation, sourceStyleMode, fallbackColor);
   const reuseMask = reuseCoordinates && previous.result.activeMask === evaluation.activeMask;
   const interactionColumns = evaluation.metrics.activeRowCount === evaluation.metrics.rowCount

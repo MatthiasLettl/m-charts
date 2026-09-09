@@ -360,6 +360,15 @@ JSON state import/export. Omitting the binding preserves existing data updates,
 streaming and bar-mode behavior. See [CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md)
 for binding mappings, lifecycle, supported channels and backend behavior.
 
+
+Client views also support source/post-transform filter stages, field comparisons,
+text predicates, and typed calculation expressions (arithmetic, text, null handling,
+and conditions). Existing styles and semantic category/boolean/datetime fields are
+preserved. Optional worker evaluation keeps costly edits off the UI thread;
+`updateFields` replaces same-row metadata, and content fingerprints protect saved
+state from same-size dataset mismatches. Histogram specs remain mutable for
+resident parameters. See [Client data views](packages/m-charts/CLIENT_DATA_VIEW.md).
+
 ### Histogram
 
 ```ts
@@ -549,6 +558,16 @@ Use benchmark results as evidence for renderer or interaction changes, but keep
 detailed run notes out of this README unless they change the project direction.
 
 ## Validation
+
+Install Rust with [rustup](https://rust-lang.org/tools/install/). The repository's
+`rust-toolchain.toml` selects Rust 1.98.1, the `wasm32-unknown-unknown` target,
+rustfmt, and Clippy automatically. Restart your terminal after installation, or
+run `. "$HOME/.cargo/env"` in the current shell.
+
+The exact compiler version matters because `pnpm build` compares the compiled
+WASM binary with the checked-in artifact. When intentionally upgrading Rust,
+update the toolchain pin, run `pnpm build:aggregation-wasm`, and validate the
+regenerated binary with `pnpm test:unit` and the WebGPU browser checks.
 
 Use the narrowest useful check while iterating, then run broader validation for
 shared behavior:

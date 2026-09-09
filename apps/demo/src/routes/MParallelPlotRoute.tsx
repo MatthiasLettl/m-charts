@@ -1,3 +1,4 @@
+import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import { createParallelClientDataView, evaluateParallelClientView, type ParallelClientViewBinding } from 'm-charts/m-parallel-webgpu';
 import { ClientViewControls } from '../components/ClientViewControls';
 import { demoClientFields, useClientViewState } from '../state/demoClientView';
@@ -479,8 +480,9 @@ export function MParallelPlotRoute({
   const clientViewBinding = useMemo<ParallelClientViewBinding | undefined>(() =>
     rendererBackend !== 'webgpu' || webgpuStreaming || readyBuffers === null ? undefined : {
       view: createParallelClientDataView({ buffers: readyBuffers, datasetKey: 'parallel-webgpu-demo',
-        datasetVersion: String(readyBuffers.recordCount), fields: demoClientFields(readyBuffers.recordCount) }),
+        fingerprint: true, asyncEvaluator: createDemoAsyncEvaluator(), fields: demoClientFields(readyBuffers.recordCount) }),
     }, [readyBuffers, rendererBackend, webgpuStreaming]);
+  useDisposeClientView(clientViewBinding?.view);
   const clientViewState = useClientViewState(clientViewBinding?.view);
   const clientDisplayBuffers = useMemo(() => clientViewBinding === undefined || readyBuffers === null
     ? readyBuffers : evaluateParallelClientView(clientViewBinding, readyBuffers).buffers,
