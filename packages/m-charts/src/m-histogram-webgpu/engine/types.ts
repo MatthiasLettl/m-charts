@@ -32,6 +32,8 @@ export interface HistogramWebgpuPlotDiagnostics extends HistogramWebgpuDiagnosti
 export interface HistogramWebgpuPlotInstance extends HistogramPlotInstance {
   readonly interactive: Promise<void>;
   readonly ready: Promise<void>;
+  /** Fence submitted GPU work; settle pending client-view updates before calling. */
+  waitForGpuIdle(): Promise<void>;
   getWebgpuDiagnostics(): HistogramWebgpuPlotDiagnostics;
   update(options: HistogramWebgpuPlotUpdateOptions): void;
 }

@@ -48,7 +48,10 @@
     "benchmark:parallel:custom": "tsx scripts/benchmark-parallel-performance-gate.ts --target custom",
     "benchmark:parallel:webgpu": "tsx scripts/benchmark-parallel-webgpu-selection.ts",
     "benchmark:histogram:custom": "tsx scripts/benchmark-histogram-performance-gate.ts",
-    "benchmark:histogram:webgpu": "tsx scripts/benchmark-histogram-webgpu-aggregation.ts"
+    "benchmark:histogram:webgpu": "tsx scripts/benchmark-histogram-webgpu-aggregation.ts",
+    "test:e2e:gpu": "M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e",
+    "benchmark:client-view": "M_CHARTS_ENABLE_WEBGPU_E2E=1 M_CHARTS_CLIENT_PERF_ROWS=1000000,10000000,25000000 pnpm test:e2e tests/e2e/clientViewPerformance.spec.ts --workers=1",
+    "test:release": "pnpm typecheck && pnpm lint && pnpm test:unit && pnpm test:e2e:gpu && pnpm benchmark:client-view && pnpm build"
   },
   "dependencies": {
     "react": "^19.1.0",

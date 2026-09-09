@@ -290,3 +290,11 @@ are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
 APIs remain available; streaming/new row identities require a new resident view.
 Histogram specs can relabel/reorder resident parameters/subplots. Style-only
 edits preserve selection and the original unstyled stack colors.
+
+
+Client-view updates are covered by the `pnpm test:release` GPU/latency gate.
+`waitForGpuIdle()` fences submitted GPU work after the requested view settles.
+See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation)
+for mask residency, source-upload counters, predicate semantics, demo controls and
+the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
+indexes; scatter/parallel masks retain GPU source coordinates.

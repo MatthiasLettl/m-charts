@@ -4,6 +4,20 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Client pipeline residency and validation
+
+- Kept scatter GPU source buffers resident during theme updates and added cumulative
+  source-upload/resource-build diagnostics for scatter and parallel.
+- Replaced scatter interaction copies with visibility-mask checks, including exact
+  selection, hover and TypeScript/WASM bubble/heatmap aggregation.
+- Retained histogram columns and sorted indexes across mask-only filters in both
+  TypeScript and Rust/WASM; rebuilt only derived coordinates when necessary.
+- Normalized difference overflow and tightened unknown calculation-operator validation;
+  documented and tested the application-independent predicate contract.
+- Aligned demo import/export, enable/reorder controls and additive style presets.
+- Added submitted-GPU-work fences, in-app GPU regression fixtures, 1M/10M/25M
+  latency/allocation/upload benchmarks, and a mandatory `pnpm test:release` gate.
+
 ## WebGPU Parallel and Histogram Client Data Views
 
 - Pinned Rust 1.98.1 with the WASM target, rustfmt, and Clippy, documented local

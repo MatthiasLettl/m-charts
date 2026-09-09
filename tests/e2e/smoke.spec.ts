@@ -539,7 +539,7 @@ test('m-scatter WebGPU preserves supplied styles and switches client style sourc
   )).toBe(suppliedStyleSignature);
 
   await page.getByTestId('client-style-preset').click();
-  await expect.poll(styleSource).toBe('client-only');
+  await expect.poll(styleSource).toBe('client-composed');
   await expect.poll(() => getCanvasPixelSignature(
     page,
     '.scatter-fast-webgpu-canvas',
@@ -599,13 +599,13 @@ test('m-scatter WebGPU client pipeline filters, transforms, styles, exports, and
   await page.getByTestId('client-transform-delta').click();
   await panel.getByText('Styles', { exact: true }).click();
   await page.getByTestId('client-style-preset').click();
-  await expect(page.getByTestId('client-style-data-only')).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByTestId('client-view-style-source')).toHaveText('Theme base');
+  await expect(page.getByTestId('client-style-dataset-base')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('client-view-style-source')).toHaveText('Dataset base');
   if (webgpuReady) {
     await expect.poll(() => page.evaluate(() =>
       window.__scatterFastRouteStateTestHook?.getWebgpuDiagnostics()
         ?.clientView?.styleSource ?? null,
-    )).toBe('client-only');
+    )).toBe('client-composed');
   }
   await page.getByTestId('client-style-dataset-base').click();
   await expect(page.getByTestId('client-view-style-source')).toHaveText('Dataset base');

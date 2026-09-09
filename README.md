@@ -605,3 +605,20 @@ instructions.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+### Client pipeline release checks
+
+Client filters remain a generic AST; application query parsing stays outside the
+library. Scatter interaction filtering and histogram aggregation consume row masks
+without copying source coordinate columns. Histogram retains sorted indexes across
+filter/style edits; scatter theme changes retain GPU source buffers. Difference
+overflow becomes a missing value. All three demos support pipeline import/export,
+rule enable/reorder, and style presets over the selected base.
+
+Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
+actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
+The same browser fixtures can be opened in the in-app browser; see
+`packages/m-charts/CLIENT_DATA_VIEW.md` for URLs, metrics, budgets and limitations.
+GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
+client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.

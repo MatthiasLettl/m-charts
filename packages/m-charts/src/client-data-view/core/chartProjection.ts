@@ -12,6 +12,13 @@ export function composeClientRowColors(
   const { color, opacity } = evaluation.styles;
   if (color === undefined && opacity === undefined && !preserve) return undefined;
   if (color === undefined && opacity === undefined && sourceColor === undefined) return undefined;
+  const uniform = uniformClientColor(evaluation, preserve, sourceColor, fallback, sourceOpacity);
+  if (uniform !== undefined) {
+    const output = new Uint8Array(evaluation.metrics.rowCount * 4);
+    // RGBA bytes in native little-endian typed-array storage.
+    new Uint32Array(output.buffer).fill(((uniform >>> 24) | ((uniform >>> 8) & 0xff00) | ((uniform << 8) & 0xff0000) | (uniform << 24)) >>> 0);
+    return output;
+  }
   const output = new Uint8Array(evaluation.metrics.rowCount * 4);
   for (let row = 0; row < evaluation.metrics.rowCount; row += 1) {
     const offset = row * 4;
@@ -42,4 +49,18 @@ export function composeClientRowColors(
 
 export function clientRowIsActive(mask: Uint32Array | undefined, row: number): boolean {
   return mask === undefined || ((mask[row >>> 5] ?? 0) & (1 << (row & 31))) !== 0;
+}
+
+
+/** Fast uniform composition without per-row RGBA expansion. */
+export function uniformClientColor(
+  evaluation: ClientDataViewEvaluation, preserve: boolean,
+  sourceColor: ArrayLike<number> | undefined, fallback: readonly number[],
+  sourceOpacity?: Float32Array,
+): number | undefined {
+  const { color, opacity } = evaluation.styles;
+  if ((color !== undefined && color.constant === undefined) || (opacity !== undefined && opacity.constant === undefined)) return undefined;
+  if (preserve && (sourceColor !== undefined || sourceOpacity !== undefined && sourceOpacity.length > 0)) return undefined;
+  const rgba = color?.constant ?? ((fallback[0]! << 24) | (fallback[1]! << 16) | (fallback[2]! << 8) | fallback[3]!) >>> 0;
+  return ((rgba & 0xffffff00) | Math.round((rgba & 255) * (opacity?.constant ?? 1))) >>> 0;
 }

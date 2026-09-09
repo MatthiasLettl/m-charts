@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   FastScatterPointColumns,
   FastScatterPlotSpec,
@@ -26,7 +27,7 @@ interface MetricAccumulator {
 }
 
 export function createFastScatterCompareSummaries(
-  columns: Pick<FastScatterPointColumns, 'x' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'x' | 'y'>,
   spec: FastScatterPlotSpec,
   viewport: FastScatterViewport,
   selectedSourceIndices: Uint32Array,
@@ -42,13 +43,14 @@ export function createFastScatterCompareSummaries(
 }
 
 export function createFastScatterSelectedCompareSummary(
-  columns: Pick<FastScatterPointColumns, 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'y'>,
   spec: FastScatterPlotSpec,
   selectedSourceIndices: Uint32Array,
 ): FastScatterCompareSummary {
   const accumulators = createMetricAccumulators(spec);
 
   for (const sourceIndex of selectedSourceIndices) {
+    if (!clientRowIsActive(columns.activeMask, sourceIndex)) continue;
     for (const plot of spec.plots) {
       const y = columns.y[plot.yKey];
 
@@ -62,7 +64,7 @@ export function createFastScatterSelectedCompareSummary(
 }
 
 export function createFastScatterVisibleCompareSummary(
-  columns: Pick<FastScatterPointColumns, 'x' | 'y'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'x' | 'y'>,
   spec: FastScatterPlotSpec,
   viewport: FastScatterViewport,
 ): FastScatterCompareSummary {
@@ -72,6 +74,7 @@ export function createFastScatterVisibleCompareSummary(
   const endIndex = upperBound(columns.x, xRange.max);
 
   for (let pointIndex = startIndex; pointIndex < endIndex; pointIndex += 1) {
+    if (!clientRowIsActive(columns.activeMask, pointIndex)) continue;
     for (const plot of spec.plots) {
       const y = columns.y[plot.yKey];
       const yRange = viewport.yByPlot[plot.id];

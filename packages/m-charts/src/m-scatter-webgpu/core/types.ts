@@ -108,6 +108,9 @@ export interface FastScatterWebgpuDiagnostics {
     /** True while the requested projection (including theme changes) is uploading. */
     pending: boolean;
     sourceUploadBytes: number;
+    /** Cumulative source-resource uploads, including initial setup and any rebuild. */
+    totalSourceUploadBytes: number;
+    sourceBufferBuildCount: number;
     styleSource: 'client-composed' | 'client-only' | 'source';
     viewUploadBytes: number;
   };

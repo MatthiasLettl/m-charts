@@ -38,6 +38,7 @@
     "tests/unit/compatibilitySmoke.test.ts",
     "tests/unit/run-tests.ts",
     "tests/unit/clientDataViewExtensions.test.ts",
+    "tests/unit/clientDataViewContract.test.ts",
     "tests/browser/**/*.ts"
   ]
 }

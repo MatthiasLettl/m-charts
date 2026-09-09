@@ -14,6 +14,7 @@ export type FastScatterAggregationWorkerMode = 'sync' | 'worker';
 export interface FastScatterAggregationWorkerColumns {
   readonly color?: FastScatterColorArray;
   readonly colorFormat?: FastScatterPointColumns['colorFormat'];
+  readonly activeMask?: Uint32Array;
   readonly sourceIndex?: Uint32Array;
   readonly x: FastScatterTypedNumericArray;
   readonly xOrder?: Uint32Array;
@@ -67,12 +68,13 @@ export type FastScatterAggregationWorkerResponse =
 export function cloneFastScatterAggregationWorkerColumns(
   columns: Pick<
     FastScatterPointColumns,
-    'color' | 'colorFormat' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'color' | 'colorFormat' | 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
 ): FastScatterAggregationWorkerColumns {
   return {
     color: cloneColorArray(columns.color),
     colorFormat: columns.colorFormat,
+    activeMask: columns.activeMask?.slice(),
     sourceIndex:
       columns.sourceIndex === undefined
         ? undefined
@@ -137,6 +139,7 @@ export function getFastScatterAggregationWorkerColumnTransferables(
   const buffers = new Set<ArrayBuffer>();
 
   maybeAddTransferableBuffer(buffers, columns.color?.buffer);
+  maybeAddTransferableBuffer(buffers, columns.activeMask?.buffer);
   maybeAddTransferableBuffer(buffers, columns.sourceIndex?.buffer);
   maybeAddTransferableBuffer(buffers, columns.x.buffer);
   maybeAddTransferableBuffer(buffers, columns.xOrder?.buffer);
@@ -153,6 +156,7 @@ export function getFastScatterAggregationWorkerColumnByteLength(
 ): number {
   return (
     (columns.color?.byteLength ?? 0) +
+    (columns.activeMask?.byteLength ?? 0) +
     (columns.sourceIndex?.byteLength ?? 0) +
     columns.x.byteLength +
     (columns.xOrder?.byteLength ?? 0) +

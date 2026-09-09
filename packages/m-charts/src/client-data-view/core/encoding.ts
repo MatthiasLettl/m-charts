@@ -53,6 +53,11 @@ export function projectClientField(field: ClientDataField, source: ArrayLike<Cli
   if (field.values === source || originalClientValues(field) === source) {
     return { values: source as ArrayLike<number>, encoding: encoding ?? { kind: field.kind }, changed: false };
   }
+  if (field.kind === 'numeric' && (field.values instanceof Float64Array || field.values instanceof Float32Array || field.values instanceof Uint32Array || field.values instanceof Uint16Array || field.values instanceof Uint8Array)) {
+    let min = Infinity; let max = -Infinity;
+    for (const value of field.values) if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+    return { changed: true, values: field.values, encoding: { kind: 'numeric', domain: { min: Number.isFinite(min) ? min : 0, max: Number.isFinite(max) ? max : 1 } } };
+  }
   const categories = field.kind === 'boolean'
     ? [{ encoded: 0, label: 'False', value: false }, { encoded: 1, label: 'True', value: true }]
     : field.kind === 'categorical' ? [...(encoding?.kind === 'categorical' ? encoding.categories ?? [] : [])] : undefined;

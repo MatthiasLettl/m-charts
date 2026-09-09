@@ -71,7 +71,7 @@ export function evaluateParallelClientView(
       const values = field.values;
       if (values === source.rawValuesByAxis[key] || decodedSources.get(values) === source.rawValuesByAxis[key]) { rawValuesByAxis[key] = source.rawValuesByAxis[key]!; continue; }
       const projection = projectClientField(field, source.rawValuesByAxis[key]!, metadata);
-      const output = Float64Array.from(projection.values);
+      const output = projection.values instanceof Float64Array || projection.values instanceof Float32Array ? projection.values : Float64Array.from(projection.values);
       rawValuesByAxis[key] = output;
       const range = projection.encoding.domain ?? { min: 0, max: 1 };
       const domain = { ...range, span: range.max - range.min };

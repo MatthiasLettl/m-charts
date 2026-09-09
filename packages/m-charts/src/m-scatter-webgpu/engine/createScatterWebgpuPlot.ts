@@ -109,6 +109,7 @@ export function createFastScatterWebgpuPlot(
   }));
   const updatePlot = plot.update.bind(plot);
   const instance = Object.assign(plot, {
+    waitForGpuIdle: () => activeRenderer.waitForGpuIdle(),
     getWebgpuDiagnostics: () => activeRenderer.getDiagnostics(),
     interactive: activeRenderer.interactive,
     ready: activeRenderer.ready,

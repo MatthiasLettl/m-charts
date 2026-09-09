@@ -111,6 +111,8 @@ export interface HistogramRecordIdentity {
 }
 
 export interface HistogramColumns {
+  /** Optional row visibility bitset; source columns and indexes remain immutable. */
+  readonly activeMask?: Uint32Array;
   readonly color?: HistogramColorArray;
   readonly colorFormat?: HistogramColorFormat;
   readonly displayFields?: readonly HistogramDisplayField[];

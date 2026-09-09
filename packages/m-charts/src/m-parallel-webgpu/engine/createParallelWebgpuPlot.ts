@@ -131,6 +131,7 @@ export function createParallelWebgpuPlot(
   }
   const initialRenderer: ParallelWebgpuRenderer = renderer;
   const webgpuPlot = Object.assign(plot, {
+    waitForGpuIdle: () => (renderer ?? initialRenderer).waitForGpuIdle(),
     getWebgpuDiagnostics: () =>
       ({ ...(renderer ?? initialRenderer).getDiagnostics(),
         clientView: evaluation === null ? undefined : { ...evaluation.metrics, ...(renderer ?? initialRenderer).getClientViewStatus(), revision: evaluation.revision, sourceStyleMode: evaluation.sourceStyleMode } }),

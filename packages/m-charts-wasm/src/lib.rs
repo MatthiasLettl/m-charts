@@ -103,6 +103,7 @@ struct HistogramColumnIndex {
 
 #[derive(Default)]
 struct HistogramSession {
+    active_mask: Option<Vec<u32>>,
     color: Option<Vec<u32>>,
     column_indices: Vec<Option<HistogramColumnIndex>>,
     columns: Vec<Column>,
@@ -115,6 +116,7 @@ struct HistogramSession {
 
 #[derive(Default)]
 struct Session {
+    active_mask: Option<Vec<u32>>,
     point_count: usize,
     x: Column,
     x_order: Option<Vec<u32>>,
@@ -332,6 +334,28 @@ pub extern "C" fn histogram_set_source_index(enabled: u32) -> u32 {
     })
 }
 
+#[inline]
+fn row_is_active(mask: &Option<Vec<u32>>, row: usize) -> bool {
+    mask.as_ref().is_none_or(|words| {
+        words
+            .get(row / 32)
+            .is_some_and(|word| word & (1 << (row % 32)) != 0)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn histogram_set_active_mask(enabled: u32) -> u32 {
+    HISTOGRAM_SESSION.with_borrow_mut(|session| {
+        if enabled == 0 {
+            session.active_mask = None;
+            return 0;
+        }
+        let words = session.active_mask.get_or_insert_with(Vec::new);
+        words.resize(session.point_count.div_ceil(32), 0);
+        words.as_mut_ptr() as u32
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn histogram_set_color(enabled: u32) -> u32 {
     HISTOGRAM_SESSION.with_borrow_mut(|session| {
@@ -459,6 +483,9 @@ pub extern "C" fn histogram_build(
             let row_index = column_index.map_or(candidate_index, |index| {
                 index.row_indices_by_value[candidate_index] as usize
             });
+            if !row_is_active(&session.active_mask, row_index) {
+                continue;
+            }
             result.visited_count = result.visited_count.saturating_add(1);
             let value = column.read(row_index);
             if !value.is_finite() {
@@ -724,6 +751,19 @@ pub extern "C" fn session_column_reserve(slot: u32, kind: u32, byte_length: u32)
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn session_set_active_mask(enabled: u32) -> u32 {
+    SESSION.with_borrow_mut(|session| {
+        if enabled == 0 {
+            session.active_mask = None;
+            return 0;
+        }
+        let words = session.active_mask.get_or_insert_with(Vec::new);
+        words.resize(session.point_count.div_ceil(32), 0);
+        words.as_mut_ptr() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn session_set_x_order(enabled: u32) -> u32 {
     SESSION.with_borrow_mut(|session| {
         if enabled == 0 {
@@ -872,6 +912,9 @@ pub extern "C" fn heatmap_build(
         let (start, end) = scan_range(session, x_min, x_max);
         for sorted_index in start..end {
             let point_index = point_index_at(session, sorted_index);
+            if !row_is_active(&session.active_mask, point_index) {
+                continue;
+            }
             let x = session.x.read(point_index);
             let value = y.read(point_index);
             if !x.is_finite() || !value.is_finite() || value < y_min || value > y_max {
@@ -911,6 +954,9 @@ pub extern "C" fn heatmap_build(
         let mut writes = result.membership_offsets.clone();
         for sorted_index in start..end {
             let point_index = point_index_at(session, sorted_index);
+            if !row_is_active(&session.active_mask, point_index) {
+                continue;
+            }
             let x = session.x.read(point_index);
             let value = y.read(point_index);
             if !x.is_finite() || !value.is_finite() || value < y_min || value > y_max {
@@ -1144,7 +1190,11 @@ fn visit_groups<F: FnMut(f64, BubbleGroup)>(
         }
         if run_end == sorted + 1 {
             let value = y.read(first_point);
-            if value.is_finite() && value >= y_min && value <= y_max {
+            if row_is_active(&session.active_mask, first_point)
+                && value.is_finite()
+                && value >= y_min
+                && value <= y_max
+            {
                 let source = source_index_at(session, first_point);
                 visitor(
                     x,
@@ -1172,6 +1222,9 @@ fn visit_groups<F: FnMut(f64, BubbleGroup)>(
         if run_end - sorted <= 8 {
             for run in sorted..run_end {
                 let point = point_index_at(session, run);
+                if !row_is_active(&session.active_mask, point) {
+                    continue;
+                }
                 let value = y.read(point);
                 if !value.is_finite() || value < y_min || value > y_max {
                     continue;
@@ -1202,6 +1255,9 @@ fn visit_groups<F: FnMut(f64, BubbleGroup)>(
             let mut groups: HashMap<u64, BubbleGroup> = HashMap::new();
             for run in sorted..run_end {
                 let point = point_index_at(session, run);
+                if !row_is_active(&session.active_mask, point) {
+                    continue;
+                }
                 let value = y.read(point);
                 if !value.is_finite() || value < y_min || value > y_max {
                     continue;
@@ -1602,6 +1658,7 @@ pub extern "C" fn session_resident_bytes() -> u32 {
             })
             .sum::<usize>();
         columns
+            .saturating_add(session.active_mask.as_ref().map_or(0, Vec::capacity) * 4)
             .saturating_add(order)
             .saturating_add(source)
             .saturating_add(selected)

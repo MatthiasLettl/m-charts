@@ -34,6 +34,8 @@ export type FastScatterWebgpuPlotUpdateOptions = Partial<Omit<
 export interface FastScatterWebgpuPlotInstance extends FastScatterPlotInstance {
   readonly interactive: Promise<void>;
   readonly ready: Promise<void>;
+  /** Fence submitted GPU work; settle pending client-view updates before calling. */
+  waitForGpuIdle(): Promise<void>;
   getWebgpuDiagnostics(): FastScatterWebgpuDiagnostics;
   update(options: FastScatterWebgpuPlotUpdateOptions): void;
 }

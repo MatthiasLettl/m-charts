@@ -102,6 +102,7 @@ export function createHistogramWebgpuPlot(
   }));
   const updatePlot = plot.update.bind(plot);
   const instance = Object.assign(plot, {
+    waitForGpuIdle: () => activeRenderer.waitForGpuIdle(),
     getWebgpuDiagnostics: () => {
       const aggregation = aggregationProvider.getDiagnostics();
       return {
@@ -139,7 +140,7 @@ export function createHistogramWebgpuPlot(
   if (clientView !== undefined) plot.use(() => clientView.view.on('change', () => {
     const previous = evaluation;
     evaluation = evaluate();
-    const dataChanged = previous?.columns.valuesByParameter !== evaluation!.columns.valuesByParameter;
+    const dataChanged = previous?.columns.valuesByParameter !== evaluation!.columns.valuesByParameter || previous?.activeMask !== evaluation!.activeMask;
     updatePlot({ columns: evaluation!.columns, spec: projectedSpec(), ...(dataChanged ? { selectedSourceIndices: [], hoverSourceIndex: null } : {}) });
     plot.commands.render();
   }));

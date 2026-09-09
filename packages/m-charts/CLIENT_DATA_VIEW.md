@@ -40,7 +40,8 @@ Visibility culling and drawing occur in WebGPU, source buffers stay resident,
 and diagnostics report zero source-upload bytes for view changes. Derived
 columns/styles upload only when those stages change. Unchanged filter masks,
 transformed fields, and styles are reused between revisions; style-only edits
-also reuse the scatter adapter's masked interaction columns and GPU coordinates.
+also reuse coordinate arrays and GPU coordinates. Scatter interaction consumers
+read the visibility mask directly; filtering no longer allocates masked Y copies.
 GPU work coalesces rapid revisions and retains at most one in-flight projection
 plus the latest request. Constant style literals are encoded once, and difference
 transforms avoid sorting already-ordered input.
@@ -373,8 +374,9 @@ blue-to-orange gradient; shape can be fixed to any glyph. Size (2–8 px) and
 rotation (−180° to 180°) follow the numeric value, while reference membership
 sets opacity (100% versus 52%). Inspect glyphs zooms to the first 200 active rows so individual glyphs can
 be inspected even in dense datasets; Reset viewport restores the full view.
-Apply replaces the preset and starts from theme defaults. Switch to Dataset
-styles afterward to compose just the enabled channels over supplied styles.
+Apply adds a rule over the selected base, consistently across all three demos.
+Choose Dataset styles to preserve source channels or Theme defaults to ignore
+them. Matching rules override only their assigned channels.
 The initial Dataset styles mode retains supplied packed styling, and Reset
 all restores it and the original domain. Large modes retain compact paged
 packed-style loading. Diagnostics include visible rows, evaluator backend/time,
@@ -503,8 +505,11 @@ view.addStyle({ id: 'blue', channels: {
 } });
 ```
 
-Histogram filters values before binning and membership lookup, without compacting
-rows. Computed colors use packed RGBA32 stacks; encoded categorical filters
+Histogram passes an active-row mask to binning and membership lookup. Filter-only
+edits retain the original columns and sorted indexes in both TypeScript and
+Rust/WASM; only the visibility mask is copied into an existing WASM session.
+Domains and invalid-value statistics of a cached continuous index describe the
+resident source column; bin counts and membership describe visible rows. Computed colors use packed RGBA32 stacks; encoded categorical filters
 retain the WASM-compatible unsigned representation. Numeric transformations
 recalculate parameter domains rather than excluding values using old domains.
 The existing viewport and requested bin sizes remain under host control.
@@ -548,3 +553,76 @@ side-by-side scatter style controls. `?rows=1000000` increases the parallel test
 size. The same fixture is covered by `tests/e2e/clientViewExtensions.spec.ts` in
 the opt-in GPU suite. Unit tests also execute the published module in a real
 worker thread; typechecking includes the browser fixture.
+
+
+### Generic predicate contract
+
+The library accepts its own serializable AST, independent of any application or
+search service. Host applications own parsing and translation. Unknown predicate
+or calculation operators throw before a revision is committed, including unknown
+operators inside Boolean groups. No query clause is silently dropped.
+
+- `and: []` is true and `or: []` is false. Multiple enabled filters are ANDed.
+- Numeric comparisons require finite numeric operands; strings are not coerced.
+- Categorical equality preserves scalar types: `1` differs from `"1"`.
+  Category ordering follows canonical type/value strings, not locale collation.
+- Boolean values accept `true`/`false` and the equivalent `1`/`0`.
+- `datetime-ns` comparisons accept safe integers or decimal epoch strings and
+  compare losslessly using bigint. This is not date-string parsing.
+- Null, undefined, nonfinite numbers, and invalid values for a declared field
+  kind match `isNull`, not `isValid`. Ordinary comparisons, including `ne` and
+  `notIn`, exclude those values. `not` negates its entire child result, so
+  `not(eq(...))` can include missing values.
+- `in: []` matches nothing. `notIn: []` matches valid values only.
+- `between` includes both endpoints by default. With `inclusive: false`, both
+  endpoints are excluded. Combine `gte` and `lt` for a half-open interval.
+- Difference overflow produces a missing numeric value (`NaN` in numeric arrays),
+  consistently with invalid arithmetic and missing neighbors.
+
+### Residency and release validation
+
+Scatter and parallel expose cumulative `clientView.totalSourceUploadBytes` and
+`clientView.sourceBufferBuildCount`, in addition to per-update `viewUploadBytes`.
+These include initial source setup and make unintended rebuilds observable.
+Scatter theme changes update style resources/uniforms without replacing source
+coordinate buffers or reloading packed-style pages. A reset reuses source data.
+Histogram reports CPU/WASM setup traffic under `aggregation.setupBytes`; this
+is separate from aggregate rendering uploads. Histogram remains GPU-rendered
+with CPU/WASM aggregation, not a GPU query evaluator.
+
+All three WebGPU instances expose `waitForGpuIdle(): Promise<void>` to fence
+already-submitted GPU work. First settle the requested client-view revision
+(`pending`/`cacheReady` and render state where available), then fence the queue;
+this method does not wait for future application mutations.
+
+Run `pnpm test:release` on a machine with a working WebGPU adapter before release.
+It requires typecheck, lint, unit tests, the actual-GPU E2E suite, the serial
+1M/10M/25M client pipeline performance gate, and a production build. The GPU
+suite must not be replaced by the default adapter-skipping E2E run.
+
+For the in-app browser, start `pnpm dev --host 127.0.0.1 --port 5181` and open:
+
+- `/@fs/<absolute-repository-path>/tests/browser/clientDataView.html`
+- `/@fs/<absolute-repository-path>/tests/browser/clientViewPerformance.html?rows=1000000`
+
+Repeat the performance page with `rows=10000000` and `rows=25000000`. It constructs
+in-memory fixtures and disposes each plot/worker before the next chart. It reports
+three samples per operation, p95 (the maximum with three samples), evaluator
+time, longest frame gap, newly retained coordinate bytes, GPU uploads, and WASM
+setup bytes. Timing covers worker evaluation, projection, GPU submission/fencing,
+and presentation frames; it excludes startup/reset. Coordinate allocation counts
+are not a measurement of all temporary JS/worker allocations or peak heap usage.
+
+Conservative smoke budgets are 1000/5000/10000 ms for 1M/10M/25M rows. These detect
+large regressions, not a product responsiveness guarantee. Set `budgetMs` and
+`samples` in the page URL, or `M_CHARTS_CLIENT_PERF_BUDGET_MS` for
+`pnpm benchmark:client-view`, to enforce your deployment device's latency SLO.
+Run performance gates without other GPU workloads. Structural assertions always
+require zero coordinate allocations for filter/style edits, no source rebuilds,
+and mask-only histogram/parallel density filtering.
+
+Scatter, histogram, and parallel demos now expose pipeline import/export,
+enable/disable, up/down ordering, removal, reset, and additive style presets.
+Scatter also demonstrates case-insensitive category text matching.
+Scatter presets derive numeric style ranges from visible semantic field values,
+so packed coordinate scales do not flatten size, rotation, or color gradients.

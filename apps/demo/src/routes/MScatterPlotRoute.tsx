@@ -896,10 +896,14 @@ export function MScatterPlotRoute({
   }, [clientViewColumns]);
   useDisposeClientView(clientView);
   const [clientMutationError, setClientMutationError] = useState('');
+  const [clientPending, setClientPending] = useState(false);
+  const [clientImportText, setClientImportText] = useState('');
+  const [clientTextQuery, setClientTextQuery] = useState('');
   const applyClientMutation = useCallback(async (action: () => void) => {
-    if (clientView === null) return false;
+    setClientPending(true);
+    if (clientView === null) { setClientPending(false); return false; }
     try { const applied = await clientView.batchAsync(action); if (applied) setClientMutationError(''); return applied; }
-    catch (error) { setClientMutationError(error instanceof Error ? error.message : String(error)); return false; }
+    catch (error) { setClientMutationError(error instanceof Error ? error.message : String(error)); return false; } finally { setClientPending(false); }
   }, [clientView]);
   const [clientFilterStage, setClientFilterStage] = useState<'source' | 'transformed'>('source');
   const [clientCalculation, setClientCalculation] = useState<'abs' | 'log10' | 'sqrt' | 'round'>('abs');
@@ -1833,12 +1837,17 @@ export function MScatterPlotRoute({
 
   const applyClientStylePreset = useCallback(async () => {
     const plot = clientViewNumericPlot;
-    const range = plot === null
-      ? undefined
-      : getClientViewProjectedDomain()?.yByPlot[plot.id];
-    if (
-      clientView === null || plottedDataset === null || plot === null || range === undefined
-    ) return;
+    if (clientView === null || plottedDataset === null || plot === null) return;
+    // Style expressions read semantic values, before chart coordinate encoding.
+    const evaluation = clientView.evaluate();
+    const values = evaluation.fields[plot.yKey]?.values;
+    let min = Infinity; let max = -Infinity;
+    for (const row of evaluation.activeSourceIndices) {
+      const value = values?.[row];
+      if (typeof value === 'number' && Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+    }
+    if (!Number.isFinite(min)) return;
+    const range = min === max ? { min: min - 1, max: max + 1 } : { min, max };
     const categoryField = plottedDataset.columns.y.phase === undefined ? plot.yKey : 'phase';
     const rule: ClientDataViewState['styles'][number] = {
       channels: {
@@ -1869,7 +1878,7 @@ export function MScatterPlotRoute({
           range: [2, 8] as const,
         },
       },
-      id: 'demo-computed-style',
+      id: `demo-computed-style-${clientView.getState().revision + 1}`,
     };
     const enabledRule = { ...rule, channels: Object.fromEntries(
       Object.entries(rule.channels).filter(([channel]) => styleChannels[channel as keyof typeof styleChannels]),
@@ -1882,10 +1891,9 @@ export function MScatterPlotRoute({
     await applyClientMutation(() => clientView.replaceState({
       ...current,
       revision: current.revision,
-      sourceStyleMode: 'ignore',
       styles,
     }));
-  }, [applyClientMutation, clientView, clientViewNumericPlot, getClientViewProjectedDomain, plottedDataset, styleColorMode, styleShape, styleChannels]);
+  }, [applyClientMutation, clientView, clientViewNumericPlot, plottedDataset, styleColorMode, styleShape, styleChannels]);
 
   const inspectClientGlyphs = useCallback(() => {
     if (clientView === null || clientViewColumns === null || plottedDataset === null) return;
@@ -3580,6 +3588,8 @@ export function MScatterPlotRoute({
                   className="control-section scatter-client-view-panel"
                   data-testid="scatter-client-view-panel"
                 >
+                  <fieldset disabled={clientPending} style={{ border: 0, padding: 0, margin: 0 }}>
+                  {clientPending && <p role="status">Applying pipeline…</p>}
                   <div className="control-section-heading-row">
                     <div>
                       <h2>Client data pipeline</h2>
@@ -3647,8 +3657,20 @@ export function MScatterPlotRoute({
                           Keep outside · remove inside
                         </button>
                       </div>
+                      {clientView.dataset.fields.phase?.kind === 'categorical' && <div>
+                        <label>Contains text<input value={clientTextQuery} onChange={(event) => setClientTextQuery(event.target.value)} /></label>
+                        <button type="button" disabled={!clientTextQuery} onClick={() => { void upsertClientFilter({ id: 'demo-text', stage: clientFilterStage, predicate: { op: 'contains', field: 'phase', value: clientTextQuery, caseSensitive: false } }); }}>Keep matching text</button>
+                      </div>}
                       <ClientViewItemList
                         items={clientViewState.filters}
+                        onToggle={(id, enabled) => { void applyClientMutation(() => clientView.replaceState({ ...clientView.exportState(), filters: clientView.getState().filters.map((item) => item.id === id ? { ...item, enabled } : item) })); }}
+                        onMove={(id, direction) => { void applyClientMutation(() => {
+                          const items = [...clientView.getState().filters]; const index = items.findIndex((item) => item.id === id);
+                          const other = index + direction;
+                          if (other < 0 || other >= items.length) return;
+                          [items[index], items[other]] = [items[other]!, items[index]!];
+                          clientView.replaceState({ ...clientView.exportState(), filters: items });
+                        }); }}
                         onRemove={(id) => { void applyClientMutation(() => clientView.removeFilter(id)); }}
                       />
                     </div>
@@ -3684,6 +3706,14 @@ export function MScatterPlotRoute({
                       <button type="button" disabled={clientViewNumericPlot === null} onClick={applyClientCalculation}>Apply calculation</button>
                       <ClientViewItemList
                         items={clientViewState.transformations}
+                        onToggle={(id, enabled) => { void applyClientMutation(() => clientView.replaceState({ ...clientView.exportState(), transformations: clientView.getState().transformations.map((item) => item.id === id ? { ...item, enabled } : item) })); }}
+                        onMove={(id, direction) => { void applyClientMutation(() => {
+                          const items = [...clientView.getState().transformations]; const index = items.findIndex((item) => item.id === id);
+                          const other = index + direction;
+                          if (other < 0 || other >= items.length) return;
+                          [items[index], items[other]] = [items[other]!, items[index]!];
+                          clientView.replaceState({ ...clientView.exportState(), transformations: items });
+                        }); }}
                         onRemove={removeClientTransformation}
                       />
                     </div>
@@ -3731,7 +3761,7 @@ export function MScatterPlotRoute({
                         <option value="all">All five shapes (row groups)</option><option value="0">Circle</option><option value="1">Rectangle</option><option value="2">Triangle</option><option value="3">Pin</option><option value="4">Arrow</option>
                       </select></label>
                       <p className="compact-note">Size: 2–8 px. Rotation: −180° to 180°. Both follow the numeric value. Opacity: 100% for reference members, 52% otherwise. Use Inspect glyphs to zoom into a small region of the current data.</p>
-                      <p className="compact-note">Apply replaces the preset and starts from theme defaults. Switch to Dataset styles to compose the checked channels over supplied styling.</p>
+                      <p className="compact-note">Apply adds a rule over the selected base. Later matching rules override only the checked channels.</p>
                       <div className="button-row scatter-client-view-actions">
                         <button
                           data-testid="client-style-preset"
@@ -3746,6 +3776,14 @@ export function MScatterPlotRoute({
                         onClick={inspectClientGlyphs}>Inspect glyphs · zoom to 200 rows</button>
                       <ClientViewItemList
                         items={clientViewState.styles}
+                        onToggle={(id, enabled) => { void applyClientMutation(() => clientView.replaceState({ ...clientView.exportState(), styles: clientView.getState().styles.map((item) => item.id === id ? { ...item, enabled } : item) })); }}
+                        onMove={(id, direction) => { void applyClientMutation(() => {
+                          const items = [...clientView.getState().styles]; const index = items.findIndex((item) => item.id === id);
+                          const other = index + direction;
+                          if (other < 0 || other >= items.length) return;
+                          [items[index], items[other]] = [items[other]!, items[index]!];
+                          clientView.replaceState({ ...clientView.exportState(), styles: items });
+                        }); }}
                         onRemove={(id) => { void applyClientMutation(() => clientView.removeStyle(id)); }}
                       />
                     </div>
@@ -3773,11 +3811,14 @@ export function MScatterPlotRoute({
                         link.click();
                         setTimeout(() => URL.revokeObjectURL(url), 0);
                       }}>Download pipeline state</button>
+                      <label>Import state JSON<textarea aria-label="Import client state JSON" value={clientImportText} onChange={(event) => setClientImportText(event.target.value)} /></label>
+                      <button type="button" disabled={!clientImportText.trim()} onClick={() => { void applyClientMutation(() => clientView.replaceState(JSON.parse(clientImportText) as ClientDataViewState)).then((applied) => { if (applied) fitClientViewViewport(); }); }}>Import state</button>
                       <pre className="compact-code-block" data-testid="client-view-state-json">
                         <code>{clientViewStatePreview}</code>
                       </pre>
                     </div>
                   </details>
+                  </fieldset>
                 </section>
               )}
             <section className="control-section scatter-fast-debug-panels">
@@ -6132,9 +6173,11 @@ function ClientSelectionMenu({ menu, onDismiss, onKeep }: {
 
 function ClientViewItemList({
   items,
-  onRemove,
+  onRemove, onToggle, onMove,
 }: {
-  items: readonly { readonly id: string; readonly op?: string }[];
+  onToggle: (id: string, enabled: boolean) => void;
+  onMove: (id: string, direction: number) => void;
+  items: readonly { readonly id: string; readonly op?: string; readonly enabled?: boolean }[];
   onRemove: (id: string) => void;
 }) {
   if (items.length === 0) {
@@ -6142,9 +6185,11 @@ function ClientViewItemList({
   }
   return (
     <ul className="scatter-client-view-items">
-      {items.map((item) => (
+      {items.map((item, index) => (
         <li key={item.id}>
-          <span>{item.id}{item.op === undefined ? '' : ` · ${item.op}`}</span>
+          <label><input type="checkbox" checked={item.enabled !== false} onChange={(event) => onToggle(item.id, event.target.checked)} />{item.id}{item.op === undefined ? '' : ` · ${item.op}`}</label>
+          <button type="button" aria-label={`Move ${item.id} up`} disabled={index === 0} onClick={() => onMove(item.id, -1)}>↑</button>
+          <button type="button" aria-label={`Move ${item.id} down`} disabled={index === items.length - 1} onClick={() => onMove(item.id, 1)}>↓</button>
           <button aria-label={`Remove ${item.id}`} onClick={() => onRemove(item.id)} type="button">
             Remove
           </button>

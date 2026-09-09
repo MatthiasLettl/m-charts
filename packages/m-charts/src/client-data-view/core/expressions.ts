@@ -70,7 +70,7 @@ export function compileDataExpression(expression: ClientDataExpression, fields: 
     }
     const functions = { abs: Math.abs, negate: (n: number) => -n, log: Math.log, log10: Math.log10, sqrt: Math.sqrt, exp: Math.exp, round: Math.round, floor: Math.floor, ceil: Math.ceil };
     const operation = functions[expression.op];
-    if (!operation || input.kind !== 'numeric') throw new TypeError('Client numeric operation requires a numeric input.');
+    if (!Object.hasOwn(functions, expression.op) || !operation || input.kind !== 'numeric') throw new TypeError('Client numeric operation requires a numeric input.');
     return { kind: 'numeric', read: (row) => { const value = finiteNumeric(input.read(row)); return value === null ? null : finite(operation(value)); } };
   }
   if ('left' in expression && 'right' in expression) {
@@ -82,7 +82,7 @@ export function compileDataExpression(expression: ClientDataExpression, fields: 
     if (left.kind !== 'numeric' || right.kind !== 'numeric') throw new TypeError('Client arithmetic requires numeric inputs (or two datetimes for subtraction).');
     const operations = { add: (a: number, b: number) => a + b, subtract: (a: number, b: number) => a - b, multiply: (a: number, b: number) => a * b, divide: (a: number, b: number) => a / b, modulo: (a: number, b: number) => a % b, power: Math.pow, min: Math.min, max: Math.max };
     const operation = operations[expression.op];
-    if (!operation) throw new TypeError(`Unsupported client expression "${expression.op}".`);
+    if (!Object.hasOwn(operations, expression.op) || !operation) throw new TypeError(`Unsupported client expression "${expression.op}".`);
     return { kind: 'numeric', read: (row) => { const a = finiteNumeric(left.read(row)); const b = finiteNumeric(right.read(row)); return a === null || b === null ? null : finite(operation(a, b)); } };
   }
   throw new TypeError(`Unsupported client expression "${String((expression as { op?: unknown }).op)}".`);

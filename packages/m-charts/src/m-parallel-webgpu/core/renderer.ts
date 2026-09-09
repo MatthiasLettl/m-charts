@@ -149,6 +149,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   private clientUpdateTask: Promise<void> | null = null;
   private requestedClientBuffers: ParallelBuffers | null = null;
   private clientViewUploadBytes = 0;
+  private totalSourceUploadBytes = 0;
+  private sourceBufferBuildCount = 0;
   private hoverFallbackInFlight: Promise<ParallelHoverCandidate | null> | null = null;
   private hoverFallbackVersion = 0;
   private lineOpacityScale: number;
@@ -406,7 +408,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   }
 
   getClientViewStatus() {
-    return { pending: this.requestedClientBuffers !== null, viewUploadBytes: this.clientViewUploadBytes, sourceUploadBytes: 0 };
+    return { pending: this.requestedClientBuffers !== null, viewUploadBytes: this.clientViewUploadBytes, sourceUploadBytes: 0, totalSourceUploadBytes: this.totalSourceUploadBytes, sourceBufferBuildCount: this.sourceBufferBuildCount };
   }
 
   /** Updates projected coordinates, visibility and styles on the resident device. */
@@ -492,6 +494,12 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     });
     this.clientUpdateTask = task;
     return task;
+  }
+
+  /** Wait for work already submitted to this plot's GPU queue. */
+  async waitForGpuIdle(): Promise<void> {
+    await this.ready;
+    await this.context?.device.queue.onSubmittedWorkDone();
   }
 
   dispose(): void {
@@ -1047,6 +1055,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     }
     this.context = context;
     const gpu = await this.createGpuResources(context);
+    this.sourceBufferBuildCount += 1;
+    this.totalSourceUploadBytes += this.diagnostics.uploadBytes;
     if (this.disposed || this.context !== context) {
       destroyParallelGpuResources(gpu);
       return;

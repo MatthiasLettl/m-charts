@@ -41,7 +41,9 @@ export type ParallelWebgpuPlotUpdateOptions = Partial<Omit<
 export interface ParallelWebgpuPlotInstance extends ParallelFastPlotInstance {
   readonly interactive: Promise<void>;
   readonly ready: Promise<void>;
-  getWebgpuDiagnostics(): ParallelWebgpuDiagnostics & { clientView?: ClientDataViewEvaluation['metrics'] & { pending: boolean; sourceUploadBytes: number; viewUploadBytes: number; revision: number; sourceStyleMode: 'preserve' | 'ignore' } };
+  /** Fence submitted GPU work; settle pending client-view updates before calling. */
+  waitForGpuIdle(): Promise<void>;
+  getWebgpuDiagnostics(): ParallelWebgpuDiagnostics & { clientView?: ClientDataViewEvaluation['metrics'] & { pending: boolean; sourceUploadBytes: number; totalSourceUploadBytes: number; sourceBufferBuildCount: number; viewUploadBytes: number; revision: number; sourceStyleMode: 'preserve' | 'ignore' } };
   update(options: ParallelWebgpuPlotUpdateOptions): void;
 }
 

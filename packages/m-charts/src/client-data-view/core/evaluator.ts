@@ -310,7 +310,12 @@ function evaluateStyles(
         assigned[rowIndex] = 1;
       }
     }
-    Object.assign(result, { [channel]: { assigned, values } });
+    const rules = enabledRules.filter((rule) => rule.channels[channel] !== undefined);
+    const only = rules.length === 1 ? rules[0] : undefined;
+    const expression = only?.channels[channel];
+    const constant = only?.when === undefined && expression?.op === 'constant' && activeSourceIndices.length === rowCount
+      ? encodeStyleValue(channel, expression.value) : null;
+    Object.assign(result, { [channel]: { assigned, values, ...(constant === null ? {} : { constant: values[0] ?? constant }) } });
   }
   return result;
 }
@@ -589,7 +594,8 @@ function calculateDifference(
   const current = toFiniteNumber(input.values[currentIndex]);
   const neighbor = toFiniteNumber(input.values[neighborIndex]);
   if (current === null || neighbor === null) return null;
-  return direction === 'forward' ? neighbor - current : current - neighbor;
+  const result = direction === 'forward' ? neighbor - current : current - neighbor;
+  return Number.isFinite(result) ? result : null;
 }
 
 function encodeStyleValue(channel: ClientStyleChannel, value: ClientStyleValue): number | null {

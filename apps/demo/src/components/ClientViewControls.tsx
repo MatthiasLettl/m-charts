@@ -71,6 +71,10 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
             [ordered[index - 1], ordered[index]] = [ordered[index]!, ordered[index - 1]!];
             view.replaceState({ ...view.exportState(), [kind]: ordered });
           })}>↑</button>
+          <button type="button" aria-label={`Move ${item.id} down`} disabled={index === state[kind].length - 1} onClick={() => apply(() => {
+            const next = [...view.getState()[kind]]; [next[index], next[index + 1]] = [next[index + 1]!, next[index]!];
+            view.replaceState({ ...view.exportState(), [kind]: next });
+          })}>↓</button>
           <button type="button" aria-label={`Remove ${item.id}`} onClick={() => apply(() => view.replaceState({ ...view.exportState(), [kind]: state[kind].filter((entry) => entry.id !== item.id) }))}>Remove</button>
         </div>
       </li>)}
@@ -133,7 +137,7 @@ export function ClientViewControls({ view, selectedSourceIndices, onApplied }: {
     </div></details>
     <details className="control-disclosure"><summary>Styles</summary><div className="control-disclosure-body">
       <div className="segmented-control" aria-label="Client style source">
-        {(['preserve', 'ignore'] as const).map((mode) => <button type="button" key={mode} data-testid={mode === 'preserve' ? 'client-style-dataset-base' : 'client-style-data-only'} aria-pressed={state.sourceStyleMode === mode} className={state.sourceStyleMode === mode ? 'is-active' : undefined} onClick={() => apply(() => view.replaceState({ ...view.exportState(), sourceStyleMode: mode }))}>{mode === 'preserve' ? 'Dataset styling' : 'Data only'}</button>)}
+        {(['preserve', 'ignore'] as const).map((mode) => <button type="button" key={mode} data-testid={mode === 'preserve' ? 'client-style-dataset-base' : 'client-style-data-only'} aria-pressed={state.sourceStyleMode === mode} className={state.sourceStyleMode === mode ? 'is-active' : undefined} onClick={() => apply(() => view.replaceState({ ...view.exportState(), sourceStyleMode: mode }))}>{mode === 'preserve' ? 'Dataset styles' : 'Theme defaults'}</button>)}
       </div>
       <fieldset className="scatter-client-channels"><legend>Compute channels</legend>
         <label><input type="checkbox" checked={colorEnabled} onChange={(e) => setColorEnabled(e.target.checked)} />Color</label>

@@ -174,6 +174,8 @@ export interface ClientDataViewEvaluationMetrics {
 }
 
 export interface ClientComputedStyleChannel<TArray extends ArrayBufferView> {
+  /** Present when one unconditional rule assigns this value to every resident row. */
+  readonly constant?: number;
   readonly assigned: Uint8Array;
   readonly values: TArray;
 }

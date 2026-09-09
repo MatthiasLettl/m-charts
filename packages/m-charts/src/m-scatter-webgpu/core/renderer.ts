@@ -149,6 +149,8 @@ interface GpuResources {
   clientViewBuffers: Set<GPUBuffer>;
   clientViewDrawIndices: Uint32Array;
   clientViewAppliedEvaluation: FastScatterClientViewEvaluation | null;
+  clientViewDefaultColor?: number;
+  sourceDefaultColor: number;
   clientViewIndexBuffer: GPUBuffer | null;
   clientViewStyleBuffers: Set<GPUBuffer>;
   clientIndexedStyle: boolean;
@@ -300,6 +302,8 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
   private widthCssPx = 0;
   private clientViewEvaluation: FastScatterClientViewEvaluation | null;
   private clientViewUploadBytes = 0;
+  private totalSourceUploadBytes = 0;
+  private sourceBufferBuildCount = 0;
   private clientViewResourceTask: Promise<void> | null = null;
   private readonly sourceColumns: FastScatterPointColumns;
   private resolveFirstFrame!: () => void;
@@ -355,9 +359,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       (!clientViewColumnUpdate && options.columns !== undefined && options.columns !== previous.columns) ||
       (options.spec !== undefined && options.spec !== previous.spec) ||
       (this.clientViewEvaluation === null && options.hoverIndex !== undefined &&
-        options.hoverIndex !== previous.hoverIndex) ||
-      (this.clientViewEvaluation !== null && options.theme !== undefined &&
-        !areThemesEqual(options.theme, previous.theme));
+        options.hoverIndex !== previous.hoverIndex);
     const selectionChanged =
       options.selectedSourceIndices !== undefined &&
       options.selectedSourceIndices !== previous.selectedSourceIndices;
@@ -804,6 +806,8 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         appliedRevision: this.gpu?.clientViewAppliedEvaluation?.revision ?? null,
         pending: this.gpu?.clientViewAppliedEvaluation !== this.clientViewEvaluation,
         sourceUploadBytes: 0,
+        totalSourceUploadBytes: this.totalSourceUploadBytes,
+        sourceBufferBuildCount: this.sourceBufferBuildCount,
         styleSource: this.clientViewEvaluation.sourceStyleMode === 'ignore'
           ? 'client-only'
           : Object.values(this.clientViewEvaluation.styles)
@@ -813,6 +817,12 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         viewUploadBytes: this.clientViewUploadBytes,
       },
     };
+  }
+
+  /** Wait for work already submitted to this plot's GPU queue. */
+  async waitForGpuIdle(): Promise<void> {
+    await this.ready;
+    await this.context?.device.queue.onSubmittedWorkDone();
   }
 
   dispose(): void {
@@ -933,6 +943,8 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       destroyGpuResources(next);
       return;
     }
+    this.totalSourceUploadBytes += next.uploadBytes;
+    this.sourceBufferBuildCount += 1;
     this.gpu = next;
     if (this.clientViewEvaluation !== null) {
       await this.applyClientViewResources();
@@ -1027,12 +1039,15 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
         if (!reuseY) viewUploadBytes += column.byteLength;
       }
 
-      const reuseStyles = previous?.styles === evaluation.styles &&
+      const defaultColor = packRgba8((this.options.theme ?? DEFAULT_THEME).defaultPointColor);
+      const reuseStyles = gpu.clientViewDefaultColor === defaultColor && previous?.styles === evaluation.styles &&
         previous?.sourceStyleMode === evaluation.sourceStyleMode &&
         previous?.renderColumns.color === evaluation.renderColumns.color;
       const hasComputedStyles = Object.values(evaluation.styles)
         .some((channel) => channel !== undefined);
-      const stylesChanged = evaluation.sourceStyleMode === 'ignore' || hasComputedStyles;
+      const fallbackChanged = evaluation.renderColumns.color === undefined &&
+        this.rendererOptions.packedStyles === undefined && gpu.sourceDefaultColor !== defaultColor;
+      const stylesChanged = evaluation.sourceStyleMode === 'ignore' || hasComputedStyles || fallbackChanged;
       const pagedPackedStyles = this.rendererOptions.packedStyles !== undefined &&
         !('data' in this.rendererOptions.packedStyles);
       const nextStyles = !reuseStyles && stylesChanged
@@ -1093,6 +1108,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       gpu.clientViewIndexBuffer = drawIndexBuffer;
       gpu.clientViewStyleBuffers = styleBuffers;
       gpu.clientViewAppliedEvaluation = evaluation;
+      gpu.clientViewDefaultColor = defaultColor;
       gpu.x = nextX;
       gpu.xIndexedMode = 0;
       gpu.xSorted = isNondecreasing(evaluation.renderColumns.x);
@@ -1118,8 +1134,14 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
 
       this.clientViewUploadBytes = viewUploadBytes;
       gpu.uploadBytes += viewUploadBytes;
-      this.aggregationWasm = null;
-      this.aggregationWasmAttempted = false;
+      const sameCoordinates = previous?.renderColumns.x === evaluation.renderColumns.x &&
+        Object.keys(evaluation.renderColumns.y).every((key) => previous.renderColumns.y[key] === evaluation.renderColumns.y[key]);
+      if (sameCoordinates) {
+        if (!sameMask) this.aggregationWasm?.updateActiveMask(evaluation.activeMask);
+      } else {
+        this.aggregationWasm = null;
+        this.aggregationWasmAttempted = false;
+      }
       this.aggregateDirty = true;
       this.aggregateVisualDirty = true;
       this.cacheReady = false;
@@ -3030,6 +3052,7 @@ async function createGpuResources(
     styleByteLength: styles.byteLength,
     styleMode: styles.constant ? (indexedStyle ? 2 : 1) : 0,
     styleSplitBytes,
+    sourceDefaultColor: packRgba8(theme.defaultPointColor),
     sourceStyleBuffer: styleBuffer,
     sourceStyleBufferHigh: styleBufferHigh,
     sourceStyleByteLength: styles.byteLength,

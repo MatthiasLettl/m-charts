@@ -121,5 +121,47 @@ await run('worker evaluation: responsive million-row updates and stale-result pr
     equal(await pending, false, 'stale result rejected'); equal(view.evaluate().metrics.activeRowCount, 1, 'newer edit retained');
   } finally { view.dispose(); }
 });
+await run('scatter theme/filter/style/reset retain GPU source resources', async () => {
+  const columns = { ids: ['a', 'b', 'c'], x: new Float64Array([0, 1, 2]), y: { v: new Float64Array([1, 2, 3]) } };
+  const view = scatter.createFastScatterClientDataView({ columns });
+  const binding = { view };
+  const theme: scatter.FastScatterTheme = { backgroundColor: [1, 1, 1, 1], subplotBackgroundColor: [1, 1, 1, 1], defaultPointColor: [0, 0, 255, 255], selectedOverlayColor: [1, 0, 0, 1], alphaScaleMultiplier: 1 };
+  const plot = scatter.createScatterPlot(host('Resident scatter — green after theme update'), { columns, theme, mode: 'select', axisMode: 'xy', spec: { xLabel: 'X', plots: [{ id: 'v', label: 'V', yKey: 'v' }] }, viewport: { x: { min: -1, max: 3 }, yByPlot: { v: { min: 0, max: 4 } } }, clientView: binding });
+  plots.push(plot); await plot.ready; await settled(plot);
+  const initial = plot.getWebgpuDiagnostics().clientView!;
+  assert(initial.totalSourceUploadBytes > 0, 'source uploads must be measured');
+  for (const defaultPointColor of [[0, 255, 0, 255], [255, 0, 0, 255], [0, 255, 0, 255]] as const) {
+    plot.update({ theme: { ...theme, defaultPointColor } }); await settled(plot);
+    const next = plot.getWebgpuDiagnostics().clientView!;
+    equal(next.sourceBufferBuildCount, initial.sourceBufferBuildCount, 'theme must not rebuild GPU sources');
+    equal(next.totalSourceUploadBytes, initial.totalSourceUploadBytes, 'theme must not re-upload sources');
+  }
+  view.addFilter({ id: 'half', predicate: { op: 'gte', field: 'v', value: 2 } }); await settled(plot);
+  equal(scatter.evaluateFastScatterClientView(binding, columns).interactionColumns.y.v === columns.y.v, true, 'no coordinate copy for interactions');
+  view.addStyle({ id: 'size', channels: { size: { op: 'constant', value: 12 }, shape: { op: 'constant', value: 2 }, rotation: { op: 'constant', value: 0.5 } } }); await settled(plot);
+  view.replaceState({ ...view.exportState(), filters: [], styles: [], transformations: [] }); await settled(plot);
+  equal(plot.getWebgpuDiagnostics().clientView!.totalSourceUploadBytes, initial.totalSourceUploadBytes, 'reset must retain source buffers');
+});
+for (const mode of ['direct', 'density', 'auto'] as const) await run(`parallel ${mode}: visibility, style, transform, selection and reset`, async () => {
+  const count = 4097;
+  const buffers = parallel.createParallelWebgpuBuffers({ ids: Array.from({ length: count }, (_, i) => String(i)), axisOrder: ['a', 'b'], valuesByAxis: { a: Float32Array.from({ length: count }, (_, i) => i / (count - 1)), b: Float32Array.from({ length: count }, (_, i) => i / (count - 1)) } });
+  const view = parallel.createParallelClientDataView({ buffers });
+  const plot = parallel.createParallelWebgpuPlot(host(`Parallel ${mode}`), { buffers, renderMode: mode, directSegmentLimit: 1, representativeRecordLimit: 128, binResolution: 32, clientView: { view } });
+  plots.push(plot); await plot.ready; await settled(plot);
+  const initial = plot.getWebgpuDiagnostics().clientView!;
+  view.addFilter({ id: 'sparse', predicate: { op: 'gte', field: 'a', value: 0.999 } });
+  view.addTransformation({ id: 'scale', op: 'affine', input: 'b', output: 'b', factor: 0.5, offset: 0 });
+  view.addStyle({ id: 'red', channels: { color: { op: 'constant', value: '#ff0000' }, opacity: { op: 'constant', value: 0.5 } } });
+  await settled(plot);
+  plot.commands.commitBrushIntervals({ a: { min: 0, max: 1 } });
+  for (let i = 0; i < 120 && plot.commands.getStateSnapshot().selectedSourceIndices.length !== 5; i++) await frame();
+  equal(Array.from(plot.commands.getStateSnapshot().selectedSourceIndices), [4092, 4093, 4094, 4095, 4096], 'exact selection after projection');
+  view.addFilter({ id: 'empty', predicate: { op: 'lt', field: 'a', value: 0 } }); await settled(plot);
+  equal(plot.getWebgpuDiagnostics().clientView!.activeRowCount, 0, 'empty view');
+  view.replaceState({ ...view.exportState(), filters: [], styles: [], transformations: [] }); await settled(plot);
+  equal(plot.getWebgpuDiagnostics().clientView!.activeRowCount, count, 'reset visibility');
+  equal(plot.getWebgpuDiagnostics().clientView!.totalSourceUploadBytes, initial.totalSourceUploadBytes, 'parallel source uploads');
+  equal(plot.getWebgpuDiagnostics().clientView!.sourceBufferBuildCount, initial.sourceBufferBuildCount, 'parallel GPU resource lifetime');
+});
 await run('no browser or GPU lifecycle errors', async () => { await frame(); equal(errors, [], 'browser errors'); });
 status.textContent = results.querySelector('.fail') ? 'FAILED' : 'ALL PASSED';

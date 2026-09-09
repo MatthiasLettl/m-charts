@@ -192,6 +192,12 @@ export class HistogramWebgpuRenderer implements HistogramRendererLike {
     return metrics;
   }
 
+  /** Wait for work already submitted to this plot's GPU queue. */
+  async waitForGpuIdle(): Promise<void> {
+    await this.ready;
+    await this.context?.device.queue.onSubmittedWorkDone();
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;

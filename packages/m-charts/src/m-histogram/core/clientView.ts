@@ -4,7 +4,7 @@ import {
   createClientDataView, type ClientDataField, type ClientDataSet,
   type ClientDataView, type ClientDataViewEvaluation, type CreateClientDataViewOptions,
 } from '../../client-data-view/index.js';
-import { clientRowIsActive, composeClientRowColors } from '../../client-data-view/core/chartProjection.js';
+import { composeClientRowColors, uniformClientColor } from '../../client-data-view/core/chartProjection.js';
 import type { HistogramColumns, HistogramValueColumn } from './types.js';
 
 export interface HistogramClientViewBinding {
@@ -48,7 +48,7 @@ export function evaluateHistogramClientView(
   if (evaluation.metrics.rowCount !== source.ids.length) throw new TypeError('Histogram client view row count does not match source columns.');
   const previous = caches.get(binding);
   const mapping = JSON.stringify(binding.fieldByParameter);
-  const reuseValues = previous?.source === source && previous.fields === evaluation.fields && previous.result.activeMask === evaluation.activeMask && previous.mapping === mapping;
+  const reuseValues = previous?.source === source && previous.fields === evaluation.fields && previous.mapping === mapping;
   let parameters = reuseValues ? previous.result.columns.parameters : source.parameters;
   const valuesByParameter: Record<string, HistogramValueColumn> = reuseValues ? previous.result.columns.valuesByParameter : {};
   if (!reuseValues) for (const key of Object.keys(source.valuesByParameter)) {
@@ -68,14 +68,16 @@ export function evaluateHistogramClientView(
       if (index >= 0) (parameters as import('./types.js').HistogramParameterSpec[])[index] = projectedParameter;
       else (parameters as import('./types.js').HistogramParameterSpec[]).push(projectedParameter);
     }
-    if (evaluation.metrics.activeRowCount === source.ids.length && !projection.changed) {
+    if (!projection.changed) {
       valuesByParameter[key] = source.valuesByParameter[key]!;
     } else if (field.kind === 'categorical' || field.kind === 'boolean') {
       valuesByParameter[key] = Uint32Array.from({ length: source.ids.length }, (_, row) =>
-        clientRowIsActive(evaluation.activeMask, row) && Number.isFinite(raw[row]) ? raw[row]! : 0xffff_ffff);
+        Number.isFinite(raw[row]) ? raw[row]! : 0xffff_ffff);
+    } else if (ArrayBuffer.isView(raw)) {
+      valuesByParameter[key] = raw as import('./types.js').HistogramNumericArray;
     } else {
       valuesByParameter[key] = Float64Array.from({ length: source.ids.length }, (_, row) =>
-        clientRowIsActive(evaluation.activeMask, row) && raw[row] != null ? Number(raw[row]) : NaN);
+        raw[row] != null ? Number(raw[row]) : NaN);
     }
   }
 
@@ -83,7 +85,9 @@ export function evaluateHistogramClientView(
   const fallback = JSON.stringify(defaultColor);
   const reuseStyles = previous?.source === source && previous.result.styles === evaluation.styles && previous.result.sourceStyleMode === sourceStyleMode && previous.fallback === fallback;
   const hasStyles = evaluation.styles.color !== undefined || evaluation.styles.opacity !== undefined;
-  const rgba = reuseStyles ? previous.result.columns.color : hasStyles
+  const fallbackColor = sourceStyleMode === 'preserve' && source.color === undefined ? [255, 255, 255, 255] : defaultColor;
+  const uniform = hasStyles ? uniformClientColor(evaluation, sourceStyleMode === 'preserve', source.color, fallbackColor) : undefined;
+  const rgba = reuseStyles ? previous.result.columns.color : uniform !== undefined ? new Uint32Array(source.ids.length).fill(uniform) : hasStyles
     ? composeClientRowColors(evaluation, sourceStyleMode === 'preserve', source.color, source.color instanceof Uint32Array || source.colorFormat === 'rgba32', sourceStyleMode === 'preserve' && source.color === undefined ? [255, 255, 255, 255] : defaultColor)
     : sourceStyleMode === 'preserve' ? source.color : new Uint32Array(source.ids.length).fill(
       ((defaultColor[0]! << 24) | (defaultColor[1]! << 16) | (defaultColor[2]! << 8) | defaultColor[3]!) >>> 0,
@@ -92,7 +96,7 @@ export function evaluateHistogramClientView(
     const i = row * 4;
     return ((rgba[i]! << 24) | (rgba[i + 1]! << 16) | (rgba[i + 2]! << 8) | rgba[i + 3]!) >>> 0;
   }) : rgba;
-  const columns: HistogramColumns = { ...source, parameters, valuesByParameter, color,
+  const columns: HistogramColumns = { ...source, activeMask: evaluation.activeMask, parameters, valuesByParameter, color,
     colorFormat: hasStyles || sourceStyleMode === 'ignore' ? 'rgba32' : source.colorFormat };
   const result = { ...evaluation, columns, sourceStyleMode };
   caches.set(binding, { source, fields: evaluation.fields, mapping, result, fallback });

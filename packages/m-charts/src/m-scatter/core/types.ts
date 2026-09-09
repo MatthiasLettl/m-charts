@@ -201,6 +201,8 @@ export interface FastScatterViewport {
 }
 
 export interface FastScatterPointColumns {
+  /** Optional visibility bits in source row order. */
+  readonly activeMask?: Uint32Array;
   ids: readonly string[];
   x: FastScatterTypedNumericArray;
   xKey?: string;

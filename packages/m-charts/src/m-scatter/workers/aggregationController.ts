@@ -23,7 +23,7 @@ export type FastScatterAggregationExecutionPreference =
 export interface FastScatterAggregationControllerOptions {
   readonly columns: Pick<
     FastScatterPointColumns,
-    'color' | 'colorFormat' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'color' | 'colorFormat' | 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >;
   readonly createWorker?: () => Worker;
   readonly minWorkerPointCount?: number;
@@ -75,6 +75,7 @@ export class FastScatterAggregationController {
       colorFormat: options.columns.colorFormat,
       sourceIndex: options.columns.sourceIndex,
       x: options.columns.x,
+      activeMask: options.columns.activeMask,
       xOrder: options.columns.xOrder,
       y: options.columns.y,
     };

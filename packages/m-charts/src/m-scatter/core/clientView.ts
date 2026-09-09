@@ -138,12 +138,7 @@ export function evaluateFastScatterClientView(
   const renderColumns = reuseStyles
     ? Object.assign({ ...previous.result.renderColumns, x: coordinates.x, xOrder: coordinates.xOrder, y: coordinates.y }, { axisByColumn: (coordinates as FastScatterPointColumns & { axisByColumn?: Record<string, FastScatterEncodedAxis> }).axisByColumn })
     : applyComputedStyles(coordinates, evaluation, sourceStyleMode, fallbackColor);
-  const reuseMask = reuseCoordinates && previous.result.activeMask === evaluation.activeMask;
-  const interactionColumns = evaluation.metrics.activeRowCount === evaluation.metrics.rowCount
-    ? renderColumns
-    : reuseMask
-      ? { ...renderColumns, y: previous.result.interactionColumns.y }
-      : maskInteractionColumns(renderColumns, evaluation.activeMask);
+  const interactionColumns = { ...renderColumns, activeMask: evaluation.activeMask };
   const result: FastScatterClientViewEvaluation = {
     activeMask: evaluation.activeMask,
     activeSourceIndices: evaluation.activeSourceIndices,
@@ -266,26 +261,6 @@ function mergeShapeChannel(
     if (computed.assigned[index] !== 0) output[index] = computed.values[index] ?? 0;
   }
   return output;
-}
-
-function maskInteractionColumns(
-  columns: FastScatterPointColumns,
-  activeMask: Uint32Array,
-): FastScatterPointColumns {
-  const y: Record<string, Float64Array> = Object.fromEntries(
-    Object.keys(columns.y).map((key) => [key, new Float64Array(columns.x.length)]),
-  );
-  for (const [key, values] of Object.entries(columns.y)) {
-    const output = y[key]!;
-    for (let index = 0; index < columns.x.length; index += 1) {
-      const active = ((activeMask[index >>> 5] ?? 0) & (1 << (index & 31))) !== 0;
-      output[index] = active ? values[index] ?? Number.NaN : Number.NaN;
-    }
-  }
-  // Keep X intact so the scatter engine's sorted-X range lookup remains valid.
-  // Masking every Y coordinate is sufficient to exclude a row from hover,
-  // rectangle/lasso selection, and aggregation in every subplot.
-  return { ...columns, y };
 }
 
 function withProjectedXOrder(columns: FastScatterPointColumns): FastScatterPointColumns {

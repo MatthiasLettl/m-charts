@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   getFastScatterAggregationByteLength,
   type FastScatterBubbleAggregationRequest,
@@ -33,7 +34,7 @@ interface BubbleScanSummary {
 export function buildFastScatterWebgpuBubbleAggregation(
   columns: Pick<
     FastScatterPointColumns,
-    'sourceIndex' | 'x' | 'xOrder' | 'y'
+    'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'
   >,
   request: FastScatterBubbleAggregationRequest,
   maxAggregates = FAST_SCATTER_WEBGPU_MAX_BUBBLE_AGGREGATES_PER_SUBPLOT,
@@ -96,7 +97,7 @@ export function buildFastScatterWebgpuBubbleAggregation(
 }
 
 function materializeBubbleHashedLod(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder'>,
   yValues: ArrayLike<number>,
   plotId: string,
   yKey: string,
@@ -281,7 +282,7 @@ function findBubbleInsertionIndex(
 }
 
 function materializeBubbleLod(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder'>,
   yValues: ArrayLike<number>,
   plotId: string,
   yKey: string,
@@ -389,7 +390,7 @@ function finalizeBubbleLod(
 }
 
 function scanBubbleGroups(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder'>,
   yValues: ArrayLike<number>,
   yRange: { min: number; max: number },
   scanRange: { start: number; end: number },
@@ -420,7 +421,7 @@ function scanBubbleGroups(
 }
 
 function visitBubbleGroups(
-  columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder'>,
+  columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder'>,
   yValues: ArrayLike<number>,
   yRangeInput: { min: number; max: number },
   scanRange: { start: number; end: number },
@@ -454,7 +455,7 @@ function visitBubbleGroups(
     }
     if (runEnd === sortedIndex + 1) {
       const y = yValues[firstPointIndex];
-      if (Number.isFinite(y) && y >= yMin && y <= yMax) {
+      if (clientRowIsActive(columns.activeMask, firstPointIndex) && Number.isFinite(y) && y >= yMin && y <= yMax) {
         const sourceIndex = columns.sourceIndex?.[firstPointIndex] ?? firstPointIndex;
         singletonGroup.hovered = sourceIndex === hoverSourceIndex;
         singletonGroup.selectedCount = selected.has(sourceIndex) ? 1 : 0;
@@ -469,7 +470,7 @@ function visitBubbleGroups(
     for (let runIndex = sortedIndex; runIndex < runEnd; runIndex += 1) {
       const pointIndex = pointIndexAt(columns, runIndex);
       const y = yValues[pointIndex];
-      if (!Number.isFinite(y) || y < yMin || y > yMax) continue;
+      if (!clientRowIsActive(columns.activeMask, pointIndex) || !Number.isFinite(y) || y < yMin || y > yMax) continue;
       const sourceIndex = columns.sourceIndex?.[pointIndex] ?? pointIndex;
       let group = groups.get(y);
       if (group === undefined) {

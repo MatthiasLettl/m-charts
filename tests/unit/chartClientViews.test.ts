@@ -71,7 +71,8 @@ let h = evaluateHistogramClientView(histogram, columns);
 assert.equal(h.columns.ids, columns.ids);
 assert.equal(h.columns.sourceIndex, columns.sourceIndex);
 assert.deepEqual(Array.from(h.columns.valuesByParameter.value!), [3, NaN, 7, NaN]);
-assert.deepEqual(Array.from(h.columns.valuesByParameter.cat!), [0, 0xffff_ffff, 0, 0xffff_ffff]);
+assert.equal(h.columns.valuesByParameter.cat, columns.valuesByParameter.cat, 'filters retain categorical coordinates');
+assert.deepEqual(Array.from(h.columns.activeMask!), [5]);
 const comparable = (input: ReturnType<typeof buildHistogramAggregation>) => input.subplots.map((subplot) => ({
   counts: subplot.bins.map((bin) => bin.totalCount), stacks: subplot.bins.map((bin) => bin.stack), indices: Array.from(subplot.sourceIndices ?? []),
 }));

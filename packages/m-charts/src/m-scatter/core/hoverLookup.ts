@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   getFastScatterBubbleAggregateMembershipSpan,
   getFastScatterHeatmapCellAxisBounds,
@@ -30,6 +31,7 @@ import type {
 export interface FastScatterNearestPointLookupInput {
   readonly columns: Pick<
     FastScatterPointColumns,
+    | 'activeMask'
     | 'ids'
     | 'recordIdentityBySourceIndex'
     | 'sourceIndex'
@@ -453,7 +455,7 @@ export function lookupFastScatterNearestPoint(
   let candidateCount = 0;
 
   const considerPoint = (pointIndex: number): void => {
-    if (input.isPointEligible?.(pointIndex, plot.id) === false) {
+    if (!clientRowIsActive(input.columns.activeMask, pointIndex) || input.isPointEligible?.(pointIndex, plot.id) === false) {
       return;
     }
     const x = input.columns.x[pointIndex];

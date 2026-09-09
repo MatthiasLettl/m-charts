@@ -545,3 +545,11 @@ conditions, field comparisons and post-transform filtering. Optional module-work
 batches, same-row `updateFields`, mapped-field validation, and content fingerprints
 are described in [Client data views](CLIENT_DATA_VIEW.md). Existing synchronous
 APIs remain available; streaming/new row identities require a new resident view.
+
+
+Client-view updates are covered by the `pnpm test:release` GPU/latency gate.
+`waitForGpuIdle()` fences submitted GPU work after the requested view settles.
+See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation)
+for mask residency, source-upload counters, predicate semantics, demo controls and
+the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
+indexes; scatter/parallel masks retain GPU source coordinates.

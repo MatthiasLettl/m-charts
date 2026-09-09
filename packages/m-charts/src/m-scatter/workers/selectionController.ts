@@ -14,7 +14,7 @@ import {
 export type FastScatterSelectionExecutionPreference = 'auto' | 'sync' | 'worker';
 
 export interface FastScatterSelectionControllerOptions {
-  readonly columns: Pick<FastScatterPointColumns, 'sourceIndex' | 'x' | 'xOrder' | 'y'>;
+  readonly columns: Pick<FastScatterPointColumns, 'activeMask' | 'sourceIndex' | 'x' | 'xOrder' | 'y'>;
   readonly createWorker?: () => Worker;
   readonly minWorkerCandidateCount?: number;
   readonly preference?: FastScatterSelectionExecutionPreference;
@@ -39,6 +39,7 @@ export class FastScatterSelectionController {
     this.syncColumns = {
       sourceIndex: options.columns.sourceIndex,
       x: options.columns.x,
+      activeMask: options.columns.activeMask,
       xOrder: options.columns.xOrder,
       y: options.columns.y,
     };
