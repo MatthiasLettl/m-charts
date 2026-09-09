@@ -2,7 +2,7 @@
 
 Client data views are an additive, serializable pipeline for filtering,
 transforming, and styling data that is already resident in the browser. The
-WebGPU/WASM scatter, parallel-coordinate, and raw histogram plots all support
+WebGPU scatter, parallel-coordinate, and raw histogram plots all support
 the same chart-independent `m-charts/client-data-view` controller.
 
 If `clientView` is omitted, all existing chart contracts remain available. Existing
@@ -13,6 +13,43 @@ With a view attached, the source dataset is creation-bound: recreate both the
 view and plot to replace `columns`. Other mutable scatter options continue to
 use `plot.update(...)`; repeatedly passing the same source-column object is a
 no-op for the resident data.
+
+## When To Use It
+
+Opt in when users repeatedly explore the same loaded dataset: narrow a range,
+keep selected rows, calculate a delta or ratio, or recolor records without a
+server round trip. This is especially useful for large datasets, where fetching,
+decoding, and uploading replacement source buffers for every edit can dominate
+interaction latency. Keep the source resident and change the view configuration.
+The controller never fetches data or initiates network requests.
+
+Using a client view is optional. Keep the existing chart API when your app
+already prepares the desired columns/styles, needs streaming append, or replaces
+query results. Client filters only see resident rows; they cannot retrieve rows
+or evaluate server-only query clauses that were not loaded. Complete a finite
+load before attaching a view, and recreate both view and plot for a new dataset.
+
+Buffer residency does not mean that the entire pipeline runs on the GPU or that
+edits have no cost:
+
+| Operation | Work performed and reused |
+| --- | --- |
+| Scatter/parallel filtering | Reuse immutable GPU source coordinates; update visibility and active/representative data. If transforms depend on filtered rows, recompute affected derived coordinates too. |
+| Coordinate transformations | Evaluate derived fields and upload changed chart coordinates; preserve source rows and their identities. |
+| Styling | Reuse unchanged coordinates; evaluate and upload changed style data, composing over source styles by default. |
+| Raw histogram edits | Reuse resident CPU/WASM columns and unchanged sorted indexes, reaggregate affected bins/stacks, and upload the resulting bar geometry. Raw rows are not a GPU point buffer. |
+
+The shared evaluator runs in TypeScript, synchronously by default or in an
+optional module worker. WebGPU handles rendering/culling and parallel density;
+WASM handles eligible aggregation/selection work. Masks, derived arrays, worker
+copies, and GPU projections still consume memory and time. Measure evaluation
+and settled-frame latency separately; zero source-upload bytes does not mean
+zero derived uploads or zero aggregation work.
+
+Start with the [complete source-copy example](../../docs/examples/client-data-view-source-copy.md)
+for creation, filtering, calculations, styles, updates, persistence, and cleanup.
+The package imports below describe workspace exports; external users should
+follow the [source-copy guide](../../docs/source-copy-integration.md#optional-client-data-views).
 
 ## Mental Model And Execution Order
 
@@ -116,6 +153,8 @@ const view = createFastScatterClientDataView({
 });
 
 const plot = createScatterPlot(host, {
+  axisMode: 'xy',
+  mode: 'zoom',
   clientView: { view },
   columns,
   spec,
@@ -128,6 +167,21 @@ Fields have arbitrary host-defined names; names such as
 `isInSavedSelection` are not hardcoded. If memberships live in a separate
 database table, the host joins its IDs against `columns.ids` and supplies the
 resulting boolean column. The chart assigns no business meaning to it.
+
+By default, scatter fields are `columns.xKey ?? 'x'` and the keys of
+`columns.y`; parallel fields are `buffers.axisOrder` keys; histogram fields are
+`columns.valuesByParameter` keys. IDs and embedded style arrays do not
+automatically become predicate fields. Declare additional fields explicitly,
+aligned to the same source-row order.
+
+To plot a derived field without overwriting its source, create the transform
+before attaching the chart and map its output through `clientView.xField`,
+`yFieldByKey`, `fieldByAxis`, or `fieldByParameter` as appropriate. For example,
+`clientView: { view, yFieldByKey: { pressure: 'calibratedPressure' } }` maps the
+existing `pressure` subplot to a derived output named `calibratedPressure`.
+These mappings are creation-bound. A derived field used only by a filter or
+style needs no chart mapping. Overwriting a plotted field's name affects the
+view projection, never the immutable source array.
 
 Every field has `rowCount` values and a kind of `numeric`, `datetime-ns`,
 `categorical`, or `boolean`. Nanosecond source columns may use `bigint`;
@@ -298,6 +352,16 @@ versioned snapshot. `replaceState(snapshot)` validates operators, operands,
 channels, transformations, and dataset identity before publishing it. Failed
 mutations leave the prior state and revision untouched. Add, update, remove,
 and reorder methods exist for every stage.
+
+`updateFilter(id, filter)`, `updateTransformation(id, transformation)`, and
+`updateStyle(id, style)` take complete replacement items, including their IDs,
+rather than partial patches. Toggle an item with a copied snapshot and
+`enabled: false`; reorder calls require every ID in that stage exactly once.
+Use `replaceState` for one synchronous atomic edit, or `batchAsync` to group
+ordinary setters into one evaluation and notification. There is no `view.reset()`:
+save a baseline with `exportState()` and restore it with `replaceState(baseline)`.
+Likewise, change the style base with
+`view.replaceState({ ...view.exportState(), sourceStyleMode: 'ignore' })`.
 
 ```ts
 const stop = view.on('change', (event) => {
@@ -626,3 +690,27 @@ enable/disable, up/down ordering, removal, reset, and additive style presets.
 Scatter also demonstrates case-insensitive category text matching.
 Scatter presets derive numeric style ranges from visible semantic field values,
 so packed coordinate scales do not flatten size, rotation, or color gradients.
+
+## Demo pipeline controls
+
+The resident WebGPU scatter, histogram, and parallel demos share the pipeline
+panel, row/rule summary, rule controls, diagnostics, and state download/import.
+Range/category/boolean/text presets and affine/difference transforms update their
+existing rule; calculations and style presets append rules. Histogram and
+parallel keep separate numeric-field controls, including source/result range
+bounds and difference ordering. Scatter retains its glyph channels and selection
+menu; histogram and parallel expose color and opacity.
+
+Keep-inside/outside actions (Alt+I / Alt+O outside editable controls) freeze source
+row identities and clear the selection after applying. Reset all clears pipeline
+rules and selection, restores dataset styling, and resets the chart viewport.
+Transform edits and successful imports fit the chart's projected values; histogram
+fits the complete resident domain before calculating the visible bins.
+
+Run the UI regression checks with:
+
+```sh
+M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e tests/e2e/clientPipelineControls.spec.ts --workers=1
+```
+
+Set `M_CHARTS_E2E_PORT` to use a different test-server port when 5176 is occupied.

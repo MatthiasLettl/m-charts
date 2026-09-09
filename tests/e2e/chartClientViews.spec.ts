@@ -185,7 +185,7 @@ test('resident demo pipelines: filters, transforms, styles, state import and the
     await page.goto(`/m-${chart}-webgpu?points=1000000&theme=light`);
     const panel = page.getByTestId('client-view-panel');
     await expect(panel).toBeVisible({ timeout: 60_000 });
-    await panel.getByText('State and diagnostics', { exact: true }).click();
+    await panel.getByText('Pipeline diagnostics and state', { exact: true }).click();
     await expect(panel.getByTestId('client-view-visible-count')).toHaveText('1,000,000');
     const canvas = page.locator(chart === 'histogram' ? '.histogram-fast-webgpu-canvas' : '.parallel-fast-webgpu-canvas-base');
     const baseline = await canvas.screenshot();

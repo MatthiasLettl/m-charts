@@ -6,6 +6,10 @@ were copied to `src/vendor/m-charts`. Copy `m-scatter/adapters`, `workers`, or
 prefix to match your host file. Existing users moving this example to WebGPU
 should follow the [WebGL2-to-WebGPU migration example](scatter-webgpu-migration.md).
 
+Also copy the entire `client-data-view` folder: current core exports depend on
+it even when the pipeline is omitted. For optional WebGPU resident filtering,
+transformations, and styles, see the [client data-view example](client-data-view-source-copy.md).
+
 ```ts
 import {
   calculateScatterDomain,

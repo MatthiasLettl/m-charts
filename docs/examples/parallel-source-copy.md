@@ -5,6 +5,10 @@ were copied to `src/vendor/m-charts`. Copy `m-parallel/adapters` or `react`
 only when the host uses those optional helpers. Rewrite the import prefix to
 match your host file.
 
+Also copy the entire `client-data-view` folder: current core exports depend on
+it even when the pipeline is omitted. For optional WebGPU resident filtering,
+transformations, and styles, see the [client data-view example](client-data-view-source-copy.md).
+
 ```ts
 import {
   createParallelHoverIndex,

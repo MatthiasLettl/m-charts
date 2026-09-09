@@ -289,13 +289,23 @@ M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e
 ## Optional resident client pipeline
 
 Create `createParallelClientDataView({ buffers })` and pass `clientView: { view }`
-to the WebGPU factory to enable the shared filter → transform → style API.
+to the WebGPU factory to enable source filters → ordered transforms →
+post-transform filters → styles.
 It preserves source record identities and source colors by default; color and
 opacity are the applicable computed channels. Source data is creation-bound
 only while this option is attached. Existing callers, streaming integrations,
 and WebGL2 APIs need no change. Read [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
 for examples, mapping options, lifecycle, selection behavior and diagnostics.
 The resident demo includes controls and state export/import for this pipeline.
+
+Use this optional API for repeated exploration of large loaded datasets without
+refetching and rebuilding source buffers on every edit. Start with the
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md)
+for controller updates, persistence, worker setup, and disposal, and the
+[README diagram](../../README.md#optional-client-side-data-views) for the architecture.
+GPU source coordinates remain resident; visibility and changed derived
+coordinates/styles still require updates. Rules evaluate in TypeScript, with an
+optional module worker. Streaming append requires omitting the binding.
 
 Client views decode source category/boolean/datetime metadata and regenerate
 transformed domains and kinds. Shared expressions support arithmetic, text,
@@ -311,3 +321,13 @@ See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation
 for mask residency, source-upload counters, predicate semantics, demo controls and
 the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
 indexes; scatter/parallel masks retain GPU source coordinates.
+
+## Shared demo pipeline panel
+
+The resident WebGPU demos use the same panel header, summary, rule lists,
+diagnostics, and state download/import controls. Reset all clears rules and
+selection, restores dataset styles, and resets the viewport. Keep-inside/outside
+buttons and Alt+I / Alt+O capture source identities and clear the selection.
+
+Numeric-field and difference-order selectors are retained. Transform edits reset
+axis viewports to the projected domains; diagnostics include source/view uploads.

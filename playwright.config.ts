@@ -1,5 +1,8 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const port = Number(process.env.M_CHARTS_E2E_PORT ?? 5176);
+const baseURL = `http://127.0.0.1:${port}`;
+
 const enableWebgpu = process.env.M_CHARTS_ENABLE_WEBGPU_E2E === '1';
 const webgpuArgs = enableWebgpu
   ? process.platform === 'darwin'
@@ -18,15 +21,15 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [['list']],
   use: {
-    baseURL: 'http://127.0.0.1:5176',
+    baseURL,
     trace: 'on-first-retry',
     // macOS headless Chromium exposes an adapter but does not reliably present
     // WebGPU canvases. Explicit GPU runs use the native window compositor.
     headless: !(enableWebgpu && process.platform === 'darwin'),
   },
   webServer: {
-    command: 'pnpm dev --host 127.0.0.1 --port 5176',
-    url: 'http://127.0.0.1:5176/',
+    command: `pnpm dev --host 127.0.0.1 --port ${port}`,
+    url: baseURL,
     reuseExistingServer: false,
     timeout: 120_000,
   },

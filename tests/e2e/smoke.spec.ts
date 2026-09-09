@@ -616,6 +616,7 @@ test('m-scatter WebGPU client pipeline filters, transforms, styles, exports, and
     )).toBe('client-composed');
   }
   await page.getByTestId('client-style-data-only').click();
+  await expect(page.getByTestId('client-style-data-only')).toHaveAttribute('aria-pressed', 'true');
 
   const state = await page.evaluate(() => window.__scatterClientViewTestHook?.getState());
   expect(state?.filters).toHaveLength(3);
@@ -2046,13 +2047,16 @@ test('m-parallel WebGPU renders density and preserves zoom reset and hover', asy
   await page.mouse.move(axisBounds.x + axisBounds.width / 2, smallPanStartY);
   await page.mouse.down({ button: 'middle' });
   await expect(viewportFeedback).toBeVisible();
-  const feedbackBounds = await viewportFeedback.boundingBox();
-  const axisLineBounds = await latencyAxisLine.boundingBox();
-  if (feedbackBounds === null || axisLineBounds === null) {
-    throw new Error('Parallel viewport feedback geometry is unavailable.');
-  }
-  expect(Math.round(feedbackBounds.y)).toBe(Math.round(axisLineBounds.y));
-  expect(Math.round(feedbackBounds.height)).toBe(Math.round(axisLineBounds.height));
+  // The pan feedback and axis layout settle on the next render frame.
+  await expect.poll(async () => {
+    const feedbackBounds = await viewportFeedback.boundingBox();
+    const axisLineBounds = await latencyAxisLine.boundingBox();
+    if (feedbackBounds === null || axisLineBounds === null) return null;
+    return {
+      yOffset: Math.round(feedbackBounds.y) - Math.round(axisLineBounds.y),
+      heightDifference: Math.round(feedbackBounds.height) - Math.round(axisLineBounds.height),
+    };
+  }).toEqual({ yOffset: 0, heightDifference: 0 });
   await page.mouse.move(
     axisBounds.x + axisBounds.width / 2,
     smallPanStartY + 8,

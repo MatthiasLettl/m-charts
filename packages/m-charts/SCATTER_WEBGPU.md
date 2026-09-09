@@ -89,7 +89,7 @@ space.
 See [SCATTER.md](./SCATTER.md#x-reference-lines) for the complete shared API.
 
 The WebGPU scatter also accepts the additive creation-only `clientView` option
-for declarative resident filtering, filter-before-transform calculations, and
+for declarative source/result filtering, ordered calculations, and
 computed point styles. Source rows remain in their GPU buffers and selection
 does not become a filter unless the host explicitly wires that action. Embedded
 and packed source styles remain the default base, including paged packed style
@@ -98,6 +98,15 @@ sources; client rules override only assigned channels unless the host selects
 complete [client data-view contract](./CLIENT_DATA_VIEW.md), including typed
 AST examples, application query adapters, persistence callbacks, arbitrary
 metadata columns, state synchronization, performance behavior, and demo flows.
+
+Use this optional API for repeated exploration of large loaded datasets without
+refetching and rebuilding source buffers on every edit. Start with the
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md)
+for controller updates, persistence, worker setup, and disposal, and the
+[README diagram](../../README.md#optional-client-side-data-views) for the architecture.
+GPU source coordinates remain resident; visibility and changed derived
+coordinates/styles still require updates. Rules evaluate in TypeScript, with an
+optional module worker. Streaming append requires omitting the binding.
 
 The WebGPU entry point is a superset of the `m-scatter` entry point. Existing
 WebGL2 imports can therefore switch the module path while retaining the same
@@ -553,3 +562,13 @@ See [CLIENT_DATA_VIEW.md](./CLIENT_DATA_VIEW.md#residency-and-release-validation
 for mask residency, source-upload counters, predicate semantics, demo controls and
 the in-app 1M/10M/25M performance fixtures. Histogram masks reuse resident CPU/WASM
 indexes; scatter/parallel masks retain GPU source coordinates.
+
+## Shared demo pipeline panel
+
+The resident WebGPU demos use the same panel header, summary, rule lists,
+diagnostics, and state download/import controls. Reset all clears rules and
+selection, restores dataset styles, and resets the viewport. Keep-inside/outside
+buttons and Alt+I / Alt+O capture source identities and clear the selection.
+
+Scatter retains its selection menu and glyph channels. Transform toggles and
+reordering refit the projected viewport, just like adding or removing transforms.

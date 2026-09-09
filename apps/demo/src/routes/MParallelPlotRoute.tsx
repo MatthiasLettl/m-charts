@@ -112,7 +112,6 @@ import {
   createParallelWebgpuPlot,
   createParallelWebgpuStreamingPlot,
   type ParallelAxisViewports,
-  type ParallelWebgpuDiagnostics,
   type ParallelWebgpuPlotInstance,
   type ParallelWebgpuStreamProgress,
   type ParallelWebgpuStreamSource,
@@ -251,7 +250,7 @@ interface ParallelFastBrushHookSelector {
 interface ParallelFastBrushHooks {
   clearBrushes: () => void;
   getTableMode: () => FastRouteTableMode;
-  getWebgpuDiagnostics: () => ParallelWebgpuDiagnostics | null;
+  getWebgpuDiagnostics: () => ReturnType<ParallelWebgpuPlotInstance['getWebgpuDiagnostics']> | null;
   getHoverIndexState: () => string;
   getInspection: () => ParallelFastInspectionState | null;
   getLineOpacityScale: () => number;
@@ -276,7 +275,7 @@ interface ParallelFastRoutePlotHandle {
     brushIntervals: ParallelBrushIntervals,
     source?: string,
   ) => void;
-  getWebgpuDiagnostics: () => ParallelWebgpuDiagnostics | null;
+  getWebgpuDiagnostics: () => ReturnType<ParallelWebgpuPlotInstance['getWebgpuDiagnostics']> | null;
   requestLineOpacityAdjustment: (
     adjustment: ParallelLineOpacityAdjustment,
   ) => void;
@@ -396,6 +395,7 @@ export function MParallelPlotRoute({
   const selectionStateRef = useRef(selectionState);
   const inspectionStateRef = useRef(inspectionState);
   const chartHandleRef = useRef<ParallelFastRoutePlotHandle | null>(null);
+  const [clientUploads, setClientUploads] = useState<{ sourceUploadBytes: number; viewUploadBytes: number }>();
   const [clientSelectedIndices, setClientSelectedIndices] = useState<Uint32Array>(new Uint32Array(0));
   const selectedSourceIndicesRef = useRef<Uint32Array<ArrayBufferLike>>(
     new Uint32Array(0),
@@ -937,6 +937,11 @@ export function MParallelPlotRoute({
   }, [baseReadyBuffers, rendererBackend]);
 
   const handleRendererMetricsChange = (event: ParallelFastRendererMetricsEvent) => {
+    const clientDiagnostics = chartHandleRef.current?.getWebgpuDiagnostics()?.clientView;
+    setClientUploads(clientDiagnostics === undefined ? undefined : {
+      sourceUploadBytes: clientDiagnostics.sourceUploadBytes,
+      viewUploadBytes: clientDiagnostics.viewUploadBytes,
+    });
     setDiagnostics((currentDiagnostics) => ({
       ...currentDiagnostics,
       densityBlendMode:
@@ -1701,7 +1706,15 @@ export function MParallelPlotRoute({
                 </button>
               </div>
             </section>
-            {clientViewBinding && <ClientViewControls view={clientViewBinding.view} selectedSourceIndices={clientSelectedIndices} />}
+            {clientViewBinding && <ClientViewControls chart="parallel" view={clientViewBinding.view} selectedSourceIndices={clientSelectedIndices}
+              uploads={clientUploads}
+              onApplied={(action) => {
+                if (action === 'reset' || action === 'selection' || action === 'import') {
+                  handleClearSelection();
+                  setClientSelectedIndices(new Uint32Array(0));
+                }
+                if (action === 'reset' || action === 'transformation' || action === 'import') chartHandleRef.current?.resetAxisViewports();
+              }} />}
             <section className="control-section">
               <details className="control-disclosure route-advanced-diagnostics">
                 <summary>

@@ -17,7 +17,7 @@ histogram contract and switch the constructor entry point.
 
 ## Source-Copy Imports
 
-For public source-copy integration, copy `plot-engine` plus
+For public source-copy integration, copy `plot-engine` and `client-data-view` plus
 `m-histogram/core` and `m-histogram/engine` into the host app. Add
 `m-histogram/adapters` or `m-histogram/react` only when the host uses those
 optional helpers. Import from copied `core` and `engine` paths:

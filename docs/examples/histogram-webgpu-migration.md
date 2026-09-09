@@ -6,11 +6,17 @@ add:
 
 ```text
 packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
 packages/m-charts/src/m-histogram-webgpu/adapters -> src/vendor/m-charts/m-histogram-webgpu/adapters # live streams only
 ```
+
+The shared `client-data-view` folder is required by current chart core exports.
+Enabling the pipeline remains optional; see the
+[resident client-view example](client-data-view-source-copy.md) before adding
+`clientView`. Its binding cannot be forwarded to the WebGL2 fallback below.
 
 The shared `plot-engine-webgpu` copy includes the embedded aggregation WASM
 binary. Add `@webgpu/types` to the host TypeScript configuration when its DOM

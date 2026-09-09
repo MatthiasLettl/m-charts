@@ -1659,6 +1659,19 @@ export function MHistogramPlotRoute({
       return;
     }
 
+    // A transformed field may be far outside the original viewport. Seed the
+    // aggregation from the complete resident domain before fitting its bins.
+    const fitSeed = { subplotById: { ...cloneHistogramViewport(resetSeed).subplotById } };
+    if (clientViewBinding !== undefined) {
+      for (const subplot of plot.commands.getStateSnapshot().aggregation.subplots) {
+        const domain = subplot.domain;
+        const previous = fitSeed.subplotById[subplot.subplotId];
+        if (domain !== undefined && previous !== undefined) {
+          const padding = Math.max(domain.max - domain.min, 1) * 0.05;
+          fitSeed.subplotById[subplot.subplotId] = { ...previous, x: { min: domain.min - padding, max: domain.max + padding } };
+        }
+      }
+    }
     cancelPendingViewportWrite();
     cancelPendingViewportReconcile();
     viewportHistoryRef.current = [];
@@ -1667,7 +1680,7 @@ export function MHistogramPlotRoute({
     lastViewportApplySourceRef.current = 'reset';
     plot.update({
       focusedSubplotId: null,
-      viewport: resetSeed,
+      viewport: fitSeed,
     });
     const fullAggregation = plot.commands.getStateSnapshot().aggregation;
     const defaultViewport = createDefaultHistogramViewport(fullAggregation);
@@ -1691,7 +1704,7 @@ export function MHistogramPlotRoute({
       }
       return nextParams;
     });
-  }, [cancelPendingViewportReconcile, cancelPendingViewportWrite, setSearchParams]);
+  }, [cancelPendingViewportReconcile, cancelPendingViewportWrite, clientViewBinding, setSearchParams]);
 
   const handleRouteLevelMiddleUndo = useCallback(() => {
     window.setTimeout(() => {
@@ -2137,12 +2150,6 @@ export function MHistogramPlotRoute({
                 </div>
               </div>
             </section>
-            {clientViewBinding && <ClientViewControls view={clientViewBinding.view} selectedSourceIndices={selection?.sourceIndices ?? []} onApplied={() => {
-              const next = plotRef.current?.commands.getStateSnapshot();
-              setSnapshot(next ?? null);
-              if (!next?.selectedSourceIndices.length) setSelection(null);
-              if (next?.hover == null) setHover(null);
-            }} />}
             <InteractionCheatSheet
               groups={HISTOGRAM_SHORTCUT_GROUPS}
               tryItems={HISTOGRAM_TRY_THIS_ITEMS}
@@ -2187,6 +2194,17 @@ export function MHistogramPlotRoute({
               </button>
               <p className="histogram-fast-export-status">{exportStatus}</p>
             </section>
+            {clientViewBinding && <ClientViewControls chart="histogram" view={clientViewBinding.view} selectedSourceIndices={selection?.sourceIndices ?? []}
+              selectedCount={selection?.selectedSourceCount ?? 0}
+              resolveSelectedSourceIndices={() => plotRef.current?.commands.materializeSelectionSourceIndices()?.sourceIndices ?? []}
+              onApplied={(action) => {
+              if (action === 'reset' || action === 'selection' || action === 'import') clearSelection();
+              if (action === 'reset' || action === 'transformation' || action === 'import') resetViewport();
+              const next = plotRef.current?.commands.getStateSnapshot();
+              setSnapshot(next ?? null);
+              if (!next?.selectedSourceIndices.length) setSelection(null);
+              if (next?.hover == null) setHover(null);
+            }} />}
             <section className="control-section">
               <details className="control-disclosure route-advanced-diagnostics">
                 <summary>

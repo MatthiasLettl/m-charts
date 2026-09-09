@@ -59,6 +59,8 @@ when integrating into another application.
   coordinates. Hover first follows that exact detail geometry, then falls back
   to a coalesced full-population GPU lookup for visible aggregate or overflow
   segments that have no nearby detail line.
+- Optional [client-side filtering, transformations, and styling](#optional-client-side-data-views)
+  over resident datasets, avoiding repeated source loads/uploads during exploration.
 - Typed-array data contracts for high-volume rendering and selection flows.
 - Framework-neutral `core` and `engine` modules with optional React helpers.
 - Imperative lifecycle: create a plot in a DOM host, call `update(...)`, invoke
@@ -85,6 +87,54 @@ Existing WebGL2 scatter integrations can keep WebGL2 as a compatibility
 fallback while adopting WebGPU. See
 [Migrating An Existing WebGL2 Scatter](docs/source-copy-integration.md#migrating-an-existing-webgl2-scatter)
 for source-copy and workspace-package examples.
+
+## Optional Client-Side Data Views
+
+Use a client data view when users repeatedly filter, transform, or restyle the
+same loaded dataset. It is especially useful for large datasets: retaining the
+source avoids a server round trip, decoding a replacement result, and rebuilding
+source buffers on every interaction, helping keep exploration latency low.
+The API is optional; omit `clientView` to keep the existing chart workflow.
+
+![Optional client pipeline: the host loads a resident dataset, edits source filters, ordered transforms, result filters and styles, and charts reuse source storage while updating visibility and derived rendering data.](docs/client-data-view-architecture.svg)
+
+The shared controller supports typed JSON predicates, affine/difference and
+calculated fields, conditional styles, and versioned state for persistence or
+synchronization. Source filters run before ordered transformations, followed by
+post-transform filters and styles. Source styles are preserved by default;
+selection becomes a filter only when the host explicitly applies that action.
+
+| WebGPU chart | Create the controller | Rendered style channels |
+| --- | --- | --- |
+| Scatter | `createFastScatterClientDataView({ columns })` | Color, opacity, size, shape, rotation |
+| Parallel coordinates | `createParallelClientDataView({ buffers })` | Color, opacity |
+| Raw histogram | `createHistogramClientDataView({ columns })` | Color, opacity |
+
+Pass the controller as `clientView: { view }` when creating the plot, then edit
+it through `view.addFilter(...)`, `view.addTransformation(...)`, and
+`view.addStyle(...)`. Attached charts redraw automatically; do not rebuild
+filtered source arrays or replace the plot for each rule edit.
+
+Scatter and parallel keep GPU source coordinates resident and update visibility
+and changed derived coordinates/styles. Histograms reuse CPU/WASM source columns
+and sorted indexes, reaggregate affected bins, and upload resulting bar geometry.
+The shared rule evaluator runs in TypeScript, with an optional module worker;
+GPU buffer reuse does not eliminate CPU evaluation or derived uploads. Measure
+representative pipelines on your target devices.
+
+A view operates only on fully loaded resident rows. Streaming append and
+pre-aggregated histogram bars do not support this binding. To change source
+row identities/order, recreate both view and plot; same-row metadata can be
+replaced with `view.updateFields(...)`. Your app owns loading, server-only query
+clauses, UI, and persistence.
+
+Follow the [complete source-copy example](docs/examples/client-data-view-source-copy.md)
+for filters, a calculated field, styles, updates, saved state, and cleanup.
+See the [API guide](packages/m-charts/CLIENT_DATA_VIEW.md) for worker setup,
+field mappings, selection-to-filter actions, and diagnostics, or the
+[agent integration guide](packages/m-charts/llms.md#client-data-view-integration-checklist).
+Try the resident `/m-scatter-webgpu`, `/m-parallel-webgpu`, and
+`/m-histogram-webgpu` demos for editable pipelines and JSON import/export.
 
 ## Architecture
 
@@ -184,10 +234,13 @@ For the detailed integration reference, see
 
 ## Quick Source-Copy Shape
 
-Copy `packages/m-charts/src/plot-engine` plus the chart `core` and `engine`
-folders you need into a host application, for example `src/vendor/m-charts`.
-Add `adapters`, scatter `workers`, or chart `react` folders only when the host
-uses those optional helpers. Then rewrite package imports to local imports:
+Copy `packages/m-charts/src/plot-engine` and `packages/m-charts/src/client-data-view`
+plus the chart `core` and `engine` folders you need into a host application,
+for example `src/vendor/m-charts`.
+The entire `client-data-view` folder is a source dependency even when the
+pipeline is omitted. Add `adapters`, scatter `workers`, or chart `react` folders
+only when the host uses those optional helpers. Then rewrite package imports
+to local imports:
 
 ```ts
 import { createScatterPlot } from './vendor/m-charts/m-scatter/engine/index.js';
@@ -334,41 +387,6 @@ folders, change the engine import to
 copy-ready migration and fallback example is
 [docs/examples/scatter-webgpu-migration.md](docs/examples/scatter-webgpu-migration.md).
 
-WebGPU scatter may also attach a `createFastScatterClientDataView(...)`
-controller for resident typed filters, filter-before-transform calculations,
-and computed styles. Source data stays resident; hosts own query-language
-conversion, selection-to-filter actions, persistence, and synchronization. See
-[CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md).
-
-Client views reuse unchanged filter/transform/style stages and derived GPU
-buffers. Subscriber errors are isolated and can be handled with
-`onListenerError(error, event)`; configuration getters are read-only snapshots.
-Unmatched style rules retain source or theme defaults, including theme updates.
-
-The WebGPU scatter demo includes configurable linear/difference transforms,
-independent computed style channels with all five glyphs, and a popup after
-rectangle/lasso selection for keeping inside or outside rows. Selection filters
-preserve source-row identity across transforms and can be removed individually.
-
-WebGPU parallel coordinates and raw histograms support the same optional client
-pipeline through `createParallelClientDataView({ buffers })` and
-`createHistogramClientDataView({ columns })`, passed as `clientView: { view }`.
-Filters preserve source identities, transformations update chart coordinates,
-and color/opacity rules preserve dataset styling by default. Their resident
-demos include configurable controls, selection-to-filter actions, reset, and
-JSON state import/export. Omitting the binding preserves existing data updates,
-streaming and bar-mode behavior. See [CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md)
-for binding mappings, lifecycle, supported channels and backend behavior.
-
-
-Client views also support source/post-transform filter stages, field comparisons,
-text predicates, and typed calculation expressions (arithmetic, text, null handling,
-and conditions). Existing styles and semantic category/boolean/datetime fields are
-preserved. Optional worker evaluation keeps costly edits off the UI thread;
-`updateFields` replaces same-row metadata, and content fingerprints protect saved
-state from same-size dataset mismatches. Histogram specs remain mutable for
-resident parameters. See [Client data views](packages/m-charts/CLIENT_DATA_VIEW.md).
-
 ### Histogram
 
 ```ts
@@ -513,6 +531,7 @@ is not part of the reusable package source.
 
 ```text
 packages/m-charts/src/plot-engine
+packages/m-charts/src/client-data-view
 packages/m-charts/src/plot-engine-webgpu
 packages/m-charts/src/m-scatter
 packages/m-charts/src/m-scatter-webgpu
@@ -539,6 +558,7 @@ Package notes:
 - [packages/m-charts/HISTOGRAM_WEBGPU.md](packages/m-charts/HISTOGRAM_WEBGPU.md)
 - [packages/m-charts/PARALLEL.md](packages/m-charts/PARALLEL.md)
 - [packages/m-charts/PARALLEL_WEBGPU.md](packages/m-charts/PARALLEL_WEBGPU.md)
+- [packages/m-charts/CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md)
 - [packages/m-charts/llms.md](packages/m-charts/llms.md)
 - [docs/adding-visualization-type.md](docs/adding-visualization-type.md)
 
@@ -589,6 +609,22 @@ pnpm typecheck
 pnpm lint
 ```
 
+### Client pipeline release checks
+
+Client filters remain a generic AST; application query parsing stays outside the
+library. Scatter interaction filtering and histogram aggregation consume row masks
+without copying source coordinate columns. Histogram retains sorted indexes across
+filter/style edits; scatter theme changes retain GPU source buffers. Difference
+overflow becomes a missing value. All three demos support pipeline import/export,
+rule enable/reorder, and style presets over the selected base.
+
+Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
+actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
+The same browser fixtures can be opened in the in-app browser; see
+[Client data views](packages/m-charts/CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
+GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
+client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.
+
 ## Issues
 
 Issues can be opened at any time for bugs, documentation gaps, integration
@@ -606,19 +642,26 @@ instructions.
 
 MIT. See [LICENSE](LICENSE).
 
+## Demo pipeline controls
 
-### Client pipeline release checks
+The resident WebGPU scatter, histogram, and parallel demos share the pipeline
+panel, row/rule summary, rule controls, diagnostics, and state download/import.
+Range/category/boolean/text presets and affine/difference transforms update their
+existing rule; calculations and style presets append rules. Histogram and
+parallel keep separate numeric-field controls, including source/result range
+bounds and difference ordering. Scatter retains its glyph channels and selection
+menu; histogram and parallel expose color and opacity.
 
-Client filters remain a generic AST; application query parsing stays outside the
-library. Scatter interaction filtering and histogram aggregation consume row masks
-without copying source coordinate columns. Histogram retains sorted indexes across
-filter/style edits; scatter theme changes retain GPU source buffers. Difference
-overflow becomes a missing value. All three demos support pipeline import/export,
-rule enable/reorder, and style presets over the selected base.
+Keep-inside/outside actions (Alt+I / Alt+O outside editable controls) freeze source
+row identities and clear the selection after applying. Reset all clears pipeline
+rules and selection, restores dataset styling, and resets the chart viewport.
+Transform edits and successful imports fit the chart's projected values; histogram
+fits the complete resident domain before calculating the visible bins.
 
-Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
-actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
-The same browser fixtures can be opened in the in-app browser; see
-`packages/m-charts/CLIENT_DATA_VIEW.md` for URLs, metrics, budgets and limitations.
-GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
-client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.
+Run the UI regression checks with:
+
+```sh
+M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e tests/e2e/clientPipelineControls.spec.ts --workers=1
+```
+
+Set `M_CHARTS_E2E_PORT` to use a different test-server port when 5176 is occupied.

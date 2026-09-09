@@ -30,12 +30,65 @@ The demo routes in `apps/demo` are integration examples, not the library API.
 Routes own React state, URL state, side panels, exports, popovers, diagnostics,
 generated data loading, and host-specific product policy.
 
+## Client Data View Integration Checklist
+
+Use the optional client API for repeated filtering, transformations, and styling
+of a fully loaded dataset, especially when large source uploads or server round
+trips would dominate interaction latency. Discover it through the
+[README overview and diagram](../../README.md#optional-client-side-data-views),
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md),
+and [Client Data Views reference](CLIENT_DATA_VIEW.md).
+
+1. Copy `src/client-data-view` alongside the shared plot-engine and chart slices.
+   Current core exports need it even without a binding. For workspace imports,
+   shared APIs/types live in `m-charts/client-data-view`; the worker has its own
+   `m-charts/client-data-view/worker` entry.
+2. Use `createFastScatterClientDataView({ columns })`,
+   `createParallelClientDataView({ buffers })`, or
+   `createHistogramClientDataView({ columns })` from the chart's WebGPU entry.
+   Attach `clientView: { view }` at creation; mutate the view to redraw. Avoid
+   rebuilding filtered source arrays or calling `plot.update({ columns })` on
+   every rule edit. Omitting the binding preserves existing chart workflows.
+3. Use the actual field names: scatter `xKey ?? 'x'` and Y keys, parallel axis
+   keys, histogram `valuesByParameter` keys. Supply extra metadata in `fields`,
+   aligned to source rows. Create derived fields before binding chart mappings.
+   Source filters run before ordered transforms; `stage: 'transformed'` filters
+   run afterward, then ordered styles. Later rules override assigned channels.
+4. Use complete items for `updateFilter`, `updateTransformation`, and
+   `updateStyle` (including ID and filter stage), not partial patches. Disable
+   via `{ ...item, enabled: false }`. Reorder with every stage ID exactly once.
+   Restore a saved `exportState()` with `replaceState` to reset. There is no
+   `view.reset()`. Change `sourceStyleMode` through initial state or replacement
+   state. Default `preserve` keeps source styles; `ignore` uses theme defaults.
+5. The evaluator is TypeScript, not GPU/WASM filter execution. Scatter/parallel
+   retain GPU source coordinates and upload masks/changed derived buffers;
+   histogram retains CPU/WASM columns/indexes, reaggregates bins, and uploads
+   bar geometry. Source filters can change difference neighbors and invalidate
+   transforms. Zero source-upload bytes does not imply zero work or zero uploads.
+6. For expensive edits, configure a dedicated module-worker evaluator and await
+   `batchAsync`/`replaceStateAsync`. Ordinary setters still run synchronously;
+   the batch callback must be synchronous. A `false` result means superseded.
+   Worker copies add memory; initial decoding and projection/upload preparation
+   still involve the main thread. Committed state is not a settled GPU frame;
+   use chart diagnostics before capture or timing.
+7. Keep row identities/order immutable. For new data, dispose/recreate both plot
+   and view. Use `updateFields` only for same-row fields. Give persisted state a
+   content/order-aware `datasetVersion` or opt into `fingerprint: true`.
+   `clientView` is unavailable for WebGL2 rendering, streaming append, and
+   pre-aggregated histogram bars. Do not pass it through a WebGL2 fallback.
+8. Subscribe to `view.on('change', ...)` for all commits, including batch/import
+   events; stage-specific events only cover individual-stage mutations. Host
+   apps own persistence/transports and selection-to-filter actions. After
+   transforms, prefer exact source-row membership over source-space geometry.
+   Dispose attached plots before `view.dispose()` (which releases its worker).
+
 ## Source Layout
 
 Reusable package source lives under:
 
 ```text
 packages/m-charts/src/plot-engine/core
+packages/m-charts/src/client-data-view
 packages/m-charts/src/plot-engine-webgpu/core
 packages/m-charts/src/m-scatter/core
 packages/m-charts/src/m-scatter/engine
@@ -105,7 +158,7 @@ For the supported external source-copy path:
 
 The WebGL2-only creation fields `forceWebglUnavailable`,
 `preserveDrawingBuffer`, and `rendererFactory` are accepted and ignored by the
-WebGPU factory. WebGPU adds the creation-only `aggregationBackend`,
+WebGPU factory. WebGPU adds the creation-only `aggregationBackend`, `clientView`,
 `indexedStyle`, `packedStyles`, and `requestTimestampQuery` options; recreate
 the plot to change them. The command surface is retained, including
 renderer-owned `playEasterEgg()` playback on both backends. The full human guide
@@ -1095,8 +1148,8 @@ Configuration getters return frozen snapshots; `exportState()` returns a detache
 editable copy. Supply `onListenerError(error, event)` at view creation to handle
 subscriber failures (default: console.error). Errors never stop other subscribers
 or roll back committed state; reentrant notifications preserve revision order.
-The synchronous evaluator caches unchanged stages. Style-only edits reuse masks,
-transformed coordinates, and masked interaction columns; GPU updates reuse those
+The synchronous evaluator caches unchanged stages. Style-only edits reuse
+visibility masks and transformed coordinate arrays; GPU updates reuse those
 buffers and coalesce rapid revisions. Use one `replaceState` to batch related
 edits, or configure `asyncEvaluator: createClientDataViewWorkerEvaluator(worker)`
 and await `batchAsync(() => { /* ordinary setters */ })` / `replaceStateAsync`.
@@ -1129,7 +1182,7 @@ report `styleSource` as `source`, `client-composed`, or `client-only`.
 projection. Wait for `pending === false` and `cacheReady === true` before
 inspecting a newly requested frame (then allow browser presentation). Hashed
 category color depends only on the category value. See
-`CLIENT_DATA_VIEW.md` for exact types, examples, ordering, packed-style
+[CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md) for exact types, examples, ordering, packed-style
 composition, performance, diagnostics, and demo behavior.
 
 Core capabilities:
@@ -2979,6 +3032,30 @@ rule enable/reorder, and style presets over the selected base.
 Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
 actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
 The same browser fixtures can be opened in the in-app browser; see
-`packages/m-charts/CLIENT_DATA_VIEW.md` for URLs, metrics, budgets and limitations.
+[CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
 GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
 client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.
+
+## Demo pipeline controls
+
+The resident WebGPU scatter, histogram, and parallel demos share the pipeline
+panel, row/rule summary, rule controls, diagnostics, and state download/import.
+Range/category/boolean/text presets and affine/difference transforms update their
+existing rule; calculations and style presets append rules. Histogram and
+parallel keep separate numeric-field controls, including source/result range
+bounds and difference ordering. Scatter retains its glyph channels and selection
+menu; histogram and parallel expose color and opacity.
+
+Keep-inside/outside actions (Alt+I / Alt+O outside editable controls) freeze source
+row identities and clear the selection after applying. Reset all clears pipeline
+rules and selection, restores dataset styling, and resets the chart viewport.
+Transform edits and successful imports fit the chart's projected values; histogram
+fits the complete resident domain before calculating the visible bins.
+
+Run the UI regression checks with:
+
+```sh
+M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e tests/e2e/clientPipelineControls.spec.ts --workers=1
+```
+
+Set `M_CHARTS_E2E_PORT` to use a different test-server port when 5176 is occupied.

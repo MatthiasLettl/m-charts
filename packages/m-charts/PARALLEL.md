@@ -14,7 +14,7 @@ formatting helpers.
 
 ## Source-Copy Imports
 
-For public source-copy integration, copy `plot-engine` plus
+For public source-copy integration, copy `plot-engine` and `client-data-view` plus
 `m-parallel/core` and `m-parallel/engine` into the host app. Add
 `m-parallel/adapters` or `m-parallel/react` only when the host uses those
 optional helpers. Import from copied `core` and `engine` paths:

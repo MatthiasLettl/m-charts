@@ -1,3 +1,4 @@
+import { ClientPipelinePanel, ClientPipelineState, ClientViewItemList } from '../components/ClientPipelinePanel';
 import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import {
   startTransition,
@@ -897,7 +898,6 @@ export function MScatterPlotRoute({
   useDisposeClientView(clientView);
   const [clientMutationError, setClientMutationError] = useState('');
   const [clientPending, setClientPending] = useState(false);
-  const [clientImportText, setClientImportText] = useState('');
   const [clientTextQuery, setClientTextQuery] = useState('');
   const applyClientMutation = useCallback(async (action: () => void) => {
     setClientPending(true);
@@ -952,11 +952,6 @@ export function MScatterPlotRoute({
     : clientViewSnapshot?.view === clientView
       ? clientViewSnapshot.state
       : clientView.getState();
-  const clientViewStatePreview = useMemo(() => JSON.stringify(clientViewState,
-    (_key, value: unknown) => Array.isArray(value) && value.length > 200
-      ? [...value.slice(0, 200), `… ${value.length - 200} more entries`] : value,
-    2,
-  ), [clientViewState]);
   const clientViewEvaluation = useMemo(
     () => clientView === null || clientViewState === null ? null : clientView.evaluate(),
     [clientView, clientViewState],
@@ -3584,36 +3579,12 @@ export function MScatterPlotRoute({
             {rendererBackend !== 'webgpu' || clientView === null || clientViewState === null
               ? null
               : (
-                <section
-                  className="control-section scatter-client-view-panel"
-                  data-testid="scatter-client-view-panel"
-                >
-                  <fieldset disabled={clientPending} style={{ border: 0, padding: 0, margin: 0 }}>
-                  {clientPending && <p role="status">Applying pipeline…</p>}
-                  <div className="control-section-heading-row">
-                    <div>
-                      <h2>Client data pipeline</h2>
-                      <p className="compact-note">
-                        Filters, transformations, and styles run locally over resident data.
-                      </p>
-                    </div>
-                    <button onClick={resetClientView} type="button">Reset all</button>
-                  </div>
-
-                  <div className="scatter-client-view-summary" aria-label="Client pipeline summary">
-                    <span>{formatCount(clientViewEvaluation?.metrics.activeRowCount ?? 0)} visible</span>
-                    {clientMutationError && <p role="alert">{clientMutationError}</p>}
-                    <span>{clientViewState.filters.length} filters</span>
-                    <span>{clientViewState.transformations.length} transforms</span>
-                    <span>{clientViewState.styles.length} styles</span>
-                    <span data-testid="client-view-style-source">
-                      {clientViewState.sourceStyleMode === 'ignore' ? 'Theme base' : 'Dataset base'}
-                    </span>
-                  </div>
-
-                  <details className="control-disclosure" open>
-                    <summary>Filters</summary>
-                    <div className="control-disclosure-body">
+                <ClientPipelinePanel
+                  testId="scatter-client-view-panel"
+                  state={clientViewState}
+                  visibleRows={clientViewEvaluation?.metrics.activeRowCount ?? 0}
+                  pending={clientPending} error={clientMutationError} onReset={resetClientView}
+                  filters={<>
                       <p className="compact-note">Right-drag a selection to open keep-inside / keep-outside actions. Filters combine; remove a rule to restore rows. Choose original or transformed values for the numeric range.</p>
                       <label>Filter values<select aria-label="Filter stage" value={clientFilterStage} onChange={(event) => setClientFilterStage(event.target.value as typeof clientFilterStage)}><option value="source">Before transformations</option><option value="transformed">After transformations</option></select></label>
                       <div className="button-row scatter-client-view-actions">
@@ -3673,13 +3644,9 @@ export function MScatterPlotRoute({
                         }); }}
                         onRemove={(id) => { void applyClientMutation(() => clientView.removeFilter(id)); }}
                       />
-                    </div>
-                  </details>
-
-                  <details className="control-disclosure">
-                    <summary>Transformations</summary>
-                    <div className="control-disclosure-body">
-                      <p className="compact-note">Numeric axis: {clientViewNumericPlot?.yKey ?? 'unavailable'}. Applied in the order listed below, after filtering.</p>
+                  </>}
+                  transformations={<>
+                      <p className="compact-note">Numeric axis: {clientViewNumericPlot?.yKey ?? 'unavailable'}. Applied in the order listed, between source and result filters.</p>
                       <div className="scatter-client-inputs">
                         <label>Scale factor<input type="number" step="any" value={affineFactor} onChange={(event) => setAffineFactor(event.target.value)} /></label>
                         <label>Offset<input type="number" step="any" value={affineOffset} onChange={(event) => setAffineOffset(event.target.value)} /></label>
@@ -3706,22 +3673,18 @@ export function MScatterPlotRoute({
                       <button type="button" disabled={clientViewNumericPlot === null} onClick={applyClientCalculation}>Apply calculation</button>
                       <ClientViewItemList
                         items={clientViewState.transformations}
-                        onToggle={(id, enabled) => { void applyClientMutation(() => clientView.replaceState({ ...clientView.exportState(), transformations: clientView.getState().transformations.map((item) => item.id === id ? { ...item, enabled } : item) })); }}
+                        onToggle={(id, enabled) => { void applyClientMutation(() => clientView.replaceState({ ...clientView.exportState(), transformations: clientView.getState().transformations.map((item) => item.id === id ? { ...item, enabled } : item) })).then((applied) => { if (applied) fitClientViewViewport(); }); }}
                         onMove={(id, direction) => { void applyClientMutation(() => {
                           const items = [...clientView.getState().transformations]; const index = items.findIndex((item) => item.id === id);
                           const other = index + direction;
                           if (other < 0 || other >= items.length) return;
                           [items[index], items[other]] = [items[other]!, items[index]!];
                           clientView.replaceState({ ...clientView.exportState(), transformations: items });
-                        }); }}
+                        }).then((applied) => { if (applied) fitClientViewViewport(); }); }}
                         onRemove={removeClientTransformation}
                       />
-                    </div>
-                  </details>
-
-                  <details className="control-disclosure">
-                    <summary>Styles</summary>
-                    <div className="control-disclosure-body">
+                  </>}
+                  styles={<>
                       <div>
                         <p className="compact-note">Base styling</p>
                         <div
@@ -3786,40 +3749,12 @@ export function MScatterPlotRoute({
                         }); }}
                         onRemove={(id) => { void applyClientMutation(() => clientView.removeStyle(id)); }}
                       />
-                    </div>
-                  </details>
-
-                  <details className="control-disclosure">
-                    <summary>Pipeline diagnostics and state</summary>
-                    <div className="control-disclosure-body">
-                      <dl className="diagnostic-list">
-                        <div><dt>Revision</dt><dd data-testid="client-view-revision">{clientViewState.revision}</dd></div>
-                        <div><dt>Resident rows</dt><dd>{formatCount(clientViewEvaluation?.metrics.rowCount ?? 0)}</dd></div>
-                        <div><dt>Visible rows</dt><dd data-testid="client-view-visible-count">{formatCount(clientViewEvaluation?.metrics.activeRowCount ?? 0)}</dd></div>
-                        <div><dt>Evaluation</dt><dd>{formatDuration(clientViewEvaluation?.metrics.durationMs ?? null)}</dd></div>
-                        <div><dt>Evaluator backend</dt><dd>{clientViewEvaluation?.metrics.backend ?? 'pending'}</dd></div>
-                        <div><dt>Source re-upload</dt><dd data-testid="client-view-source-upload">{formatBytes(rendererMetrics.upload?.sourceUploadBytes ?? 0)}</dd></div>
-                        <div><dt>View upload</dt><dd data-testid="client-view-view-upload">{formatBytes(rendererMetrics.upload?.viewUploadBytes ?? 0)}</dd></div>
-                        <div><dt>Network refetch</dt><dd data-testid="client-view-network-refetch">none</dd></div>
-                      </dl>
-                      <p className="compact-note">State preview limits long arrays to 200 entries. Download includes the complete state.</p>
-                      <button type="button" onClick={() => {
-                        const url = URL.createObjectURL(new Blob([JSON.stringify(clientView.exportState(), null, 2)], { type: 'application/json' }));
-                        const link = document.createElement('a');
-                        link.href = url;
-                        link.download = 'scatter-client-view.json';
-                        link.click();
-                        setTimeout(() => URL.revokeObjectURL(url), 0);
-                      }}>Download pipeline state</button>
-                      <label>Import state JSON<textarea aria-label="Import client state JSON" value={clientImportText} onChange={(event) => setClientImportText(event.target.value)} /></label>
-                      <button type="button" disabled={!clientImportText.trim()} onClick={() => { void applyClientMutation(() => clientView.replaceState(JSON.parse(clientImportText) as ClientDataViewState)).then((applied) => { if (applied) fitClientViewViewport(); }); }}>Import state</button>
-                      <pre className="compact-code-block" data-testid="client-view-state-json">
-                        <code>{clientViewStatePreview}</code>
-                      </pre>
-                    </div>
-                  </details>
-                  </fieldset>
-                </section>
+                  </>}
+                  diagnostics={<ClientPipelineState view={clientView} state={clientViewState}
+                    metrics={clientViewEvaluation!.metrics} filename="scatter-client-view.json"
+                    uploads={{ sourceUploadBytes: rendererMetrics.upload?.sourceUploadBytes ?? 0, viewUploadBytes: rendererMetrics.upload?.viewUploadBytes ?? 0 }}
+                    onImport={(json) => { void applyClientMutation(() => clientView.replaceState(JSON.parse(json) as ClientDataViewState)).then((applied) => { if (applied) fitClientViewViewport(); }); }} />}
+                />
               )}
             <section className="control-section scatter-fast-debug-panels">
               <details className="control-disclosure route-advanced-diagnostics">
@@ -6169,34 +6104,6 @@ function ClientSelectionMenu({ menu, onDismiss, onKeep }: {
     <button type="button" onClick={() => onKeep('outside')}>Keep outside · remove inside <kbd>Alt+O</kbd></button>
     <button type="button" onClick={onDismiss}>Dismiss</button>
   </div>;
-}
-
-function ClientViewItemList({
-  items,
-  onRemove, onToggle, onMove,
-}: {
-  onToggle: (id: string, enabled: boolean) => void;
-  onMove: (id: string, direction: number) => void;
-  items: readonly { readonly id: string; readonly op?: string; readonly enabled?: boolean }[];
-  onRemove: (id: string) => void;
-}) {
-  if (items.length === 0) {
-    return <p className="compact-note">No rules applied.</p>;
-  }
-  return (
-    <ul className="scatter-client-view-items">
-      {items.map((item, index) => (
-        <li key={item.id}>
-          <label><input type="checkbox" checked={item.enabled !== false} onChange={(event) => onToggle(item.id, event.target.checked)} />{item.id}{item.op === undefined ? '' : ` · ${item.op}`}</label>
-          <button type="button" aria-label={`Move ${item.id} up`} disabled={index === 0} onClick={() => onMove(item.id, -1)}>↑</button>
-          <button type="button" aria-label={`Move ${item.id} down`} disabled={index === items.length - 1} onClick={() => onMove(item.id, 1)}>↓</button>
-          <button aria-label={`Remove ${item.id}`} onClick={() => onRemove(item.id)} type="button">
-            Remove
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 const DEFAULT_WEBGPU_POINT_COUNT = 1_000_000;

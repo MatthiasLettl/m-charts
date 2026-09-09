@@ -26,12 +26,46 @@ The package metadata and exports support local workspace and demo builds. This
 package is private and has no npm publishing or package-release workflow. The
 supported external integration path is source-copy.
 
+## Optional Client-Side Data Views
+
+Attach `clientView: { view }` at WebGPU plot creation to filter, transform, and
+style a fully loaded dataset without refetching or replacing its source buffers.
+This is useful for low-latency exploration of large resident datasets. Omitting
+the option preserves existing data replacement and streaming workflows.
+
+Create the shared controller with `createFastScatterClientDataView({ columns })`,
+`createParallelClientDataView({ buffers })`, or
+`createHistogramClientDataView({ columns })` from the corresponding WebGPU entry.
+Edit it with `addFilter`, `addTransformation`, and `addStyle`; charts subscribe
+and redraw automatically. The pipeline applies source filters, ordered
+transformations, post-transform filters, then styles. Export/import versioned
+JSON state for application-owned persistence and synchronization.
+
+Scatter and parallel reuse GPU source coordinates; edits update visibility and
+changed derived buffers. Raw histograms reuse CPU/WASM columns and indexes,
+reaggregate affected bins, and upload bar geometry. Rule evaluation is TypeScript
+with an optional module worker, so residency reduces source-transfer costs but
+does not remove evaluation, allocation, or derived-upload costs. Source styling
+is the default base; scatter renders all five style channels, parallel and
+histogram render color/opacity.
+
+The binding requires complete resident rows and excludes streaming append and
+pre-aggregated bars. Recreate view and plot for a new dataset; use `updateFields`
+for same-row metadata. Dispose plots before the controller.
+
+See the [architecture overview](../../README.md#optional-client-side-data-views),
+[complete source-copy example](../../docs/examples/client-data-view-source-copy.md),
+and [client data-view API guide](CLIENT_DATA_VIEW.md) for setup, expressions,
+worker evaluation, lifecycle, performance, and diagnostics.
+
 ## Source-Copy Setup
 
-For another app, copy the shared plot engine plus the framework-neutral chart
-folders you need:
+For another app, copy the shared plot engine, the entire `client-data-view`
+folder, and the framework-neutral chart folders you need. Current chart core
+exports depend on `client-data-view` even when its optional pipeline is omitted:
 
 ```text
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine -> src/vendor/m-charts/plot-engine
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-scatter/core   -> src/vendor/m-charts/m-scatter/core
@@ -337,24 +371,6 @@ upload directly and existing 8/12-byte records convert in bounded chunks. See
 [SCATTER_WEBGPU.md](SCATTER_WEBGPU.md) for its precision, packed-buffer,
 selection, profiling, demo, and benchmark contracts.
 
-WebGPU scatter additionally supports an additive resident `clientView` for a
-typed, JSON-serializable filter → transform → style pipeline. It retains source
-GPU buffers, exposes state/callbacks for host persistence and synchronization,
-preserves embedded and paged-packed source styling by default, and leaves chart
-selection application-controlled. See
-[CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md) for the complete API and host adapter
-responsibilities.
-
-Client views reuse unchanged filter/transform/style stages and derived GPU
-buffers. Subscriber errors are isolated and can be handled with
-`onListenerError(error, event)`; configuration getters are read-only snapshots.
-Unmatched style rules retain source or theme defaults, including theme updates.
-
-The WebGPU scatter demo includes configurable linear/difference transforms,
-independent computed style channels with all five glyphs, and a popup after
-rectangle/lasso selection for keeping inside or outside rows. Selection filters
-preserve source-row identity across transforms and can be removed individually.
-
 The WebGPU histogram renders every normalized bin and color-stack segment; it
 does not sample bars. Raw typed columns with explicit domains prefer the shared
 Rust/WASM aggregation binary, while unsupported column/category/color shapes
@@ -407,16 +423,6 @@ When one 32-bit point-index array per subplot is too large, await
 `createFastScatterCompactHoverIndex(columns, { yKeys })`; its byte-sized Y
 filter preserves exact nearest-point results with lower resident memory.
 
-WebGPU parallel coordinates and raw histograms support the same optional client
-pipeline through `createParallelClientDataView({ buffers })` and
-`createHistogramClientDataView({ columns })`, passed as `clientView: { view }`.
-Filters preserve source identities, transformations update chart coordinates,
-and color/opacity rules preserve dataset styling by default. Their resident
-demos include configurable controls, selection-to-filter actions, reset, and
-JSON state import/export. Omitting the binding preserves existing data updates,
-streaming and bar-mode behavior. See [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
-for binding mappings, lifecycle, supported channels and backend behavior.
-
 ## Chart-Specific Docs
 
 - [SCATTER.md](SCATTER.md): scatter plot source layout and exported names.
@@ -428,6 +434,8 @@ for binding mappings, lifecycle, supported channels and backend behavior.
   names.
 - [PARALLEL_WEBGPU.md](PARALLEL_WEBGPU.md): compatible WebGPU/Wasm density,
   selection, hover, zoom, demo, and validation contracts.
+- [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md): optional resident filtering,
+  transformations, styling, worker evaluation, and state persistence.
 - [llms.md](llms.md): detailed integration reference for commands, events,
   overlays, provenance, and performance notes.
 
@@ -451,15 +459,6 @@ pnpm --filter m-charts build
 pnpm --filter m-charts typecheck
 ```
 
-Client views also support source/post-transform filter stages, field comparisons,
-text predicates, and typed calculation expressions (arithmetic, text, null handling,
-and conditions). Existing styles and semantic category/boolean/datetime fields are
-preserved. Optional worker evaluation keeps costly edits off the UI thread;
-`updateFields` replaces same-row metadata, and content fingerprints protect saved
-state from same-size dataset mismatches. Histogram specs remain mutable for
-resident parameters. See [Client data views](CLIENT_DATA_VIEW.md).
-
-
 ### Client pipeline release checks
 
 Client filters remain a generic AST; application query parsing stays outside the
@@ -472,6 +471,6 @@ rule enable/reorder, and style presets over the selected base.
 Before release run `pnpm test:release` on a WebGPU-capable machine. It includes
 actual-GPU regression tests and `pnpm benchmark:client-view` at 1M/10M/25M rows.
 The same browser fixtures can be opened in the in-app browser; see
-`packages/m-charts/CLIENT_DATA_VIEW.md` for URLs, metrics, budgets and limitations.
+[Client data views](CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
 GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
 client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.

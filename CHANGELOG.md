@@ -4,6 +4,31 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Consistent WebGPU demo pipelines
+
+- Shared the scatter-based pipeline panel, summaries, rule lists, diagnostics,
+  and state import/download across all three resident WebGPU demos.
+- Made histogram/parallel preset filters and affine/difference transforms update
+  existing rules, while keeping numeric-field and difference-order controls.
+- Aligned selection actions, Alt+I / Alt+O shortcuts, reset behavior, and transform
+  viewport fitting; fixed histogram fitting after large transformed value shifts.
+- Resolve deferred histogram selection membership when a pipeline keep action
+  needs source indices, so bin selections enable keep-inside/outside immediately.
+- Added browser regressions for repeated edits, rule order, invalid imports,
+  transformed ranges, reset, and theme changes. The E2E server port can now be
+  overridden with `M_CHARTS_E2E_PORT`.
+
+## Client pipeline documentation
+
+- Added a dedicated README overview and architecture diagram explaining the
+  optional client pipeline, large-dataset use cases, and CPU/WASM versus GPU
+  residency and update costs.
+- Added a complete source-copy example for filters, calculations, styles,
+  updates, state persistence/reset, worker setup, and disposal, with links from
+  chart guides and an agent integration checklist.
+- Corrected source-copy dependency instructions and clarified field mappings,
+  complete-item updates, streaming/bar-mode limits, and dataset lifecycle.
+
 ## Client pipeline residency and validation
 
 - Kept scatter GPU source buffers resident during theme updates and added cumulative

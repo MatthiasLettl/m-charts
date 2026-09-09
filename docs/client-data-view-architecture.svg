@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title desc">
+  <title id="title">Optional client-side data views</title>
+  <desc id="desc">The host loads source columns once and edits a JSON view configuration. The optional TypeScript evaluator, on the main thread or in a module worker, applies source filters, ordered transformations, post-transform filters, then styles. Attached WebGPU charts update visibility and changed derived rendering data. Scatter and parallel retain GPU source coordinates; raw histograms reuse CPU/WASM columns and indexes and reaggregate bins. Source data is not refetched for view edits.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10" fill="none" stroke="#243447" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .panel { stroke: #243447; stroke-width: 2; rx: 10; }
+      .title { fill: #111827; font: 700 30px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .heading { fill: #111827; font: 700 21px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .text { fill: #243447; font: 18px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .small { fill: #334155; font: 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .label { fill: #243447; font: 600 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .arrow { fill: none; stroke: #243447; stroke-width: 2.2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="900" fill="#ffffff"/>
+  <text class="title" x="60" y="55">Load once. Explore through an optional client view.</text>
+  <text class="text" x="60" y="86">Keep large datasets resident to avoid repeated source loading and buffer rebuilds.</text>
+
+  <rect class="panel" x="60" y="120" width="520" height="164" fill="#e8f3ff"/>
+  <text class="heading" x="86" y="158">Host application</text>
+  <text class="text" x="86" y="192">Controls, selection actions, saved views</text>
+  <text class="text" x="86" y="222">Edit filters, transformations, and styles</text>
+  <text class="small" x="86" y="254">Owns data loading, query translation, and persistence</text>
+
+  <rect class="panel" x="700" y="120" width="520" height="164" fill="#edf7f8"/>
+  <text class="heading" x="726" y="158">Resident source dataset</text>
+  <text class="text" x="726" y="192">Fully loaded columns + application metadata</text>
+  <text class="text" x="726" y="222">Stable row identities and source order</text>
+  <text class="small" x="726" y="254">View edits do not mutate or refetch source arrays</text>
+
+  <path class="arrow" d="M320 284 V350"/>
+  <text class="label" x="340" y="323">JSON configuration</text>
+  <path class="arrow" d="M960 284 V350"/>
+  <text class="label" x="980" y="323">Source fields</text>
+
+  <rect class="panel" x="60" y="350" width="1160" height="228" fill="#f1edff"/>
+  <text class="heading" x="86" y="388">Client data-view controller</text>
+  <text class="small" x="86" y="416">TypeScript evaluation · main thread by default · optional module worker for async edits</text>
+
+  <rect class="panel" x="86" y="442" width="245" height="106" fill="#ffffff"/>
+  <text class="heading" x="104" y="479">1. Source filters</text>
+  <text class="small" x="104" y="511">Narrow resident rows</text>
+  <path class="arrow" d="M331 495 H372"/>
+
+  <rect class="panel" x="372" y="442" width="245" height="106" fill="#ffffff"/>
+  <text class="heading" x="390" y="479">2. Transformations</text>
+  <text class="small" x="390" y="511">Calculate fields in order</text>
+  <path class="arrow" d="M617 495 H658"/>
+
+  <rect class="panel" x="658" y="442" width="245" height="106" fill="#ffffff"/>
+  <text class="heading" x="676" y="479">3. Result filters</text>
+  <text class="small" x="676" y="511">Test transformed values</text>
+  <path class="arrow" d="M903 495 H944"/>
+
+  <rect class="panel" x="944" y="442" width="250" height="106" fill="#ffffff"/>
+  <text class="heading" x="962" y="479">4. Style rules</text>
+  <text class="small" x="962" y="511">Compose color, size, etc.</text>
+
+  <path class="arrow" d="M640 578 V660"/>
+  <text class="label" x="665" y="610">Visibility + changed derived fields/styles</text>
+  <text class="small" x="665" y="638">Attached charts update automatically</text>
+
+  <rect class="panel" x="60" y="660" width="1160" height="162" fill="#eaf8ef"/>
+  <text class="heading" x="86" y="699">WebGPU charts reuse source storage</text>
+  <text class="text" x="86" y="735">Scatter + parallel coordinates</text>
+  <text class="small" x="86" y="764">Keep GPU source coordinates; update visibility</text>
+  <text class="small" x="86" y="791">and changed derived coordinate/style buffers.</text>
+  <path d="M640 724 V800" stroke="#9eafa5" stroke-width="1.5"/>
+  <text class="text" x="674" y="735">Raw histogram</text>
+  <text class="small" x="674" y="764">Reuse CPU/WASM columns and indexes;</text>
+  <text class="small" x="674" y="791">reaggregate bins and upload bar geometry.</text>
+
+  <text class="small" x="60" y="860">Opt in with clientView at plot creation. Omit it to keep the existing chart workflow.</text>
+  <text class="small" x="60" y="885">Residency saves source transfers; evaluation, aggregation, and derived uploads still have a cost.</text>
+</svg>
