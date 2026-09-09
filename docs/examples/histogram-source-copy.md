@@ -91,3 +91,8 @@ Host requirements:
   call `plot.commands.setBinSizes(...)` according to your product rules.
 - Keep source materialization, exports, surrounding controls, and overlay
   rendering in the host app.
+
+For optional resident filtering, transformations, and color/opacity styling,
+see [Client Data Views](../../packages/m-charts/CLIENT_DATA_VIEW.md). The shared
+`client-data-view` folder is required by current core exports even when the
+`clientView` option is omitted; using the pipeline remains optional.

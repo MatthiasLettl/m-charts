@@ -5,6 +5,7 @@ Keep the copied `plot-engine`, `m-parallel/core`, and `m-parallel/engine`
 folders, then add:
 
 ```text
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-parallel-webgpu/core -> src/vendor/m-charts/m-parallel-webgpu/core
 packages/m-charts/src/m-parallel-webgpu/engine -> src/vendor/m-charts/m-parallel-webgpu/engine
@@ -155,3 +156,8 @@ Test the intended product policy in both conditions:
   and controlled updates behave consistently across both backends.
 - Device-loss/restoration and renderer metrics reach both option callbacks and
   typed `plot.on(...)` subscriptions.
+
+For optional resident filtering, transformations, and color/opacity styling,
+see [Client Data Views](../../packages/m-charts/CLIENT_DATA_VIEW.md). The shared
+`client-data-view` folder is required by current core exports even when the
+`clientView` option is omitted; using the pipeline remains optional.

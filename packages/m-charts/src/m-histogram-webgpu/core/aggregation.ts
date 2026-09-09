@@ -100,6 +100,8 @@ interface CachedWasmSubplot {
 export class HistogramWebgpuAggregationProvider implements HistogramAggregationProvider {
   private buildCount = 0;
   private columns: HistogramColumns | null = null;
+  private parameterSchemaKey = '';
+  private typescriptPreparation: { values: HistogramColumns['valuesByParameter']; schema: string; state: HistogramAggregationPreparedState } | null = null;
   private fallbackReason: string | undefined;
   private indexedRowCount = 0;
   private lastBuildMs = 0;
@@ -130,7 +132,11 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
     }
     this.resolvedBackend = 'typescript';
     this.wasmPreparedState = null;
-    return prepareHistogramAggregationState(columns, spec);
+    const schema = JSON.stringify(spec.parameters);
+    if (this.typescriptPreparation?.values === columns.valuesByParameter && this.typescriptPreparation.schema === schema) return this.typescriptPreparation.state;
+    const state = prepareHistogramAggregationState(columns, spec);
+    this.typescriptPreparation = { values: columns.valuesByParameter, schema, state };
+    return state;
   }
 
   build(
@@ -168,6 +174,7 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
 
   dispose(): void {
     this.columns = null;
+    this.typescriptPreparation = null;
     this.lastPlotSpec = null;
     this.parameterSlotByKey.clear();
     this.subplotCache.clear();
@@ -218,6 +225,20 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
         'Rust/WASM color stacks require one packed rgba32 value per record.',
       );
     }
+    const schemaKey = JSON.stringify(parameters);
+    if (this.wasm !== null && this.wasmPreparedState !== null &&
+      this.columns?.valuesByParameter === columns.valuesByParameter &&
+      this.columns.sourceIndex === columns.sourceIndex && this.parameterSchemaKey === schemaKey) {
+      // Colors change aggregation stacks, but not sorted coordinate indexes.
+      const pointer = this.wasm.histogram_set_color(columns.color === undefined ? 0 : 1);
+      if (columns.color !== undefined) copyBytes(this.wasm.memory, pointer, columns.color);
+      this.setupBytes = columns.color?.byteLength ?? 0;
+      this.setupMs = performance.now() - startedAt;
+      this.columns = columns;
+      this.subplotCache.clear();
+      this.lastPlotSpec = null;
+      return this.wasmPreparedState;
+    }
     try {
       const instance = new WebAssembly.Instance(getModule());
       const wasm = instance.exports as HistogramWasmExports;
@@ -266,6 +287,7 @@ export class HistogramWebgpuAggregationProvider implements HistogramAggregationP
         setupBytes += columns.sourceIndex.byteLength;
       }
       this.columns = columns;
+      this.parameterSchemaKey = schemaKey;
       this.indexedRowCount = indexedRowCount;
       this.wasm = wasm;
       this.setupBytes = setupBytes;

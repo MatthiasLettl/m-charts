@@ -270,3 +270,14 @@ The compatibility and aggregation unit tests verify export parity, shared
 engine separation, WASM/TypeScript descriptors and metrics, categorical
 invalid values, colors, hover, selected counts, domains, indexed visible-row
 visits, exact WASM membership, subplot reuse, and custom source-index fallback.
+
+## Optional resident client pipeline
+
+Create `createHistogramClientDataView({ columns })` and pass `clientView: { view }`
+to the WebGPU factory to enable the shared filter → transform → style API.
+It preserves source record identities and source colors by default; color and
+opacity are the applicable computed channels. Source data is creation-bound
+only while this option is attached. Existing callers, streaming integrations,
+and WebGL2 APIs need no change. Read [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
+for examples, mapping options, lifecycle, selection behavior and diagnostics.
+The resident demo includes controls and state export/import for this pipeline.

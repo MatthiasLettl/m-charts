@@ -5,6 +5,7 @@ copied `plot-engine`, `m-histogram/core`, and `m-histogram/engine` folders, then
 add:
 
 ```text
+packages/m-charts/src/client-data-view -> src/vendor/m-charts/client-data-view
 packages/m-charts/src/plot-engine-webgpu -> src/vendor/m-charts/plot-engine-webgpu
 packages/m-charts/src/m-histogram-webgpu/core -> src/vendor/m-charts/m-histogram-webgpu/core
 packages/m-charts/src/m-histogram-webgpu/engine -> src/vendor/m-charts/m-histogram-webgpu/engine
@@ -146,3 +147,8 @@ Test the intended product policy in both conditions:
 - Raw and pre-aggregated bar modes preserve styling and interactions.
 - Deferred selections report exact selected counts, and source indices
   materialize when the host requests them.
+
+For optional resident filtering, transformations, and color/opacity styling,
+see [Client Data Views](../../packages/m-charts/CLIENT_DATA_VIEW.md). The shared
+`client-data-view` folder is required by current core exports even when the
+`clientView` option is omitted; using the pipeline remains optional.

@@ -2,11 +2,10 @@
 
 Client data views are an additive, serializable pipeline for filtering,
 transforming, and styling data that is already resident in the browser. The
-first renderer integration is the WebGPU/WASM scatter plot; the shared
-`m-charts/client-data-view` module is chart-independent so the same contract
-can be connected to WebGPU histogram and parallel-coordinate renderers later.
+WebGPU/WASM scatter, parallel-coordinate, and raw histogram plots all support
+the same chart-independent `m-charts/client-data-view` controller.
 
-If `clientView` is omitted, the existing scatter contracts remain available. Existing
+If `clientView` is omitted, all existing chart contracts remain available. Existing
 columns and embedded styles, selection callbacks, commands, streaming,
 aggregation, WebGL2 use, and plot updates keep their current contracts.
 Streaming append is rejected while a client view is attached.
@@ -315,3 +314,127 @@ frame is submitted. For capture/inspection, wait for `pending === false` and
 canvas screenshots, never a WebGPU canvas `drawImage` readback.
 Run the paged-style/LOD regression at ten million rows with
 `M_CHARTS_ENABLE_WEBGPU_E2E=1 M_CHARTS_SCATTER_LARGE_E2E_ROWS=10000000 pnpm test:e2e tests/e2e/scatterClientView.spec.ts --grep 'large paged' --workers=1`.
+
+## Parallel coordinates and histogram
+
+These integrations are optional creation-time additions. They use the same
+controller, predicate AST, ordered transformations, style expressions, atomic
+state replacement, and change events described above. No server callbacks or
+network requests are needed to edit the view.
+
+| Chart | Factory | Binding mappings | Rendered style channels |
+| --- | --- | --- | --- |
+| Scatter | `createFastScatterClientDataView({ columns })` | `xField`, `yFieldByKey` | color, opacity, size, shape, rotation |
+| Parallel | `createParallelClientDataView({ buffers })` | `fieldByAxis` | color, opacity |
+| Histogram | `createHistogramClientDataView({ columns })` | `fieldByParameter` | color, opacity (embedded in stack color alpha) |
+
+Each factory also accepts `fields`, `datasetKey`, `datasetVersion`, `state`, and
+`onListenerError`. `createParallelClientDataSet` / `createHistogramClientDataSet`
+construct datasets for a separately managed shared controller.
+`evaluateParallelClientView` / `evaluateHistogramClientView` expose projections
+for host inspection, with unchanged source indices, IDs, and record identities.
+The chart factories subscribe automatically and unsubscribe on disposal.
+Channels that do not apply to a chart (such as glyph shape on a histogram) have
+no rendering effect; a controller can still be shared with a scatter chart.
+
+```ts
+import {
+  createParallelClientDataView,
+  createParallelWebgpuPlot,
+} from 'm-charts/m-parallel-webgpu';
+
+// Finish loading every CPU column before creating a resident view. Lazy
+// decoder columns that are still being filled are not an immutable dataset.
+const view = createParallelClientDataView({
+  buffers,
+  datasetKey: 'measurements',
+  datasetVersion: 'v1',
+  fields: {
+    sourceRow: { kind: 'numeric', values: Uint32Array.from(
+      { length: buffers.recordCount }, (_, row) => row,
+    ) },
+  },
+});
+const plot = createParallelWebgpuPlot(host, { buffers, clientView: { view } });
+await plot.ready;
+view.addFilter({ id: 'range', predicate: {
+  op: 'between', field: 'signal', min: 10, max: 80,
+} });
+view.addTransformation({
+  id: 'scale', op: 'affine', input: 'signal', output: 'signal', factor: 2, offset: 0,
+});
+view.addStyle({ id: 'color', channels: {
+  color: { op: 'continuous', field: 'signal', domain: [20, 160], range: ['#2855d9', '#f37252'] },
+  opacity: { op: 'constant', value: 0.7 },
+} });
+```
+
+Parallel uses an explicit active-row mask, so excluded rows do not appear in
+its missing-value lane, density counts, representatives, brush selections, or
+GPU hover search. Numeric transformations update axis domains, drawing,
+inspection and brush coordinates together. Categorical/boolean source fields
+retain their semantic kind, and datetime-ns fields retain lossless source
+values; parallel display offsets remain in milliseconds. Brushes, explicit
+source selections and axis viewports remain application-controlled through view edits. Brush
+membership is recalculated; filtered rows never draw a selection overlay. A transform
+can move records outside an existing viewport; reset the viewport when desired.
+
+Parallel retains the GPU device and coordinate buffers. Filter-only changes
+without transformations upload visibility and representative data; style-only
+changes reuse coordinates. Changed coordinate projections replace derived GPU
+values without changing the source dataset. Rapid updates coalesce to the latest
+request. `getWebgpuDiagnostics().clientView` reports evaluation metrics,
+`revision`, `pending`, `sourceStyleMode`, and source/view upload bytes. Wait for
+`pending: false` and the chart's ready render state when inspecting a new frame;
+`plot.ready` describes initial startup.
+
+```ts
+import {
+  createHistogramClientDataView,
+  createHistogramWebgpuPlot,
+} from 'm-charts/m-histogram-webgpu';
+
+const view = createHistogramClientDataView({ columns, datasetKey: 'measurements' });
+const plot = createHistogramWebgpuPlot(host, {
+  columns, spec, aggregationBackend: 'auto', clientView: { view },
+});
+await plot.ready;
+view.addFilter({ id: 'valid', predicate: { op: 'isValid', field: 'signal' } });
+view.addStyle({ id: 'blue', channels: {
+  color: { op: 'constant', value: '#2855d9' },
+  opacity: { op: 'constant', value: 0.6 },
+} });
+```
+
+Histogram filters values before binning and membership lookup, without compacting
+rows. Computed colors use packed RGBA32 stacks; encoded categorical filters
+retain the WASM-compatible unsigned representation. Numeric transformations
+recalculate parameter domains rather than excluding values using old domains.
+The existing viewport and requested bin sizes remain under host control.
+A pipeline edit redraws automatically and clears histogram hover and selection so stale bin descriptors cannot refer
+to a previous distribution. Source-index membership still identifies original
+records, including a supplied `columns.sourceIndex` mapping.
+
+WASM remains an aggregation/selection backend; the shared view evaluator is
+TypeScript. Histogram style-only changes reuse sorted coordinate indexes.
+Existing WASM eligibility rules and exact TypeScript fallback still apply
+(for example, raw string categories or external selection indices outside the
+row range). Histogram diagnostics include `clientView` evaluation metrics and
+`revision` alongside the existing aggregation diagnostics.
+
+With a binding attached, replace a dataset by disposing and recreating both
+view and chart. Parallel rejects replacement `buffers`; histogram rejects
+replacement `columns`, `spec`, and aggregation overrides. Passing the original
+source object again is harmless. Without a binding, existing data replacement,
+streaming, bar mode, and WebGL2 behavior remain supported. Pre-aggregated
+histogram bars have no raw-row pipeline and reject `clientView`; streaming
+factories do not accept this creation-bound option.
+
+The resident `/m-parallel-webgpu` and `/m-histogram-webgpu` demos include range,
+category, boolean and exact-selection filters; configurable linear/difference
+transformations; color/opacity styles; source-style base toggles; enable/remove/
+reorder controls; reset; and JSON state export/import with dataset validation.
+Synthetic `group` and `isReferenceMember` fields demonstrate application metadata.
+Default numeric filter bounds cover the middle half of the chosen source field.
+Parallel waits for its decoder's CPU columns to finish before attaching the view.
+Streaming and pre-aggregated bar demos continue using their existing paths.

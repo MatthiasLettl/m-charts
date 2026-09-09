@@ -1,3 +1,6 @@
+import { createParallelClientDataView, evaluateParallelClientView, type ParallelClientViewBinding } from 'm-charts/m-parallel-webgpu';
+import { ClientViewControls } from '../components/ClientViewControls';
+import { demoClientFields, useClientViewState } from '../state/demoClientView';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import {
   useCallback,
@@ -392,6 +395,7 @@ export function MParallelPlotRoute({
   const selectionStateRef = useRef(selectionState);
   const inspectionStateRef = useRef(inspectionState);
   const chartHandleRef = useRef<ParallelFastRoutePlotHandle | null>(null);
+  const [clientSelectedIndices, setClientSelectedIndices] = useState<Uint32Array>(new Uint32Array(0));
   const selectedSourceIndicesRef = useRef<Uint32Array<ArrayBufferLike>>(
     new Uint32Array(0),
   );
@@ -472,6 +476,17 @@ export function MParallelPlotRoute({
     datasetState.status === 'loaded' && datasetState.datasetKind === 'webgpu-buffers'
       ? (datasetState.dataset as LoadedParallelWebgpuDataset).streamingSource
       : undefined;
+  const clientViewBinding = useMemo<ParallelClientViewBinding | undefined>(() =>
+    rendererBackend !== 'webgpu' || webgpuStreaming || readyBuffers === null ? undefined : {
+      view: createParallelClientDataView({ buffers: readyBuffers, datasetKey: 'parallel-webgpu-demo',
+        datasetVersion: String(readyBuffers.recordCount), fields: demoClientFields(readyBuffers.recordCount) }),
+    }, [readyBuffers, rendererBackend, webgpuStreaming]);
+  const clientViewState = useClientViewState(clientViewBinding?.view);
+  const clientDisplayBuffers = useMemo(() => clientViewBinding === undefined || readyBuffers === null
+    ? readyBuffers : evaluateParallelClientView(clientViewBinding, readyBuffers).buffers,
+  // State invalidates the cached projection after a client edit.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [clientViewBinding, readyBuffers, clientViewState]);
   const webgpuManifestUrl = useMemo(() => {
     if (searchParams.get('webgpuData') !== 'http') return undefined;
     return searchParams.get('__e2eParallelWebgpuManifest') ??
@@ -685,6 +700,7 @@ export function MParallelPlotRoute({
                   startedAt,
                 })
               : loadParallelWebgpuDataset({
+                residentClientView: true,
                 fixtureUrl: mixedTableFixtureUrl,
                 ...(webgpuManifestUrl === undefined
                   ? {}
@@ -1044,6 +1060,7 @@ export function MParallelPlotRoute({
       );
 
       selectedSourceIndicesRef.current = event.sourceIndices;
+      setClientSelectedIndices(event.sourceIndices);
       selectedIdsCacheRef.current = null;
 
       setSelectionState((currentSelectionState) => ({
@@ -1379,6 +1396,7 @@ export function MParallelPlotRoute({
                     tabIndex={0}
                   >
                     <MParallelEngineChart
+                      clientView={clientViewBinding}
                       rendererBackend={rendererBackend}
                       axisViewports={axisViewports}
                       onAxisViewportsChange={handleAxisViewportsChange}
@@ -1386,7 +1404,7 @@ export function MParallelPlotRoute({
                       axisOverlay={
                         <MParallelAxisBrushOverlay
                           axisViewports={axisViewports}
-                          buffers={readyBuffers}
+                          buffers={clientDisplayBuffers ?? readyBuffers}
                           overlays={parallelOverlays}
                         />
                       }
@@ -1681,6 +1699,7 @@ export function MParallelPlotRoute({
                 </button>
               </div>
             </section>
+            {clientViewBinding && <ClientViewControls view={clientViewBinding.view} selectedSourceIndices={clientSelectedIndices} />}
             <section className="control-section">
               <details className="control-disclosure route-advanced-diagnostics">
                 <summary>
@@ -1959,6 +1978,7 @@ export function MParallelPlotRoute({
 }
 
 function MParallelEngineChart({
+  clientView,
   rendererBackend,
   axisViewports,
   onAxisViewportsChange,
@@ -1985,6 +2005,7 @@ function MParallelEngineChart({
   streamingSource,
   onStreamProgress,
 }: {
+  clientView?: ParallelClientViewBinding;
   rendererBackend: ParallelRendererBackend;
   axisViewports: ParallelAxisViewports;
   onAxisViewportsChange: (
@@ -2177,6 +2198,7 @@ function MParallelEngineChart({
             })
           : rendererBackend === 'webgpu'
             ? createParallelWebgpuPlot(host, {
+                clientView,
                 ...commonOptions,
                 buffers: initialOptions.buffers,
               })
@@ -2336,6 +2358,7 @@ function MParallelEngineChart({
       cleanupAttachedPlot();
     };
   }, [
+    clientView,
     onHandleChange,
     onOverlaysChange,
     plotDataKey,

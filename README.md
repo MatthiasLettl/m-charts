@@ -350,6 +350,16 @@ independent computed style channels with all five glyphs, and a popup after
 rectangle/lasso selection for keeping inside or outside rows. Selection filters
 preserve source-row identity across transforms and can be removed individually.
 
+WebGPU parallel coordinates and raw histograms support the same optional client
+pipeline through `createParallelClientDataView({ buffers })` and
+`createHistogramClientDataView({ columns })`, passed as `clientView: { view }`.
+Filters preserve source identities, transformations update chart coordinates,
+and color/opacity rules preserve dataset styling by default. Their resident
+demos include configurable controls, selection-to-filter actions, reset, and
+JSON state import/export. Omitting the binding preserves existing data updates,
+streaming and bar-mode behavior. See [CLIENT_DATA_VIEW.md](packages/m-charts/CLIENT_DATA_VIEW.md)
+for binding mappings, lifecycle, supported channels and backend behavior.
+
 ### Histogram
 
 ```ts

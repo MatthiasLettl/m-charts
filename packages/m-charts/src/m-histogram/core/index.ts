@@ -154,3 +154,6 @@ export type {
   HistogramViewportChangePhase,
   HistogramViewportChangeReason,
 } from './types.js';
+
+export * from './clientView.js';
+export * from '../../client-data-view/index.js';

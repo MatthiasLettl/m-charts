@@ -2900,3 +2900,39 @@ pnpm test:unit
 
 Boundary tests protect reusable `core` and `engine` layers from imports of React
 routes, route state, app data modules, and demo-only fixtures.
+
+
+## Optional WebGPU parallel and histogram client views
+
+- Import `createParallelClientDataView({ buffers, fields?, datasetKey?, datasetVersion?, state?, onListenerError? })`
+  from `m-charts/m-parallel-webgpu`, or `createHistogramClientDataView({ columns, ... })`
+  from `m-charts/m-histogram-webgpu`. Pass `clientView: { view }` at creation.
+- Shared controller semantics match scatter: filter → transform → style; typed
+  predicates, affine and grouped/ordered differences; transactional JSON state
+  mutations, read-only snapshots and isolated listener errors.
+- Parallel binding: `fieldByAxis`. Histogram binding: `fieldByParameter`.
+  Additional fields must follow immutable source-row order. Helpers
+  `createParallelClientDataSet`, `createHistogramClientDataSet`,
+  `evaluateParallelClientView`, `evaluateHistogramClientView` are exported too.
+- Both render color and opacity, preserving source styling unless
+  `sourceStyleMode: 'ignore'`. Scatter-only shape/size/rotation have no visual
+  effect on these charts. Histogram embeds opacity in RGBA32 color stacks.
+- Parallel masks drawing, density, representatives, hover and exact CPU/WASM
+  brush selection without remapping source identities. It reuses the GPU device,
+  coordinates and styles across unchanged stages and coalesces rapid revisions.
+  Its `clientView.pending` diagnostic indicates outstanding GPU projection work.
+- Histogram excludes filtered rows before binning/membership, recalculates
+  transformed numeric domains, retains viewport/bin-size controls, and clears
+  obsolete selection after pipeline edits. Style-only edits reuse sorted
+  coordinate indexes. Eligible typed columns retain WASM aggregation; existing
+  exact TypeScript fallback rules still apply.
+- A client binding is creation-bound: source buffers/columns cannot be replaced;
+  histogram spec and aggregation overrides are also creation-bound. Finish all
+  lazy CPU decoding first. Recreate the view and chart for new data.
+- Omit `clientView` to keep all pre-existing data replacement, WebGL2, streaming
+  and pre-aggregated bar contracts. A raw-row view cannot attach to a bar plot.
+  Streaming constructors do not expose this option.
+- Resident demos offer numeric/category/boolean/selection filters, transform
+  controls, source-style toggles, color/opacity presets, item enable/remove/
+  reorder, reset, and dataset-validated JSON export/import. They perform no
+  source refetch on pipeline edits. See `CLIENT_DATA_VIEW.md` for examples.

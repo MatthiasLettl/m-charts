@@ -1232,6 +1232,42 @@ export function createParallelEngine(
         optionsState.buffers !== previousBuffers ||
         optionsState.preserveDrawingBuffer !== previousPreserveDrawingBuffer
       ) {
+        if (previousBuffers.activeMask !== undefined && optionsState.buffers.activeMask !== undefined &&
+          optionsState.preserveDrawingBuffer === previousPreserveDrawingBuffer && renderer?.updateClientViewBuffers !== undefined) {
+          cancelScheduledSelectedVisualUpdate();
+          selectionRequestSequence += 1;
+          brushIntervals = cloneBrushIntervals(optionsState.brushIntervals);
+          activeBrushes = getActiveBrushes(brushIntervals, optionsState.buffers);
+          axisViewports = cloneAxisViewports(optionsState.axisViewports);
+          axisViewportPreviewOrigin = null;
+          inspection = null;
+          const requestedBuffers = optionsState.buffers;
+          const activeRenderer = renderer;
+          hoverRenderer?.setHoverSourceIndex(requestedBuffers, null);
+          syncInspectionOverlay('clear');
+          emitRenderState('rendering');
+          void activeRenderer.updateClientViewBuffers!(requestedBuffers).then(() => {
+            if (disposed || optionsState.buffers !== requestedBuffers || renderer !== activeRenderer) return;
+            activeRenderer.updateTheme(optionsState.theme);
+            hoverRenderer?.updateTheme(optionsState.theme);
+            activeRenderer.updateLineOpacityScale(optionsState.lineOpacityScale);
+            activeRenderer.updateAxisViewports?.(axisViewports);
+            activeRenderer.updateBrushIntervals?.(brushIntervals);
+            applyPreselectedVisual();
+            if (activeBrushes.length === 0) {
+              applySelectedVisual();
+              emitProgrammaticSelectionChange(optionsState.selectedSourceIndices, 'command');
+            } else {
+              computeAndCommitSelection(brushIntervals, 'set', 'command', { scheduleVisualUpdate: false });
+            }
+            syncBrushOverlay();
+            emitRenderState('ready');
+            scheduleRender();
+          }, (error: unknown) => {
+            if (!disposed && renderer === activeRenderer) handleSetupError(error, 'Client-view buffer update failed.');
+          });
+          return;
+        }
         cancelScheduledSelectedVisualUpdate();
         brushIntervals = cloneBrushIntervals(optionsState.brushIntervals);
         activeBrushes = getActiveBrushes(brushIntervals, optionsState.buffers);

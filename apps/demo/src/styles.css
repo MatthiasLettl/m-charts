@@ -4558,3 +4558,20 @@ button.secondary-link:disabled {
   font-size: 0.65rem;
   opacity: 0.7;
 }
+
+.chart-client-view-panel textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 5rem;
+  resize: vertical;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+}
+
+.chart-client-view-panel .scatter-client-view-items label {
+  display: flex;
+  align-items: center;
+  overflow-wrap: anywhere;
+}

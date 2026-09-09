@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   normalizeParallelBrushIntervals,
   type ParallelActiveBrushInterval,
@@ -28,7 +29,7 @@ export function selectParallelRecordsFromCandidateMask(
       const bitIndex = 31 - Math.clz32(lowestBit);
       const sourceIndex = wordIndex * 32 + bitIndex;
       if (
-        sourceIndex < buffers.recordCount &&
+        sourceIndex < buffers.recordCount && clientRowIsActive(buffers.activeMask, sourceIndex) &&
         recordMatchesBrushes(buffers, sourceIndex, activeBrushes)
       ) {
         sourceIndices[selectedCount] = sourceIndex;

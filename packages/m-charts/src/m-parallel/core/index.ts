@@ -131,3 +131,6 @@ export type {
   ParallelWebgl2SelectedUpdateMetrics,
 } from './webglSegmentRenderer.js';
 export { ParallelWebgl2SegmentRenderer } from './webglSegmentRenderer.js';
+
+export * from './clientView.js';
+export * from '../../client-data-view/index.js';

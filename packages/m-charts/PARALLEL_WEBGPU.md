@@ -285,3 +285,14 @@ Hardware-backed WebGPU rendering, zoom, and hover validation is opt-in:
 ```sh
 M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e
 ```
+
+## Optional resident client pipeline
+
+Create `createParallelClientDataView({ buffers })` and pass `clientView: { view }`
+to the WebGPU factory to enable the shared filter → transform → style API.
+It preserves source record identities and source colors by default; color and
+opacity are the applicable computed channels. Source data is creation-bound
+only while this option is attached. Existing callers, streaming integrations,
+and WebGL2 APIs need no change. Read [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
+for examples, mapping options, lifecycle, selection behavior and diagnostics.
+The resident demo includes controls and state export/import for this pipeline.

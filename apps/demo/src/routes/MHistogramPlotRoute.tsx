@@ -1,3 +1,6 @@
+import { createHistogramClientDataView, type HistogramClientViewBinding } from 'm-charts/m-histogram-webgpu';
+import { ClientViewControls } from '../components/ClientViewControls';
+import { demoClientFields } from '../state/demoClientView';
 import {
   useCallback,
   useEffect,
@@ -709,6 +712,12 @@ export function MHistogramPlotRoute({
     webgpuStreamingKind,
   ]);
 
+  const clientViewBinding = useMemo<HistogramClientViewBinding | undefined>(() => {
+    if (rendererBackend !== 'webgpu' || datasetState.status !== 'loaded' || datasetState.streamingSource !== undefined || histMode !== 'histogram' || datasetState.columns === undefined) return undefined;
+    const columns = datasetState.columns;
+    return { view: createHistogramClientDataView({ columns, datasetKey: 'histogram-webgpu-demo',
+      datasetVersion: String(columns.ids.length), fields: demoClientFields(columns.ids.length, columns.sourceIndex) }) };
+  }, [datasetState, histMode, rendererBackend]);
   const binSizes = useMemo(() => {
     if (datasetState.status !== 'loaded' || histMode !== 'histogram') {
       return [];
@@ -1034,6 +1043,7 @@ export function MHistogramPlotRoute({
             })
           : rendererBackend === 'webgpu'
             ? createHistogramWebgpuPlot(host, {
+                clientView: clientViewBinding,
                 ...commonOptions,
                 aggregationBackend: webgpuAggregationBackend,
               })
@@ -1265,6 +1275,7 @@ export function MHistogramPlotRoute({
   // route-state change.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    clientViewBinding,
     datasetState,
     handleMetrics,
     initialSelectedSourceIndices,
@@ -2124,6 +2135,11 @@ export function MHistogramPlotRoute({
                 </div>
               </div>
             </section>
+            {clientViewBinding && <ClientViewControls view={clientViewBinding.view} selectedSourceIndices={selection?.sourceIndices ?? []} onApplied={() => {
+              setSnapshot(plotRef.current?.commands.getStateSnapshot() ?? null);
+              setSelection(null);
+              setHover(null);
+            }} />}
             <InteractionCheatSheet
               groups={HISTOGRAM_SHORTCUT_GROUPS}
               tryItems={HISTOGRAM_TRY_THIS_ITEMS}

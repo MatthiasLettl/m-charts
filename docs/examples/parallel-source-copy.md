@@ -72,3 +72,8 @@ Host requirements:
   `data-axis-range-index="<index>"` when move, resize, or remove interactions
   target an existing interval. Provide a custom `brushHitTest` for different
   DOM, SVG, or canvas overlays.
+
+For optional resident filtering, transformations, and color/opacity styling,
+see [Client Data Views](../../packages/m-charts/CLIENT_DATA_VIEW.md). The shared
+`client-data-view` folder is required by current core exports even when the
+`clientView` option is omitted; using the pipeline remains optional.

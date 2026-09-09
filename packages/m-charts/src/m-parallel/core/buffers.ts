@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type { NumericRange } from './selection.js';
 import type {
   ParallelFastAxisKey,
@@ -77,6 +78,8 @@ export interface ParallelSelectedWebglSegmentBuffers extends ParallelWebglSegmen
 }
 
 export interface ParallelBuffers {
+  /** Optional source-row visibility mask used by client views. */
+  activeMask?: Uint32Array;
   axisCount: number;
   axisMetadataByAxis?: Readonly<Record<ParallelParameter, ParallelFastAxisMetadata>>;
   axisOrder: readonly ParallelParameter[];
@@ -539,6 +542,7 @@ export function selectParallelRecordIdsByBrushes(
   const sourceIndexStartedAt = performance.now();
 
   for (let recordIndex = 0; recordIndex < buffers.recordCount; recordIndex += 1) {
+    if (!clientRowIsActive(buffers.activeMask, recordIndex)) continue;
     if (recordMatchesBrushes(buffers, recordIndex, activeBrushes)) {
       selectedIndices.push(recordIndex);
     }
@@ -816,6 +820,7 @@ export function findNearestParallelRecordByPoint({
   let nearestDistanceSquared = maxDistancePx * maxDistancePx;
 
   for (let recordIndex = 0; recordIndex < buffers.recordCount; recordIndex += 1) {
+    if (!clientRowIsActive(buffers.activeMask, recordIndex)) continue;
     forEachParallelRoutedSegment(
       buffers.normalizedValuesByAxis,
       buffers.axisOrder,
@@ -1261,6 +1266,7 @@ function recordMatchesBrushes(
   recordIndex: number,
   activeBrushes: readonly ParallelActiveBrushInterval[],
 ): boolean {
+  if (!clientRowIsActive(buffers.activeMask, recordIndex)) return false;
   let currentParameter: ParallelParameter | null = null;
   let currentAxisMatched = false;
 

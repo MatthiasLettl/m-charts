@@ -407,6 +407,16 @@ When one 32-bit point-index array per subplot is too large, await
 `createFastScatterCompactHoverIndex(columns, { yKeys })`; its byte-sized Y
 filter preserves exact nearest-point results with lower resident memory.
 
+WebGPU parallel coordinates and raw histograms support the same optional client
+pipeline through `createParallelClientDataView({ buffers })` and
+`createHistogramClientDataView({ columns })`, passed as `clientView: { view }`.
+Filters preserve source identities, transformations update chart coordinates,
+and color/opacity rules preserve dataset styling by default. Their resident
+demos include configurable controls, selection-to-filter actions, reset, and
+JSON state import/export. Omitting the binding preserves existing data updates,
+streaming and bar-mode behavior. See [CLIENT_DATA_VIEW.md](CLIENT_DATA_VIEW.md)
+for binding mappings, lifecycle, supported channels and backend behavior.
+
 ## Chart-Specific Docs
 
 - [SCATTER.md](SCATTER.md): scatter plot source layout and exported names.

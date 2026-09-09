@@ -85,6 +85,12 @@ fn isFiniteValue(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
 }
 
+fn isActiveRow(row: u32) -> bool {
+  let offset = max(1u, (uniforms.pageRecordCount * uniforms.axisCount + 1u) / 2u);
+  if (axes[0].metadata.w == 0u) { return true; }
+  return (values[offset + (row >> 5u)] & (1u << (row & 31u))) != 0u;
+}
+
 fn readQuantizedValue(localIndex: u32, axisIndex: u32) -> u32 {
   let linearIndex = localIndex * uniforms.axisCount + axisIndex;
   let packed = values[linearIndex >> 1u];
@@ -136,7 +142,7 @@ fn aggregate(
   @builtin(local_invocation_index) localId: u32,
 ) {
   let localIndex = id.x;
-  let recordActive = localIndex < uniforms.pageRecordCount;
+  let recordActive = localIndex < uniforms.pageRecordCount && isActiveRow(localIndex);
   let sourceIndex = uniforms.pageStart + localIndex;
   var selected = false;
   var hasBrush = false;
@@ -324,6 +330,12 @@ struct Bin {
 @group(0) @binding(3) var<storage, read> axes: array<AxisConfig>;
 @group(0) @binding(4) var<uniform> uniforms: SelectionUniform;
 
+fn isActiveRow(row: u32) -> bool {
+  let offset = max(1u, (uniforms.pageRecordCount * uniforms.axisCount + 1u) / 2u);
+  if (axes[0].metadata.w == 0u) { return true; }
+  return (values[offset + (row >> 5u)] & (1u << (row & 31u))) != 0u;
+}
+
 fn isFiniteValue(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
 }
@@ -376,7 +388,7 @@ fn clearSelected(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(256)
 fn selectRecords(@builtin(global_invocation_id) id: vec3<u32>) {
   let localIndex = id.x;
-  if (localIndex >= uniforms.pageRecordCount) { return; }
+  if (localIndex >= uniforms.pageRecordCount || !isActiveRow(localIndex)) { return; }
   let sourceIndex = uniforms.pageStart + localIndex;
   let maskWord = sourceIndex >> 5u;
   let maskBit = 1u << (sourceIndex & 31u);
@@ -566,7 +578,8 @@ struct DirectUniform {
   valueEncoding: u32,
   uniformStyle: u32,
   uniformColor: u32,
-  _padding0: vec2<u32>,
+  activeMask: u32,
+  packedDensityStyles: u32,
 }
 
 @group(0) @binding(0) var<storage, read> values: array<u32>;
@@ -577,6 +590,12 @@ struct DirectUniform {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
+}
+
+fn isActiveRow(row: u32) -> bool {
+  let offset = max(1u, (uniforms.pageRecordCount * uniforms.axisCount + 1u) / 2u);
+  if (uniforms.activeMask == 0u) { return true; }
+  return (values[offset + (row >> 5u)] & (1u << (row & 31u))) != 0u;
 }
 
 fn isFiniteValue(value: f32) -> bool {
@@ -620,7 +639,14 @@ fn vertexMain(
   let record = min(uniforms.pageRecordCount - 1u, representative * uniforms.stride);
   let axisIndex = pair + min(vertexIndex, 1u);
   let value = readValue(record, axisIndex);
-  let packed = select(styles[record], uniforms.uniformColor, uniforms.uniformStyle != 0u);
+  var packed = uniforms.uniformColor;
+  if (uniforms.uniformStyle == 0u) {
+    if (uniforms.packedDensityStyles != 0u) {
+      let rgba = (styles[record >> 1u] >> ((record & 1u) * 16u)) & 65535u;
+      packed = ((rgba & 15u) * 17u) | ((((rgba >> 4u) & 15u) * 17u) << 8u) |
+        ((((rgba >> 8u) & 15u) * 17u) << 16u) | ((((rgba >> 12u) & 15u) * 17u) << 24u);
+    } else { packed = styles[record]; }
+  }
   let color = vec4<f32>(
     f32(packed & 255u) / 255.0,
     f32((packed >> 8u) & 255u) / 255.0,
@@ -635,7 +661,7 @@ fn vertexMain(
     0.0,
     1.0,
   );
-  output.color = color;
+  output.color = select(vec4<f32>(0.0), color, isActiveRow(record));
   return output;
 }
 
@@ -665,7 +691,7 @@ struct HoverUniform {
   valueEncoding: u32,
   sourceIndicesMapped: u32,
   pairCount: u32,
-  _padding: u32,
+  activeMask: u32,
 }
 
 struct HoverResult {
@@ -678,6 +704,12 @@ struct HoverResult {
 @group(0) @binding(2) var<uniform> uniforms: HoverUniform;
 @group(0) @binding(3) var<storage, read_write> result: HoverResult;
 @group(0) @binding(4) var<storage, read> sourceIndices: array<u32>;
+
+fn isActiveRow(row: u32) -> bool {
+  let offset = max(1u, (uniforms.pageRecordCount * uniforms.axisCount + 1u) / 2u);
+  if (uniforms.activeMask == 0u) { return true; }
+  return (values[offset + (row >> 5u)] & (1u << (row & 31u))) != 0u;
+}
 
 fn isFiniteValue(value: f32) -> bool {
   return (bitcast<u32>(value) & 0x7f800000u) != 0x7f800000u;
@@ -761,13 +793,13 @@ fn distanceSquared(localIndex: u32) -> f32 {
 
 @compute @workgroup_size(256)
 fn findDistance(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= uniforms.pageRecordCount) { return; }
+  if (id.x >= uniforms.pageRecordCount || !isActiveRow(id.x)) { return; }
   atomicMin(&result.distance, bitcast<u32>(distanceSquared(id.x)));
 }
 
 @compute @workgroup_size(256)
 fn findSource(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= uniforms.pageRecordCount) { return; }
+  if (id.x >= uniforms.pageRecordCount || !isActiveRow(id.x)) { return; }
   let distance = bitcast<u32>(distanceSquared(id.x));
   if (distance == atomicLoad(&result.distance)) {
     let sourceIndex = select(

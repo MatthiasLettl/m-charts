@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   normalizeParallelBrushIntervals,
   type ParallelBrushIntervals,
@@ -95,7 +96,7 @@ export class ParallelWebgpuWasmSelectionSession {
     }
   }
 
-  select(brushIntervals: ParallelBrushIntervals): ParallelBrushSelectionResult {
+  select(brushIntervals: ParallelBrushIntervals, activeMask = this.buffers.activeMask): ParallelBrushSelectionResult {
     const activeBrushes = normalizeParallelBrushIntervals(
       brushIntervals,
       this.buffers.axisOrder,
@@ -123,10 +124,11 @@ export class ParallelWebgpuWasmSelectionSession {
     this.wasm.parallel_selection_finish();
     const length = this.wasm.parallel_source_indices_len();
     const pointer = this.wasm.parallel_source_indices_ptr();
-    const sourceIndices = new Uint32Array(length);
+    let sourceIndices = new Uint32Array(length);
     sourceIndices.set(
       new Uint32Array(this.wasm.memory.buffer, pointer, length),
     );
+    if (activeMask !== undefined) sourceIndices = sourceIndices.filter((row) => clientRowIsActive(activeMask, row));
     return {
       activeBrushes,
       selectedCount: sourceIndices.length,

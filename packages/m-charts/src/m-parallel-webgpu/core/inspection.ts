@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y,
   parallelRenderedNormalizedValueToDisplayValue,
@@ -109,7 +110,7 @@ export function resolveParallelWebgpuInspectionGeometry(
   viewports: ParallelAxisViewports,
   pairRange: { count: number; start: number },
 ): { distancePx: number; pair: number } | null {
-  if (pairRange.count === 0 || buffers.axisCount < 2) return null;
+  if (!clientRowIsActive(buffers.activeMask, sourceIndex) || pairRange.count === 0 || buffers.axisCount < 2) return null;
   const axisSpan = Math.max(1, buffers.axisCount - 1);
   const pointerX = query.axisPosition / axisSpan * query.plotWidthPx;
   const pointerY = (

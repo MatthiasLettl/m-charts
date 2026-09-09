@@ -1,3 +1,4 @@
+import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import type {
   ParallelBuffers,
   ParallelFastAxisMetadata,
@@ -12,6 +13,7 @@ type RepresentativeBuffers = Pick<
   | 'axisOrder'
   | 'rawValuesByAxis'
   | 'recordCount'
+  | 'activeMask'
 >;
 
 export interface ParallelRepresentativeAccumulatorAxis {
@@ -192,10 +194,25 @@ export async function createParallelRepresentativeSourceIndices(
   buffers: RepresentativeBuffers,
   requestedLimit: number,
 ): Promise<Uint32Array<ArrayBuffer>> {
-  const limit = normalizeRepresentativeLimit(requestedLimit, buffers.recordCount);
+  let activeIndices: Uint32Array | undefined;
+  if (buffers.activeMask !== undefined) {
+    let activeCount = 0;
+    for (let row = 0; row < buffers.recordCount; row += 1) {
+      if (clientRowIsActive(buffers.activeMask, row)) activeCount += 1;
+    }
+    if (activeCount !== buffers.recordCount) {
+      activeIndices = new Uint32Array(activeCount);
+      let offset = 0;
+      for (let row = 0; row < buffers.recordCount; row += 1) {
+        if (clientRowIsActive(buffers.activeMask, row)) activeIndices[offset++] = row;
+      }
+    }
+  }
+  const recordCount = activeIndices?.length ?? buffers.recordCount;
+  const limit = normalizeRepresentativeLimit(requestedLimit, recordCount);
   if (limit === 0) return new Uint32Array(0);
-  if (limit === buffers.recordCount) {
-    return Uint32Array.from({ length: buffers.recordCount }, (_, index) => index);
+  if (limit === recordCount) {
+    return Uint32Array.from({ length: recordCount }, (_, index) => activeIndices?.[index] ?? index);
   }
 
   const accumulator = new ParallelRepresentativeAccumulator(
@@ -205,22 +222,24 @@ export async function createParallelRepresentativeSourceIndices(
         ? { categories: metadata.categories.map(({ encoded }) => encoded) }
         : {};
     }),
-    buffers.recordCount,
+    recordCount,
     limit,
   );
   const row = new Array<number>(buffers.axisOrder.length);
-  for (let sourceIndex = 0; sourceIndex < buffers.recordCount; sourceIndex += 1) {
+  for (let rowIndex = 0; rowIndex < recordCount; rowIndex += 1) {
+    const sourceIndex = activeIndices?.[rowIndex] ?? rowIndex;
     for (let axisIndex = 0; axisIndex < buffers.axisOrder.length; axisIndex += 1) {
       row[axisIndex] = buffers.rawValuesByAxis[buffers.axisOrder[axisIndex]!]?.[
         sourceIndex
       ] ?? Number.NaN;
     }
-    accumulator.add(sourceIndex, row);
-    if (sourceIndex > 0 && sourceIndex % (REPRESENTATIVE_BLOCK_SIZE * 64) === 0) {
+    accumulator.add(rowIndex, row);
+    if (rowIndex > 0 && rowIndex % (REPRESENTATIVE_BLOCK_SIZE * 64) === 0) {
       await yieldToHost();
     }
   }
-  return accumulator.finish();
+  const representatives = accumulator.finish();
+  return activeIndices === undefined ? representatives : representatives.map((index) => activeIndices[index]!);
 }
 
 function createAccumulatorCategoryTargets(

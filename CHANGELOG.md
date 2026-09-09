@@ -4,6 +4,28 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## WebGPU Parallel and Histogram Client Data Views
+
+- Added optional creation-bound parallel and raw histogram client-view bindings,
+  dataset/projection helpers, shared state/events, filtering, ordered numeric
+  transformations, and color/opacity composition with source-style opt-out.
+- Preserve row IDs and source indices through filtering, GPU visibility, exact
+  TypeScript/WASM selection and histogram membership. Recalculate transformed
+  domains; exclude filtered parallel rows from its missing-value lane and hover.
+- Reuse the parallel GPU device and unchanged coordinate/style buffers; coalesce
+  rapid revisions and expose pending/upload diagnostics. Histogram style edits
+  reuse sorted WASM and TypeScript coordinate indexes.
+- Fixed direct parallel draws interpreting paired density styles as full RGBA
+  colors. They now decode the existing packed style representation correctly.
+- Added resident demo controls, exact selection filters, reset and JSON import/
+  export. Parallel waits for immutable decoded CPU columns before attaching its
+  view. Streaming and pre-aggregated bar demos keep their existing behavior.
+- Added unit and actual-WebGPU regression coverage for optionality, mixed fields,
+  source identity, empty/sparse filters, all parallel modes, histogram backends,
+  styles, transformations, rapid updates, reset and demo interactions.
+- Updated package guides, API notes and source-copy migration instructions.
+  No client binding is required by existing chart integrations.
+
 ## WebGPU Scatter Client Data Views
 
 - Full-suite validation also fixed the parallel streaming controller returning
