@@ -30,6 +30,73 @@ The demo routes in `apps/demo` are integration examples, not the library API.
 Routes own React state, URL state, side panels, exports, popovers, diagnostics,
 generated data loading, and host-specific product policy.
 
+## Scientific explorer integration example
+
+`apps/demo/src/routes/ScientificExplorerRoute.tsx` serves `/scientific-explorer`.
+The demo offers five WebGPU plot types, with three visible at once, with `aggregationBackend: 'rust-wasm'` over
+12,000 deterministic client-generated readings by default. Optional 120,000 and
+1,200,000 sizes use a demo generation worker and stay in memory. `scientific/sensorStore.ts`
+persists a validated, versioned experiment in same-origin IndexedDB and restores
+it on subsequent visits. Regeneration replaces the local experiment and resets
+the dashboard. Storage errors fall back to client memory, never server data.
+Only an in-flight load is shared for React StrictMode; later mounts read storage.
+The cache stores readings, not filters/viewports. Exercise storage with
+`pnpm test:e2e tests/e2e/scientificStorage.spec.ts` (also works without WebGPU).
+Standard bindings retain native zoom,
+right-button selection, lasso, pan, inspection, and editable parallel brushes.
+Subscribe to `overlaychange` and render CSS-pixel rectangles/lasso paths above
+the canvas with `pointer-events: none`, as the reference routes do. Engine
+selection/zoom events alone do not draw these interaction previews. Center
+parallel brush DOM elements on the guide, avoiding inherited CSS transforms.
+Supply an `xOrder` for unsorted scatter columns, and call histogram
+`materializeSelectionSourceIndices()` before consuming deferred WebGPU selections.
+Histogram WASM stacks need packed `rgba32` colors and dense local source indices;
+translate local membership to experiment IDs when displaying a subset. Scatter
+also uses dense local IDs, avoiding sparse global-ID limits in GPU selections.
+Native `selectionchange` events contribute exact source-ID sets; parallel
+`brushcommit` events and the default left-button filtering gesture contribute ranges.
+`scientific/clientQuery.ts` converts constraints to public client-data-view
+predicates. `useExplorerQuery.ts` evaluates them through the library worker API
+and discards superseded results. The application publishes matching indices to
+all views. Highlight mode retains all arrived rows. Cross-filter mode evaluates
+each chart without its own constraint; other charts and global controls still
+apply. Summary statistics use the full intersection. Always retain original IDs
+when mapping filtered or streamed rows back from dense plot indices. Restore a view's own selected IDs before native append gestures, so
+Ctrl-add does not start with another view's shared cohort. Publish parallel brush
+state before shared selection in separate updates (brush updates compute their
+own local selection). Isolated parallel buffers use local indices; the adapter
+translates global IDs and preserves prepared numeric domains without WebGL buffers.
+
+The desktop shell fits 100dvh with three compact control rows and a flexible chart grid, without page scrolling. Counts/timings sit in the footer; mobile stacks plots. The
+experiences are Explore (12,000), Large dataset (1,200,000 initially; optional
+120,000), and Live data (starts playing at a 1,200-row prefix and loops). Dragging
+highlights across full contexts by default; Filter to selection enables cross-filtering. Hover uses public inspection commands without requiring a modifier.
+The lower chart selectors swap scatter/parallel and histogram/density; changing
+chart types clears the outgoing chart's constraint to avoid hidden filters.
+Select/Zoom, Clear selection, Reset view, chart-type toggles and expansion are visible.
+Interactions contains saved shortcut bindings, mouse-wheel shortcuts, anomalies and gesture help. Chart menus
+contain numeric ranges, viewport reset and links to full chart pages. Reset all clears filters,
+restores default chart choices/tool/cross-filter behavior, rewinds and pauses
+replay, restores initial rows and uses plot commands to reset viewport/bin/point
+settings without recreating unchanged chart types. Current experience, dataset size and theme remain selected.
+For developers opens a nonmodal panel with events, CPU durations, an API example,
+records and storage details. Help, numeric ranges, interaction options and records
+use native dialogs. Suspend bindings during dialogs and on hidden expanded views.
+The inspector reports CPU durations, not GPU or end-to-end benchmark timings.
+Scatter `navigatorCssPx: 0` removes unused navigator space; the engine and both
+renderers must honor the same reservation during initial render and updates.
+The homepage groups chart references by plot type below application showcases.
+Local replay progressively admits a prefix of the resident experiment into the
+client query. Pause/resume and loop restarts preserve selection and viewports. Existing
+plots receive updated columns/buffers, keeping their instances during nonempty
+updates. This demonstrates app-owned batched data updates, not the dedicated
+network/append streaming adapters used by the chart reference routes.
+Validate with `M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e tests/e2e/scientificExplorer.spec.ts`.
+That command opens headed Chromium on macOS. When in-app-only validation is
+requested, exercise the demo through the Codex in-app browser instead; do not run
+that browser suite. Typecheck, lint, unit tests, and build do not launch a browser.
+Unit coverage is in `tests/unit/scientificExplorer.test.ts`.
+
 ## Client Data View Integration Checklist
 
 Use the optional client API for repeated filtering, transformations, and styling
@@ -3059,3 +3126,20 @@ M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e tests/e2e/clientPipelineControls.spec
 ```
 
 Set `M_CHARTS_E2E_PORT` to use a different test-server port when 5176 is occupied.
+
+
+### Demo entry and interaction defaults
+
+The overview has one full-card link per chart family. `state/chartNavigation.ts`
+resolves Auto using GPU adapter/device availability and remembers explicit renderer
+choices. `routes/ChartRouteControls.tsx` navigates existing WebGPU/WebGL2 routes,
+preserving portable query settings, dropping backend-specific state, and explaining
+unsupported streaming fallback. WebGL2 gets table-mode controls and histogram
+input-mode controls. Existing WebGPU data controls remain available.
+The scientific explorer uses preset chamber shapes/colors, vibration-driven scatter
+sizes, and reduced size/opacity for dense datasets. Live replay starts immediately,
+loops without changing zoom/selection, and has a single pause/resume action.
+Keyboard S/Z/Escape/R select, zoom, clear selection, and reset view only with chart
+focus. These keys and mouse-wheel shortcuts are configurable in Interactions and stored locally;
+Reset interaction defaults restores them. Reset all rewinds and pauses replay,
+restores highlighting and chart choices, and preserves these saved preferences.

@@ -367,6 +367,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       !areViewportsEqual(options.viewport, previous.viewport);
     const nonViewportDrawChanged =
       (options.focusedPlotId !== undefined && options.focusedPlotId !== previous.focusedPlotId) ||
+      (options.navigatorCssPx !== undefined && options.navigatorCssPx !== previous.navigatorCssPx) ||
       (options.aggregation !== undefined && options.aggregation !== previous.aggregation) ||
       (options.heatmapBinSizePx !== undefined && options.heatmapBinSizePx !== previous.heatmapBinSizePx) ||
       (options.heatmapPalette !== undefined && options.heatmapPalette !== previous.heatmapPalette) ||
@@ -381,6 +382,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
       (options.aggregation !== undefined && options.aggregation !== previous.aggregation) ||
       (options.columns !== undefined && options.columns !== previous.columns) ||
       (options.focusedPlotId !== undefined && options.focusedPlotId !== previous.focusedPlotId) ||
+      (options.navigatorCssPx !== undefined && options.navigatorCssPx !== previous.navigatorCssPx) ||
       (options.heatmapBinSizePx !== undefined && options.heatmapBinSizePx !== previous.heatmapBinSizePx) ||
       (options.spec !== undefined && options.spec !== previous.spec) ||
       (options.visualizationMode !== undefined && options.visualizationMode !== previous.visualizationMode);
@@ -1286,6 +1288,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const theme = this.options.theme ?? DEFAULT_THEME;
     const layout = createFastScatterLayout(this.options.spec, {
       focusedPlotId: this.options.focusedPlotId,
+      navigatorCssPx: this.options.navigatorCssPx,
       heightCssPx: this.heightCssPx,
       widthCssPx: this.widthCssPx,
     });
@@ -2067,6 +2070,7 @@ export class FastScatterWebgpuRenderer implements FastScatterRendererLike {
     const startedAt = performance.now();
     const layout = createFastScatterLayout(this.options.spec, {
       focusedPlotId: this.options.focusedPlotId,
+      navigatorCssPx: this.options.navigatorCssPx,
       heightCssPx: this.heightCssPx,
       widthCssPx: this.widthCssPx,
     });
@@ -2639,6 +2643,7 @@ export function fastScatterWebgpuUpdateRequiresDraw(
   return (
     options.aggregation !== undefined ||
     options.focusedPlotId !== undefined ||
+    options.navigatorCssPx !== undefined ||
     options.heatmapBinSizePx !== undefined ||
     options.heatmapPalette !== undefined ||
     options.opacityScale !== undefined ||

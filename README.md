@@ -484,7 +484,38 @@ pnpm dev
 
 The demo routes are:
 
-- `/`: overview
+- `/`: dashboard showcase and one clickable card per chart. Auto opens WebGPU
+  when available, otherwise WebGL2. Explicit renderer choices are remembered.
+  Chart headers navigate the existing renderer routes and preserve theme and
+  compatible data modes. WebGL2 pages expose table mode and histogram input mode;
+  WebGPU pages also expose local/server streaming. Unsupported streaming switches
+  to static data with a short explanation.
+- `/scientific-explorer`: Scientific Data Explorer / The Linked Lab. Three visible
+  WebGPU charts with Rust/WASM aggregation: timeline, scatter, and histogram.
+  Switch the lower charts to parallel coordinates or a density heatmap.
+  **Explore** starts with 12,000 local synthetic readings. **Large dataset**
+  offers 120,000 or 1,200,000 readings generated in a worker. **Live data** starts
+  automatically from 1,200 readings and loops local batches with pause/resume.
+  Drag to highlight across charts while retaining context; **Filter to selection**
+  narrows linked views. **Select / Zoom**, **Clear selection**, **Reset view**,
+  chart-type toggles, and expansion are directly available. Hover needs no modifier.
+  **Interactions** provides configurable, remembered keyboard shortcuts, mouse-wheel
+  shortcuts, anomaly highlighting, and a gesture reference. Chart menus hold ranges.
+  Preset colors/shapes identify chambers; scatter size represents vibration.
+  Dense datasets use smaller, more transparent symbols. The compact footer
+  shows matching records and measured client-query CPU time.
+  **Reset all** clears filters, stops replay, restores starting rows, default
+  charts, selection behavior, viewports, and plot settings. It retains the current
+  experience, dataset size, theme, and saved shortcut preferences. Switching a
+  chart clears its old selection. The compact desktop toolbar reserves the remaining viewport for charts
+  without page scrolling; mobile stacks charts.
+  **For developers** opens a live, nonmodal panel with events, CPU timings,
+  an API example, matching records, and storage details. Timings are not GPU
+  frame times or end-to-end benchmarks; replay simulates local arrival.
+  Help, ranges, interaction options, and records use accessible dialogs.
+  WebGPU is required. The default dataset uses validated, versioned IndexedDB
+  storage, falling back to memory. Larger datasets stay in memory. No server
+  dataset is requested; filters and viewports are not persisted.
 - `/m-scatter`, `/m-scatter?tables=multi`, `/m-scatter-fixture`
 - `/m-scatter-webgpu`, `/m-scatter-webgpu?tables=multi`,
   `/m-scatter-webgpu-fixture`, `/m-scatter-webgpu-streaming`

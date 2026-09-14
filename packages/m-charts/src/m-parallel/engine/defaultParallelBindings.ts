@@ -101,6 +101,8 @@ interface PendingParallelBrushUpdate {
 }
 
 interface ParallelFastBrushClickState {
+  clientX: number;
+  clientY: number;
   axis: ParallelParameter;
   axisRangeIndex: number;
   timeStamp: number;
@@ -202,6 +204,16 @@ export function createDefaultParallelBindings(
         return;
       }
       event.originalEvent.preventDefault();
+      // A moved brush is a drag, not the first click of a subsequent double click.
+      if (
+        lastBrushClick !== null &&
+        Math.hypot(
+          event.client.x - lastBrushClick.clientX,
+          event.client.y - lastBrushClick.clientY,
+        ) >= VIEWPORT_DRAG_MIN_CSS_PX
+      ) {
+        lastBrushClick = null;
+      }
       const rawValue = rawValueFromClientY(
         event.client.y,
         dragState.axisBounds,
@@ -346,6 +358,8 @@ export function createDefaultParallelBindings(
               ? {
                   axis: hit.axis,
                   axisRangeIndex: hit.axisRangeIndex ?? -1,
+                  clientX: event.client.x,
+                  clientY: event.client.y,
                   timeStamp: event.timeStamp,
                 }
               : null;

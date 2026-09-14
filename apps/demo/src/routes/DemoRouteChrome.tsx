@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ThemeModeSwitch } from '../theme/ThemeModeSwitch.tsx';
+import { ChartRouteControls } from './ChartRouteControls.tsx';
 
 interface DemoRouteLink {
   icon?: 'overview';
@@ -41,6 +42,7 @@ export function DemoSidebarHeader({ links, title }: DemoSidebarHeaderProps) {
           </Link>
         ))}
       </nav>
+      <ChartRouteControls />
     </section>
   );
 }

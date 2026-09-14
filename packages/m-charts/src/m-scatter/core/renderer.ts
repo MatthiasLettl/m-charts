@@ -370,9 +370,11 @@ export class FastScatterWebglRenderer implements FastScatterController {
     const columnsChanged =
       options.columns !== undefined && options.columns !== this.options.columns;
     const specChanged = options.spec !== undefined && options.spec !== this.options.spec;
-    const focusedPlotChanged =
-      options.focusedPlotId !== undefined &&
-      options.focusedPlotId !== this.options.focusedPlotId;
+    const layoutChanged =
+      (options.focusedPlotId !== undefined &&
+        options.focusedPlotId !== this.options.focusedPlotId) ||
+      (options.navigatorCssPx !== undefined &&
+        options.navigatorCssPx !== this.options.navigatorCssPx);
     const selectionChanged =
       options.selectedSourceIndices !== undefined &&
       options.selectedSourceIndices !== this.selectedSourceIndices;
@@ -439,7 +441,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
       this.updateHoverSourceIndex(options.hoverSourceIndex ?? null);
     }
 
-    if (specChanged || focusedPlotChanged) {
+    if (specChanged || layoutChanged) {
       this.updatePlotRects();
       this.aggregateBuffersDirty = true;
     }
@@ -447,7 +449,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
     if (
       columnsChanged ||
       specChanged ||
-      focusedPlotChanged ||
+      layoutChanged ||
       selectionChanged ||
       viewportChanged ||
       renderingModeChanged ||
@@ -462,7 +464,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
       if (
         columnsChanged ||
         specChanged ||
-        focusedPlotChanged ||
+        layoutChanged ||
         selectionChanged ||
         viewportChanged ||
         visualizationModeChanged ||
@@ -582,6 +584,7 @@ export class FastScatterWebglRenderer implements FastScatterController {
       this.widthCssPx > 0 && this.heightCssPx > 0
         ? createFastScatterLayout(this.options.spec, {
             focusedPlotId: this.options.focusedPlotId,
+            navigatorCssPx: this.options.navigatorCssPx,
             heightCssPx: this.heightCssPx,
             widthCssPx: this.widthCssPx,
           }).plotRects
