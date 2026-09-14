@@ -4,6 +4,67 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Demo navigation and interaction refinement
+
+- Consolidated dashboard chrome into three compact rows, moved counts/timings to
+  the footer, and removed the forced desktop minimum height. The chart grid fills
+  the remaining viewport without page scrolling. Replaced text-glyph action icons
+  with consistent SVGs and accessible labels; mobile retains stacked charts.
+
+- Simplified the homepage to one full-card entry per chart, with clear open actions.
+  Auto prefers WebGPU and falls back to WebGL2; explicit renderer choices persist.
+- Added renderer navigation between existing chart routes, preserving compatible
+  theme/data modes and explaining static-data fallback for unsupported streaming.
+  WebGL2 pages now expose table modes and histogram raw/aggregated input.
+- Made linked highlighting the dashboard default, with explicit Filter to selection,
+  Select/Zoom, Clear selection, Reset view, chart-type buttons, and expansion.
+- Enlarged controls and charts, reduced header/statistics copy, and demonstrated
+  chamber shapes/colors and vibration-based size through preset styling.
+- Live data starts immediately and loops, retaining selection and zoom. Added saved
+  keyboard/scroll preferences and gesture help under Interactions.
+
+## Scientific Data Explorer showcase
+
+- Simplified the dashboard to Explore, Large dataset, and Live data, with three
+  visible charts, alternate chart selectors, linked selection and ordinary
+  hover inspection.
+- Added comprehensive Reset all: starting rows, default chart choices, filters,
+  tools and plot settings are restored; replay stops and rewinds. Switching
+  charts removes outgoing filters. Per-chart menus hold zoom reset, ranges and full-chart links.
+- Moved event inspection, CPU timings, API example, records and storage details
+  behind For developers. Kept distinct chamber/selection colors and filter chips.
+- Replaced the dashboard query scan with worker-based library client-data-view
+  predicates. Added 120,000/1,200,000 local datasets and cross-filtering that
+  preserves each chart's own brush context while intersecting all statistics.
+- Added local batch replay with pause/resume, arrival rates, stable IDs, and
+  preserved viewports/filters. Dense plot IDs correctly highlight sparse cohorts;
+  filtered histograms refit counts unless the user has zoomed their viewport.
+
+- Generate the experiment in the browser and cache validated readings in
+  IndexedDB for later visits. Added storage status and local regeneration;
+  storage-denied/quota failures stay usable in memory without server requests.
+- Added `/scientific-explorer` inside the Vite demo, with five linked WebGPU / Rust-WASM views
+  over a deterministic thermal-chamber experiment: time-series scatter, XY
+  scatter, histogram, parallel coordinates, and density heatmap.
+- Application-owned range filters intersect across charts, chamber controls, and
+  anomaly controls. Added precise keyboard/touch controls, cross-filtering, per-view
+  clearing, reset, a shared record table, event inspection, and CPU diagnostics.
+- Use a responsive two-row desktop grid with stacked plots on mobile. Moved help, precise
+  controls, and records into accessible dialogs, with chart shortcuts
+  suspended while dialogs are open. Grouped homepage references by chart family.
+- Render live engine zoom/selection rectangles, lasso paths, and inspection
+  anchors in the explorer. Center parallel brush bands and resize handles on
+  their axes. Homepage previews now share the active light/dark theme.
+- Preserved native zoom, right-button selection, lasso, inspection, pan, and
+  editable parallel brushes; made left-button selection available. Exact
+  source-ID sets intersect across views, including empty and isolated cohorts.
+- Fixed a parallel brush drag being mistaken for the first click of a subsequent
+  double-right-click, which could recreate a zero-width brush after removal.
+- Fixed scatter renderers ignoring the existing `navigatorCssPx` option, including
+  updates and cached WebGPU frames, keeping rendering and hit testing aligned.
+- Added unit and browser regressions for deterministic data, shared identity,
+  brush events, cross-view intersections, empty recovery, theme, and mobile UI.
+
 ## Consistent WebGPU demo pipelines
 
 - Shared the scatter-based pipeline panel, summaries, rule lists, diagnostics,

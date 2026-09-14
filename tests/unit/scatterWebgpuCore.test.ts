@@ -173,6 +173,7 @@ assert.equal(plotOptions.indexedStyle, true);
 assert.equal(plotOptions.aggregationBackend, 'typescript');
 assert.equal(fastScatterWebgpuUpdateRequiresDraw({ hoverSourceIndex: 0 }), false);
 assert.equal(fastScatterWebgpuUpdateRequiresDraw({ onMetrics: undefined }), false);
+assert.equal(fastScatterWebgpuUpdateRequiresDraw({ navigatorCssPx: 0 }), true);
 assert.equal(
   fastScatterWebgpuUpdateRequiresDraw({ viewport: plotOptions.viewport }),
   true,

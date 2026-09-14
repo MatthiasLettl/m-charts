@@ -444,6 +444,27 @@ filter preserves exact nearest-point results with lower resident memory.
 MIT. See [LICENSE](LICENSE).
 
 The demo app in `apps/demo` is an integration example, not the package API.
+Its `/scientific-explorer` showcase presents Explore, Large dataset, and Live data
+experiences with three visible WebGPU charts and two alternate chart choices.
+Rust/WASM aggregation, worker-based `client-data-view` predicates, and exact
+shared IDs link the views. Dragging highlights linked readings by default;
+Filter to selection narrows the other charts. Select/Zoom, clear selection, reset
+view, chart types, and expansion are visible controls. Hover needs no modifier.
+Interactions provides saved shortcut preferences, mouse-wheel shortcuts, and gesture help.
+Preset shape/color identifies chambers; scatter size represents vibration.
+Live data starts immediately and loops with pause/resume.
+Reset all restores filters, chart choices, plot settings, and starting rows;
+replay stops and rewinds. The current experience, size, and theme remain selected.
+Desktop fits the viewport with compact controls and counts/timings in the footer; mobile stacks plots. For developers reveals a nonmodal
+event inspector, CPU timings, an API example, matching records, and storage details.
+All plot adapters translate dense local indices to stable experiment identities.
+The default 12,000 readings are cached in IndexedDB. Larger 120,000/1,200,000
+experiments stay in memory. Local replay preserves filters and viewports through
+batch updates; it does not make network requests or measure GPU frame time.
+Dialogs suspend chart shortcuts; switching chart types removes hidden filters.
+Parallel brush drags no longer count as the first click of a subsequent
+double-right-click removal. The existing scatter `navigatorCssPx` option is honored by both renderers as well
+as the engine, including updates, so drawing and hit testing stay aligned.
 Generated demo data is local to `apps/demo/public/data/` and is not part of this
 package.
 
@@ -474,3 +495,9 @@ The same browser fixtures can be opened in the in-app browser; see
 [Client data views](CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
 GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
 client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.
+
+Demo chart cards choose WebGPU automatically, falling back to WebGL2. Renderer
+controls navigate the existing routes and remember explicit choices. Portable
+theme/data-mode settings carry across; unsupported streaming falls back to static
+data with an explanation. WebGL2 pages expose single/multiple tables and histogram
+raw/aggregated input; WebGPU pages retain their existing streaming controls.

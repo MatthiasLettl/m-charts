@@ -106,111 +106,25 @@ test.beforeAll(() => {
   }
 });
 
-test('overview links only custom plot routes and preserves theme', async ({ page }) => {
+test('overview has one chart entry and renderer navigation preserves portable settings', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('m-charts.demo.renderer', 'webgl2'));
   await page.goto('/?theme=dark&mode=hover&axis=x');
-
-  await expect(
-    page.getByRole('heading', {
-      name: 'WebGL2 and WebGPU charts for fast, interactive exploration of large datasets.',
-    }),
-  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Interactive charts for large datasets.' })).toBeVisible();
   await expect(page.getByText('MIT license')).toBeVisible();
-  await expect(page.getByRole('link', { name: 'MatthiasLettl/m-charts' })).toBeVisible();
-  await expect(page.getByText('m-scatter WebGL2', { exact: true })).toBeVisible();
-  await expect(page.getByText('m-parallel WebGL2', { exact: true })).toBeVisible();
-  await expect(page.getByText('m-histogram WebGL2', { exact: true })).toBeVisible();
-  await expect(page.locator('.prototype-card-title')).toHaveText([
-    'm-scatter WebGL2',
-    'm-scatter WebGPU',
-    'm-histogram WebGL2',
-    'm-histogram WebGPU',
-    'm-parallel WebGL2',
-    'm-parallel WebGPU',
-  ]);
-  const parallelWebgpuCard = page
-    .locator('.prototype-card')
-    .filter({ hasText: 'm-parallel WebGPU' });
-  await expect(parallelWebgpuCard).toContainText('WebGL2-compatible interactions');
-  await expect(parallelWebgpuCard).toContainText(
-    'WebGPU computes pairwise density over every record',
-  );
-  await expect(
-    parallelWebgpuCard.getByRole('link', { name: 'One table' }),
-  ).toHaveAttribute(
-    'href',
-    '/m-parallel-webgpu?points=1000000&theme=dark',
-  );
-  await expect(
-    parallelWebgpuCard.getByRole('link', { name: 'Multiple tables' }),
-  ).toHaveAttribute(
-    'href',
-    '/m-parallel-webgpu?points=1000000&tables=multi&theme=dark',
-  );
-  const webgpuCard = page.locator('.prototype-card').filter({ hasText: 'm-scatter WebGPU' });
-  await expect(webgpuCard.getByRole('link', { name: 'One table' })).toHaveAttribute(
-    'href',
-    '/m-scatter-webgpu?points=1000000&theme=dark',
-  );
-  await expect(webgpuCard.getByRole('link', { name: 'Multiple tables' })).toHaveAttribute(
-    'href',
-    '/m-scatter-webgpu?points=1000000&tables=multi&theme=dark',
-  );
-  await expect(webgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
-    'href',
-    '/m-scatter-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
-  );
-  await expect(webgpuCard.getByRole('link', { name: 'Server stream' })).toHaveAttribute(
-    'href',
-    '/m-scatter-webgpu?webgpuData=stream-function&theme=dark',
-  );
-  const histogramWebgpuCard = page
-    .locator('.prototype-card')
-    .filter({ hasText: 'm-histogram WebGPU' });
-  await expect(histogramWebgpuCard.getByRole('link', { name: 'One table' })).toHaveAttribute(
-    'href',
-    '/m-histogram-webgpu?points=1000000&theme=dark',
-  );
-  await expect(
-    histogramWebgpuCard.getByRole('link', { name: 'Multiple tables' }),
-  ).toHaveAttribute(
-    'href',
-    '/m-histogram-webgpu?points=1000000&tables=multi&theme=dark',
-  );
-  await expect(histogramWebgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
-    'href',
-    '/m-histogram-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
-  );
-  await expect(
-    histogramWebgpuCard.getByRole('link', { name: 'Server stream' }),
-  ).toHaveAttribute(
-    'href',
-    '/m-histogram-webgpu?webgpuData=stream-function&theme=dark',
-  );
-  await expect(parallelWebgpuCard.getByRole('link', { name: 'Streaming' })).toHaveAttribute(
-    'href',
-    '/m-parallel-webgpu?points=1000000&webgpuData=stream-local&theme=dark',
-  );
-  await expect(
-    parallelWebgpuCard.getByRole('link', { name: 'Server stream' }),
-  ).toHaveAttribute(
-    'href',
-    '/m-parallel-webgpu?webgpuData=stream-function&theme=dark',
-  );
-
-  await page.getByRole('link', { name: 'One table' }).first().click();
-  await expect(page).toHaveURL(/\/m-scatter\?mode=hover&axis=x&theme=dark$/);
-
-  await page.goto('/?theme=dark');
-  await page.getByRole('link', { name: 'Multiple tables' }).first().click();
-  await expect(page).toHaveURL('/m-scatter?tables=multi&theme=dark');
-
-  await page.goto('/?theme=dark');
-  await page
-    .locator('.prototype-card')
-    .filter({ hasText: 'm-histogram WebGL2' })
-    .getByRole('link', { name: 'Pre-aggregated bars' })
-    .click();
-  await expect(page).toHaveURL('/m-histogram?histMode=bar&theme=dark');
+  await expect(page.locator('.overview-chart-link')).toHaveCount(3);
+  await expect(page.getByRole('link', { name: 'One table', exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Open histogram', exact: true }).click();
+  await expect(page).toHaveURL('/m-histogram?theme=dark');
+  await page.getByLabel('Input mode', { exact: true }).selectOption('bar');
+  await expect(page).toHaveURL(/histMode=bar/);
+  await page.getByLabel('Renderer', { exact: true }).selectOption('webgpu');
+  await expect(page).toHaveURL(/m-histogram-webgpu\?theme=dark&histMode=bar&points=1000000/);
+  await expect(page.getByTestId('histogram-webgpu-input-mode').getByRole('radio', { name: 'Pre-aggregated bars' })).toBeChecked();
+  await page.getByLabel('Renderer', { exact: true }).selectOption('webgl2');
+  await expect(page.getByLabel('Input mode', { exact: true })).toHaveValue('bar');
+  await page.getByLabel('Input mode', { exact: true }).selectOption('histogram');
+  await page.getByLabel('Data mode', { exact: true }).selectOption('multi');
+  await expect(page).toHaveURL(/tables=multi/);
 });
 
 test('m-histogram WebGPU route preserves the histogram surface and reports availability', async ({
@@ -2547,3 +2461,16 @@ async function plotPoint(
 async function readHistogramState(page: Page): Promise<unknown> {
   return page.evaluate(() => window.__histogramFastRouteStateTestHook?.() ?? null);
 }
+
+test('homepage showcase and reference previews share the active theme', async ({ page }) => {
+  await page.goto('/?theme=light');
+  const previews = page.locator('.overview-lab-preview, .overview-reference-grid .preview');
+  await expect(previews).toHaveCount(4);
+  const light = await previews.evaluateAll(elements => elements.map(el => getComputedStyle(el).backgroundColor));
+  expect(new Set(light).size).toBe(1);
+  await page.getByTestId('theme-mode-switch').click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const dark = await previews.evaluateAll(elements => elements.map(el => getComputedStyle(el).backgroundColor));
+  expect(new Set(dark).size).toBe(1);
+  expect(dark[0]).not.toBe(light[0]);
+});

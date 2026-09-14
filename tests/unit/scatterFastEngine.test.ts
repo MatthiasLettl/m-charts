@@ -990,4 +990,20 @@ assert.equal(
 );
 asynchronousPlot.dispose();
 
+// Compact dashboards must share navigator reservations with their renderer.
+const compactHost = new FakeElement(document);
+compactHost.setRect(320, 180);
+let initialNavigator: number | undefined;
+const compactRenderer = new MockRenderer(() => {});
+const compactPlot = createFastScatterPlot(compactHost as unknown as HTMLElement, {
+  ...createOptions((options) => { initialNavigator = options.navigatorCssPx; return compactRenderer; }),
+  navigatorCssPx: 0,
+});
+assert.equal(initialNavigator, 0);
+assert.equal(compactPlot.commands.getPlotRectAtPoint(105, 13)?.heightCssPx, 120);
+compactPlot.update({ navigatorCssPx: 36 });
+assert.equal((compactRenderer.updates.at(-1) as { navigatorCssPx: number }).navigatorCssPx, 36);
+assert.equal(compactPlot.commands.getPlotRectAtPoint(105, 13)?.heightCssPx, 84);
+compactPlot.dispose();
+
 console.log('scatter-fast engine lifecycle tests passed');

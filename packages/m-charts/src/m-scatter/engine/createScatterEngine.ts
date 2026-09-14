@@ -2356,7 +2356,6 @@ function buildRendererUpdateOptions(
   delete controllerOptions.dataDomain;
   delete controllerOptions.forceWebglUnavailable;
   delete controllerOptions.hostClassName;
-  delete controllerOptions.navigatorCssPx;
   delete controllerOptions.onReferenceLineChange;
   delete controllerOptions.onReferenceLineCreateRequest;
   delete controllerOptions.onReferenceLineHoverChange;

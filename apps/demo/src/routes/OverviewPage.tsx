@@ -1,4 +1,5 @@
-import type { CSSProperties } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { chartTarget, readRendererPreference, resolveDemoRenderer, type DemoRenderer } from '../state/chartNavigation.ts';
 import { Link, useLocation } from 'react-router-dom';
 import { createThemeAwareTo } from '../state/themeMode.ts';
 import { ThemeModeSwitch } from '../theme/ThemeModeSwitch.tsx';
@@ -7,138 +8,15 @@ import { useThemeMode } from '../theme/ThemeModeProvider.tsx';
 export function OverviewPage() {
   const location = useLocation();
   const { themeMode } = useThemeMode();
-  const mScatterTarget = createThemeAwareTo(
-    '/m-scatter',
-    location.search,
-    themeMode,
-  );
-  const mScatterMultiTarget = createThemeAwareTo(
-    '/m-scatter',
-    appendSearchParam(location.search, 'tables', 'multi'),
-    themeMode,
-    { preserveKeys: ['tables'] },
-  );
-  const mScatterWebgpuTarget = createThemeAwareTo(
-    '/m-scatter-webgpu',
-    appendSearchParam(location.search, 'points', '1000000'),
-    themeMode,
-    { preserveKeys: ['points'] },
-  );
-  const mScatterWebgpuMultiTarget = createThemeAwareTo(
-    '/m-scatter-webgpu',
-    appendSearchParams(location.search, {
-      points: '1000000',
-      tables: 'multi',
-    }),
-    themeMode,
-    { preserveKeys: ['points', 'tables'] },
-  );
-  const mScatterWebgpuStreamingTarget = createThemeAwareTo(
-    '/m-scatter-webgpu',
-    appendSearchParams(location.search, {
-      points: '1000000',
-      webgpuData: 'stream-local',
-    }),
-    themeMode,
-    { preserveKeys: ['points', 'webgpuData'] },
-  );
-  const mScatterWebgpuServerStreamTarget = createThemeAwareTo(
-    '/m-scatter-webgpu',
-    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
-    themeMode,
-    { preserveKeys: ['webgpuData'] },
-  );
-  const mParallelTarget = createThemeAwareTo(
-    '/m-parallel',
-    location.search,
-    themeMode,
-  );
-  const mParallelMultiTarget = createThemeAwareTo(
-    '/m-parallel',
-    appendSearchParam(location.search, 'tables', 'multi'),
-    themeMode,
-    { preserveKeys: ['tables'] },
-  );
-  const mParallelWebgpuTarget = createThemeAwareTo(
-    '/m-parallel-webgpu',
-    appendSearchParam(location.search, 'points', '1000000'),
-    themeMode,
-    { preserveKeys: ['points'] },
-  );
-  const mParallelWebgpuMultiTarget = createThemeAwareTo(
-    '/m-parallel-webgpu',
-    appendSearchParams(location.search, {
-      points: '1000000',
-      tables: 'multi',
-    }),
-    themeMode,
-    { preserveKeys: ['points', 'tables'] },
-  );
-  const mParallelWebgpuStreamingTarget = createThemeAwareTo(
-    '/m-parallel-webgpu',
-    appendSearchParams(location.search, {
-      points: '1000000',
-      webgpuData: 'stream-local',
-    }),
-    themeMode,
-    { preserveKeys: ['points', 'webgpuData'] },
-  );
-  const mParallelWebgpuServerStreamTarget = createThemeAwareTo(
-    '/m-parallel-webgpu',
-    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
-    themeMode,
-    { preserveKeys: ['webgpuData'] },
-  );
-  const mHistogramTarget = createThemeAwareTo(
-    '/m-histogram',
-    location.search,
-    themeMode,
-  );
-  const mHistogramMultiTarget = createThemeAwareTo(
-    '/m-histogram',
-    appendSearchParam(location.search, 'tables', 'multi'),
-    themeMode,
-    { preserveKeys: ['tables'] },
-  );
-  const mHistogramBarTarget = createThemeAwareTo(
-    '/m-histogram',
-    appendSearchParam(location.search, 'histMode', 'bar'),
-    themeMode,
-    { preserveKeys: ['histMode'] },
-  );
-  const mHistogramWebgpuTarget = createThemeAwareTo(
-    '/m-histogram-webgpu',
-    appendSearchParam(location.search, 'points', '1000000'),
-    themeMode,
-    { preserveKeys: ['points'] },
-  );
-  const mHistogramWebgpuMultiTarget = createThemeAwareTo(
-    '/m-histogram-webgpu',
-    appendSearchParams(location.search, { points: '1000000', tables: 'multi' }),
-    themeMode,
-    { preserveKeys: ['points', 'tables'] },
-  );
-  const mHistogramWebgpuStreamingTarget = createThemeAwareTo(
-    '/m-histogram-webgpu',
-    appendSearchParams(location.search, {
-      points: '1000000',
-      webgpuData: 'stream-local',
-    }),
-    themeMode,
-    { preserveKeys: ['points', 'webgpuData'] },
-  );
-  const mHistogramWebgpuServerStreamTarget = createThemeAwareTo(
-    '/m-histogram-webgpu',
-    appendSearchParam(location.search, 'webgpuData', 'stream-function'),
-    themeMode,
-    { preserveKeys: ['webgpuData'] },
-  );
-  const mHistogramWebgpuBarTarget = createThemeAwareTo(
-    '/m-histogram-webgpu',
-    appendSearchParam(location.search, 'histMode', 'bar'),
-    themeMode,
-    { preserveKeys: ['histMode'] },
-  );
+  const [renderer, setRenderer] = useState<DemoRenderer>('webgpu');
+  useEffect(() => {
+    let active = true;
+    void resolveDemoRenderer(readRendererPreference()).then((next) => {
+      if (active) setRenderer(next);
+    });
+    return () => { active = false; };
+  }, []);
+  const themeSearch = themeMode === 'dark' ? '?theme=dark' : '';
 
   return (
     <main className="overview-shell" aria-labelledby="overview-title">
@@ -146,19 +24,14 @@ export function OverviewPage() {
         <div className="overview-heading">
           <div>
             <p className="overview-kicker">m-charts demo app</p>
-            <h1 id="overview-title">
-              WebGL2 and WebGPU charts for fast, interactive exploration of large datasets.
-            </h1>
+            <h1 id="overview-title">Interactive charts for large datasets.</h1>
           </div>
           <ThemeModeSwitch />
         </div>
         <div className="overview-intro">
           <p>
-            m-charts combines WebGL2 and WebGPU rendering with Rust/WASM
-            aggregation for high-performance data exploration in the browser.
-            This demo covers scatter plots, histograms, and parallel coordinates
-            across datasets of up to 25 million records, with responsive zoom,
-            pan, brushing, selection, measurement, and inspection.
+            Explore up to 25 million records with WebGPU, WebGL2, and Rust/WASM.
+            Start with a complete application or dive into an individual chart.
           </p>
           <p>
             The library is open source under the MIT license. Repository:{' '}
@@ -172,134 +45,105 @@ export function OverviewPage() {
             .
           </p>
         </div>
-        <div className="prototype-card-grid">
-          <article
-            className="prototype-card"
+        <section
+          className="overview-showcases"
+          aria-labelledby="showcases-title"
+        >
+          <div className="overview-section-heading">
+            <h2 id="showcases-title">Charts in context</h2>
+          </div>
+          <Link
+            className="overview-showcase"
+            to={createThemeAwareTo(
+              '/scientific-explorer',
+              location.search,
+              themeMode,
+            )}
           >
+            <div className="overview-lab-preview" aria-hidden="true">
+              <span>THE LINKED LAB</span>
+              <svg viewBox="0 0 440 130">
+                <path d="M0 90 Q35 20 70 74 T140 70 T210 74 T280 68 T350 72 T440 65" />
+                <path d="M0 100 Q35 35 70 84 T140 80 Q175 10 200 40 T250 84 T320 80 T390 80 T440 80" />
+                <path d="M0 110 Q35 50 70 94 T140 94 T210 94 T280 94 Q350 85 440 22" />
+                <rect x="175" y="5" width="75" height="120" />
+              </svg>
+              <div>
+                <i />
+                <i />
+                <i />
+                <i />
+                <i />
+              </div>
+            </div>
+            <div className="overview-showcase-copy">
+              <span className="overview-showcase-badge">WEBGPU · WASM</span>
+              <h3>Scientific data explorer</h3>
+              <p>
+                Select a signal. See the connections. Explore a million readings
+                or watch them arrive live.
+              </p>
+              <span className="overview-showcase-meta">
+                Linked charts · 1.2M readings · Live replay
+              </span>
+              <strong>
+                Open dashboard <span aria-hidden="true">→</span>
+              </strong>
+            </div>
+          </Link>
+        </section>
+        <div className="overview-section-heading">
+          <h2>Explore the charts</h2>
+          <p>Choose a chart. Explore data, rendering, and interactions inside.</p>
+        </div>
+        <div className="prototype-card-grid overview-reference-grid">
+          <Link className="prototype-card overview-chart-link" aria-label="Open scatter" to={chartTarget('scatter', renderer, themeSearch)}>
             <ScatterPreview variant="fast" />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-scatter WebGL2</span>
-              <span className="prototype-card-copy">
-                Explore million-point scatter plots with zoom, pan, lasso,
-                measurement, point, bubble, and heat-map views.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mScatterTarget}>One table</Link>
-                <Link to={mScatterMultiTarget}>Multiple tables</Link>
-              </span>
-            </span>
-          </article>
-          <article className="prototype-card">
-            <ScatterPreview variant="fast" />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-scatter WebGPU</span>
-              <span className="prototype-card-copy">
-                Explore up to 25 million points with WebGL2-compatible
-                interactions. Dense views render up to one million
-                representatives per subplot, while selection stays exact and
-                zoom restores full detail.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mScatterWebgpuTarget}>One table</Link>
-                <Link to={mScatterWebgpuMultiTarget}>Multiple tables</Link>
-                <Link to={mScatterWebgpuStreamingTarget}>Streaming</Link>
-                <Link to={mScatterWebgpuServerStreamTarget}>Server stream</Link>
-              </span>
-            </span>
-          </article>
-          <article
-            className="prototype-card"
-          >
+            <div className="prototype-card-body">
+              <h3 className="prototype-card-title">Scatter</h3>
+              <p className="prototype-card-copy">
+                Points, bubbles, and density maps. Zoom, select, and inspect
+                large datasets.
+              </p>
+              <div className="overview-capabilities"><span>WebGPU · WASM</span><span>WebGL2</span></div>
+              <span className="overview-open">Open scatter <span aria-hidden="true">→</span></span>
+            </div>
+          </Link>
+          <Link className="prototype-card overview-chart-link" aria-label="Open histogram" to={chartTarget('histogram', renderer, themeSearch)}>
             <HistogramPreview />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-histogram WebGL2</span>
-              <span className="prototype-card-copy">
-                Inspect distributions from raw records, multiple tables, or
-                pre-aggregated bars with selection and bin-size controls.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mHistogramTarget}>One table</Link>
-                <Link to={mHistogramMultiTarget}>Multiple tables</Link>
-                <Link to={mHistogramBarTarget}>Pre-aggregated bars</Link>
-              </span>
-            </span>
-          </article>
-          <article className="prototype-card">
-            <HistogramPreview />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-histogram WebGPU</span>
-              <span className="prototype-card-copy">
-                Explore distributions across up to 25 million records with
-                WebGL2-compatible interactions. Rust/WASM aggregates every
-                record by default, while WebGPU renders every resulting bin
-                without sampling.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mHistogramWebgpuTarget}>One table</Link>
-                <Link to={mHistogramWebgpuMultiTarget}>Multiple tables</Link>
-                <Link to={mHistogramWebgpuStreamingTarget}>Streaming</Link>
-                <Link to={mHistogramWebgpuServerStreamTarget}>Server stream</Link>
-                <Link to={mHistogramWebgpuBarTarget}>Pre-aggregated bars</Link>
-              </span>
-            </span>
-          </article>
-          <article
-            className="prototype-card"
-          >
+            <div className="prototype-card-body">
+              <h3 className="prototype-card-title">Histogram</h3>
+              <p className="prototype-card-copy">
+                Distributions from raw records or aggregated bars. Every record
+                counts.
+              </p>
+              <div className="overview-capabilities"><span>WebGPU · WASM</span><span>WebGL2</span></div>
+              <span className="overview-open">Open histogram <span aria-hidden="true">→</span></span>
+            </div>
+          </Link>
+          <Link className="prototype-card overview-chart-link" aria-label="Open parallel coordinates" to={chartTarget('parallel', renderer, themeSearch)}>
             <ParallelPreview variant="fast" />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-parallel WebGL2</span>
-              <span className="prototype-card-copy">
-                Compare many records across axes with brushing, hover
-                inspection, selection export, and adjustable line density.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mParallelTarget}>One table</Link>
-                <Link to={mParallelMultiTarget}>Multiple tables</Link>
-              </span>
-            </span>
-          </article>
-          <article className="prototype-card">
-            <ParallelPreview variant="fast" />
-            <span className="prototype-card-body">
-              <span className="prototype-card-title">m-parallel WebGPU</span>
-              <span className="prototype-card-copy">
-                Explore up to 25 million rows with WebGL2-compatible
-                interactions. WebGPU computes pairwise density over every
-                record, while Rust/WASM-backed selection stays exact and axis
-                zoom restores raw-detail lines.
-              </span>
-              <span className="prototype-card-actions">
-                <Link to={mParallelWebgpuTarget}>One table</Link>
-                <Link to={mParallelWebgpuMultiTarget}>Multiple tables</Link>
-                <Link to={mParallelWebgpuStreamingTarget}>Streaming</Link>
-                <Link to={mParallelWebgpuServerStreamTarget}>Server stream</Link>
-              </span>
-            </span>
-          </article>
+            <div className="prototype-card-body">
+              <h3 className="prototype-card-title">Parallel coordinates</h3>
+              <p className="prototype-card-copy">
+                Compare records across dimensions with axis brushing and exact
+                selection.
+              </p>
+              <div className="overview-capabilities"><span>WebGPU · WASM</span><span>WebGL2</span></div>
+              <span className="overview-open">Open parallel coordinates <span aria-hidden="true">→</span></span>
+            </div>
+          </Link>
         </div>
       </section>
     </main>
   );
 }
 
-function appendSearchParam(search: string, key: string, value: string): string {
-  return appendSearchParams(search, { [key]: value });
-}
-
-function appendSearchParams(
-  search: string,
-  values: Readonly<Record<string, string>>,
-): string {
-  const params = new URLSearchParams(search);
-  for (const [key, value] of Object.entries(values)) {
-    params.set(key, value);
-  }
-  const serialized = params.toString();
-  return serialized === '' ? '' : `?${serialized}`;
-}
-
-function ScatterPreview({ variant = 'native' }: { variant?: 'fast' | 'native' }) {
+function ScatterPreview({
+  variant = 'native',
+}: {
+  variant?: 'fast' | 'native';
+}) {
   return (
     <span
       className="preview preview-scatter"
@@ -310,18 +154,24 @@ function ScatterPreview({ variant = 'native' }: { variant?: 'fast' | 'native' })
         <span
           className="preview-point"
           key={index}
-          style={{
-            '--preview-x': `${8 + ((index * 17) % 86)}%`,
-            '--preview-y': `${12 + ((index * 29) % 72)}%`,
-            '--preview-size': `${3 + (index % 4)}px`,
-          } as CSSProperties}
+          style={
+            {
+              '--preview-x': `${8 + ((index * 17) % 86)}%`,
+              '--preview-y': `${12 + ((index * 29) % 72)}%`,
+              '--preview-size': `${3 + (index % 4)}px`,
+            } as CSSProperties
+          }
         />
       ))}
     </span>
   );
 }
 
-function ParallelPreview({ variant = 'native' }: { variant?: 'fast' | 'native' }) {
+function ParallelPreview({
+  variant = 'native',
+}: {
+  variant?: 'fast' | 'native';
+}) {
   const paths = [
     '8,56 28,24 48,42 68,18 92,35',
     '8,22 28,48 48,26 68,52 92,16',
@@ -338,7 +188,14 @@ function ParallelPreview({ variant = 'native' }: { variant?: 'fast' | 'native' }
     >
       <svg viewBox="0 0 100 80" role="img">
         {[8, 28, 48, 68, 92].map((x) => (
-          <line className="preview-axis" key={x} x1={x} x2={x} y1="10" y2="70" />
+          <line
+            className="preview-axis"
+            key={x}
+            x1={x}
+            x2={x}
+            y1="10"
+            y2="70"
+          />
         ))}
         {paths.map((points) => (
           <polyline className="preview-line" key={points} points={points} />

@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { OverviewPage } from './routes/OverviewPage.tsx';
 import { MParallelPlotRoute } from './routes/MParallelPlotRoute.tsx';
@@ -8,10 +9,30 @@ import { MScatterStreamingRoute } from './routes/MScatterStreamingRoute.tsx';
 import { MHistogramPackageFixture } from './routes/MHistogramPackageFixture.tsx';
 import { MHistogramPlotRoute } from './routes/MHistogramPlotRoute.tsx';
 
+const ScientificExplorerRoute = lazy(() =>
+  import('./routes/ScientificExplorerRoute.tsx').then((module) => ({
+    default: module.ScientificExplorerRoute,
+  })),
+);
+
 export default function App() {
   return (
     <Routes>
       <Route path="/" element={<OverviewPage />} />
+      <Route
+        path="/scientific-explorer"
+        element={
+          <Suspense
+            fallback={
+              <main className="overview-shell" role="status">
+                Loading the scientific explorer…
+              </main>
+            }
+          >
+            <ScientificExplorerRoute />
+          </Suspense>
+        }
+      />
       <Route path="/m-scatter" element={<MScatterPlotRoute />} />
       <Route path="/m-scatter-fixture" element={<MScatterPackageFixture />} />
       <Route
@@ -22,7 +43,10 @@ export default function App() {
         path="/m-scatter-webgpu-fixture"
         element={<MScatterPackageFixture rendererBackend="webgpu" />}
       />
-      <Route path="/m-scatter-webgpu-streaming" element={<MScatterStreamingRoute />} />
+      <Route
+        path="/m-scatter-webgpu-streaming"
+        element={<MScatterStreamingRoute />}
+      />
       <Route path="/m-parallel" element={<MParallelPlotRoute />} />
       <Route path="/m-parallel-fixture" element={<MParallelPackageFixture />} />
       <Route
@@ -38,7 +62,10 @@ export default function App() {
         path="/m-histogram-webgpu"
         element={<MHistogramPlotRoute rendererBackend="webgpu" />}
       />
-      <Route path="/m-histogram-fixture" element={<MHistogramPackageFixture />} />
+      <Route
+        path="/m-histogram-fixture"
+        element={<MHistogramPackageFixture />}
+      />
       <Route
         path="/m-histogram-webgpu-fixture"
         element={<MHistogramPackageFixture rendererBackend="webgpu" />}

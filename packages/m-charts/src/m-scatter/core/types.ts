@@ -449,6 +449,8 @@ export interface FastScatterEasterEggPlaybackOptions {
 }
 
 export interface FastScatterControllerOptions {
+  /** Vertical space reserved for the navigator; zero hides it. */
+  navigatorCssPx?: number;
   columns: FastScatterPointColumns;
   hoverIndex?: FastScatterHoverIndexSet | null;
   focusedPlotId?: string | null;
