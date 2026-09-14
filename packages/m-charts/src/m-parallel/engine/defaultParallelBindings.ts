@@ -24,6 +24,7 @@ import {
   type ParallelParameter,
 } from '../core/index.js';
 import type { ParallelFastBinding, ParallelFastPlotInstance } from './types.js';
+import { createParallelInspectionScheduler } from './inspectionScheduler.js';
 import type {
   ParallelFastBrushChangeReason,
   ParallelFastBrushDefaultAction,
@@ -140,7 +141,6 @@ export function createDefaultParallelBindings(
     let currentBrushIntervals = plot.commands.getStateSnapshot().brush.brushIntervals;
     let latestBrushUpdate: PendingParallelBrushUpdate | null = null;
     let latestInspectionActive = plot.commands.getStateSnapshot().inspection !== null;
-    let inspectionRequestSequence = 0;
     let lastBrushClick: ParallelFastBrushClickState | null = null;
     const viewportOverlay = coordinateTarget.ownerDocument.createElement('div');
     viewportOverlay.className = 'parallel-fast-axis-viewport-box';
@@ -183,20 +183,27 @@ export function createDefaultParallelBindings(
     const pendingBrush = createLatestRafScheduler<PendingParallelBrushUpdate>(() => {
       flushLatestBrushUpdate();
     });
-    const pendingInspection = createLatestRafScheduler<NormalizedPointerEvent>(
-      (event) => {
-        const requestSequence = ++inspectionRequestSequence;
-        resolveInspection(
-          plot,
-          event,
-          options.inspection,
-          requestSequence,
-          () => inspectionRequestSequence,
-        );
-        latestInspectionActive =
-          plot.commands.getStateSnapshot().inspection !== null;
+    const pendingInspection = createParallelInspectionScheduler<NormalizedPointerEvent>(
+      (event, isCurrent) => {
+        const result = resolveInspection(plot, event, options.inspection, isCurrent);
+        const updateActive = () => {
+          if (isCurrent()) {
+            latestInspectionActive =
+              plot.commands.getStateSnapshot().inspection !== null;
+          }
+        };
+        if (result === undefined) updateActive();
+        else return result.then(updateActive);
       },
+      (error) => console.error('Parallel hover lookup failed.', error),
     );
+    // View changes invalidate results computed against the previous geometry.
+    disposables.push(toDisposable(plot.on('axisviewportchange', () => {
+      pendingInspection.cancel();
+    })));
+    disposables.push(toDisposable(plot.on('axisviewportpreview', () => {
+      pendingInspection.cancel();
+    })));
     const scheduleBrushDragMove = (event: NormalizedPointerEvent) => {
       if (dragState === null) {
         return;
@@ -294,6 +301,7 @@ export function createDefaultParallelBindings(
     disposables.push(
       toDisposable(inputAdapter.on('pointer', (event) => {
         if (event.type === 'pointerdown') {
+          pendingInspection.cancel();
           const hit = brushHitTest?.(event, plot) ?? null;
           const axisBrushGesture = resolveAxisBrushGesture(
             event,
@@ -455,10 +463,9 @@ export function createDefaultParallelBindings(
             options.inspection?.explicitHoverModeActive?.() === true
           ) {
             pendingInspection.schedule(event);
-          } else if (latestInspectionActive) {
+          } else {
             pendingInspection.cancel();
-            inspectionRequestSequence += 1;
-            clearInspection(plot);
+            if (latestInspectionActive) clearInspection(plot);
             latestInspectionActive = false;
           }
         }
@@ -471,7 +478,6 @@ export function createDefaultParallelBindings(
             return;
           }
           pendingInspection.cancel();
-          inspectionRequestSequence += 1;
           if (latestInspectionActive) {
             clearInspection(plot);
             latestInspectionActive = false;
@@ -512,7 +518,6 @@ export function createDefaultParallelBindings(
     disposables.push(
       addEventListenerDisposable(inputElement, 'pointerleave', () => {
         pendingInspection.cancel();
-        inspectionRequestSequence += 1;
         if (latestInspectionActive) {
           clearInspection(plot);
           latestInspectionActive = false;
@@ -809,9 +814,8 @@ function resolveInspection(
   plot: ParallelFastPlotInstance,
   event: NormalizedPointerEvent,
   options: ParallelFastInspectionOptions | undefined,
-  requestSequence: number,
-  getRequestSequence: () => number,
-): void {
+  isCurrent: () => boolean,
+): void | Promise<void> {
   const buffers = getBuffersFromPlot(plot);
   const rect = plot.commands.getHostElement().getBoundingClientRect();
   const width = Math.max(1, rect.width);
@@ -833,12 +837,11 @@ function resolveInspection(
     plotWidthPx: width,
   });
   if (rendererLookup !== null) {
-    void rendererLookup.then((nearest) => {
-      if (requestSequence !== getRequestSequence()) return;
+    return rendererLookup.then((nearest) => {
+      if (!isCurrent()) return;
       const resolveMs = performance.now() - startedAt;
       applyResolvedInspection(plot, nearest, resolveMs, 'index');
     });
-    return;
   }
   const nearest =
     hoverIndex === null

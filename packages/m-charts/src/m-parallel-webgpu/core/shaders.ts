@@ -692,6 +692,8 @@ struct HoverUniform {
   sourceIndicesMapped: u32,
   pairCount: u32,
   activeMask: u32,
+  groupOffset: u32,
+  groupCount: u32,
 }
 
 struct HoverResult {
@@ -704,6 +706,26 @@ struct HoverResult {
 @group(0) @binding(2) var<uniform> uniforms: HoverUniform;
 @group(0) @binding(3) var<storage, read_write> result: HoverResult;
 @group(0) @binding(4) var<storage, read> sourceIndices: array<u32>;
+@group(0) @binding(5) var<storage, read_write> groupResults: array<vec2<u32>>;
+
+var<workgroup> nearestRecords: array<vec2<u32>, 256>;
+
+fn nearerRecord(left: vec2<u32>, right: vec2<u32>) -> vec2<u32> {
+  if (right.x < left.x || (right.x == left.x && right.y < left.y)) { return right; }
+  return left;
+}
+
+fn reduceNearest(localId: u32, candidate: vec2<u32>) -> vec2<u32> {
+  nearestRecords[localId] = candidate;
+  workgroupBarrier();
+  for (var stride = 128u; stride > 0u; stride /= 2u) {
+    if (localId < stride) {
+      nearestRecords[localId] = nearerRecord(nearestRecords[localId], nearestRecords[localId + stride]);
+    }
+    workgroupBarrier();
+  }
+  return nearestRecords[0];
+}
 
 fn isActiveRow(row: u32) -> bool {
   let offset = max(1u, (uniforms.pageRecordCount * uniforms.axisCount + 1u) / 2u);
@@ -792,22 +814,31 @@ fn distanceSquared(localIndex: u32) -> f32 {
 }
 
 @compute @workgroup_size(256)
-fn findDistance(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= uniforms.pageRecordCount || !isActiveRow(id.x)) { return; }
-  atomicMin(&result.distance, bitcast<u32>(distanceSquared(id.x)));
+fn findDistance(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(local_invocation_index) localId: u32,
+  @builtin(workgroup_id) groupId: vec3<u32>,
+) {
+  var candidate = vec2<u32>(0x7f800000u, 0xffffffffu);
+  if (id.x < uniforms.pageRecordCount && isActiveRow(id.x)) {
+    var sourceIndex = uniforms.pageStart + id.x;
+    if (uniforms.sourceIndicesMapped != 0u) { sourceIndex = sourceIndices[id.x]; }
+    candidate = vec2<u32>(bitcast<u32>(distanceSquared(id.x)), sourceIndex);
+  }
+  let nearest = reduceNearest(localId, candidate);
+  if (localId == 0u) { groupResults[uniforms.groupOffset + groupId.x] = nearest; }
 }
 
 @compute @workgroup_size(256)
-fn findSource(@builtin(global_invocation_id) id: vec3<u32>) {
-  if (id.x >= uniforms.pageRecordCount || !isActiveRow(id.x)) { return; }
-  let distance = bitcast<u32>(distanceSquared(id.x));
-  if (distance == atomicLoad(&result.distance)) {
-    let sourceIndex = select(
-      uniforms.pageStart + id.x,
-      sourceIndices[id.x],
-      uniforms.sourceIndicesMapped != 0u,
-    );
-    atomicMin(&result.sourceIndex, sourceIndex);
+fn findSource(@builtin(local_invocation_index) localId: u32) {
+  var candidate = vec2<u32>(0x7f800000u, 0xffffffffu);
+  for (var group = localId; group < uniforms.groupCount; group += 256u) {
+    candidate = nearerRecord(candidate, groupResults[group]);
+  }
+  let nearest = reduceNearest(localId, candidate);
+  if (localId == 0u) {
+    atomicStore(&result.distance, nearest.x);
+    atomicStore(&result.sourceIndex, nearest.y);
   }
 }
 `;

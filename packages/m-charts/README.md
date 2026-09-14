@@ -402,7 +402,11 @@ its deterministic stride to one once every qualifying line fits. A bounded
 source-index readback promotes that detail layer to raw-derived,
 viewport-relative Float32 coordinates; hybrid hover uses precisely the same
 geometry for its fast path and falls back to a coalesced full-population GPU
-lookup for density or overflow segments outside the detail population. Exact
+lookup for density or overflow segments outside the detail population. Default
+bindings run one hover lookup at a time and retain the latest pending pointer;
+completed results remain visible during movement. GPU picking reduces candidates
+within workgroups, scans source coordinates once, and reuses scratch buffers.
+The hit tolerance and deterministic source-index tie break are unchanged. Exact
 selection uses Rust/Wasm
 when its retained typed copy is memory-safe and the source-column implementation
 for larger inputs. See

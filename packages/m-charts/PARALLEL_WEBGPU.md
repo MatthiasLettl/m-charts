@@ -155,10 +155,21 @@ independent of the underlying series palette.
 Shift-hover runs a two-pass GPU reduction. Direct and density-only modes search
 the complete dataset. Hybrid mode searches the currently drawn population:
 initial representatives at the full view and viewport-refined lines after a
-committed zoom. GPU-resident source mappings return the public source index
-without reading back the compacted population. This prevents hover from
-introducing a polyline that was only implicit in aggregate density. Only the
-winning record is read back, and stale asynchronous results are discarded.
+committed zoom, with full-population fallback for density and overflow segments
+when the detail hit is more than two pixels away. GPU-resident source mappings
+return the public source index without reading back the compacted population.
+The first pass reduces distance/source-index pairs inside each workgroup; the
+second reduces only those winners. This scans source coordinates once and avoids
+per-record contention on global atomics, including tied overflow segments after
+zoom. Only the winning record is read back. Result, readback, workgroup and
+uniform buffers are reused with exclusive leases for concurrent queries.
+
+Default bindings permit one pointer lookup in flight and retain only the latest
+pending pointer. A completed result is published during continuous movement,
+then the newest pointer is processed on the next frame. Shift release, pointer
+leave, viewport changes and disposal invalidate pending results. The exact-hit
+fast path, six-pixel fallback acceptance and lowest-source-index tie break remain
+unchanged; synchronous WebGL2 lookups retain their existing behavior.
 
 ## Axis viewports
 
@@ -285,6 +296,14 @@ Hardware-backed WebGPU rendering, zoom, and hover validation is opt-in:
 ```sh
 M_CHARTS_ENABLE_WEBGPU_E2E=1 pnpm test:e2e
 ```
+
+For validation entirely in the in-app browser, start `pnpm dev` and open
+`/@fs<absolute-repo-path>/tests/browser/parallelHover.html` on the dev server.
+The fixture checks GPU picking, WASM selection, cancellation and continuous
+movement with deliberately delayed readbacks, then reports zoomed fallback
+median/p95 timings at 1M rows. Add `?rows=10000000` for 10M rows; that size uses
+the existing TypeScript selection fallback. The same fixture is exercised by
+`tests/e2e/parallelHoverPerformance.spec.ts` in automated WebGPU runs.
 
 ## Optional resident client pipeline
 

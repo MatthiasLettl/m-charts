@@ -51,7 +51,7 @@ const AXIS_CONFIG_BYTES = 64;
 const COMPUTE_UNIFORM_BYTES = 64;
 const RENDER_UNIFORM_BYTES = 96;
 const DIRECT_UNIFORM_BYTES = 48;
-const HOVER_UNIFORM_BYTES = 48;
+const HOVER_UNIFORM_BYTES = 64;
 const EMPTY_BUFFER_BYTES = 16;
 const MAX_BRUSH_INTERVALS_PER_AXIS = 4;
 const DEFAULT_BIN_RESOLUTION = 256;
@@ -82,7 +82,15 @@ interface ParallelGpuPage {
   valuesBuffer: GPUBuffer;
 }
 
+interface ParallelHoverScratch {
+  resultBuffer: GPUBuffer;
+  readBuffer: GPUBuffer;
+  groupBuffer: GPUBuffer;
+  uniforms: GPUBuffer[];
+}
+
 interface ParallelGpuResources {
+  hoverScratch?: ParallelHoverScratch;
   axisBuffer: GPUBuffer;
   binBuffer: GPUBuffer;
   binByteLength: number;
@@ -765,6 +773,9 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   ): Promise<ParallelNearestRecordResult | null> {
     if (this.requestedClientBuffers !== null) return null;
     const startedAt = performance.now();
+    const buffers = this.buffers;
+    const viewportVersion = this.axisViewportVersion;
+    const gpu = this.gpu;
     const result = await this.resolveInspectionOnGpu(query) ??
       (this.gpu === null
         ? findNearestParallelRecordByPoint({
@@ -776,7 +787,9 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       ...this.diagnostics,
       lastHoverResolveMs: performance.now() - startedAt,
     };
-    return result;
+    return this.disposed || this.buffers !== buffers || this.gpu !== gpu ||
+      this.axisViewportVersion !== viewportVersion || this.requestedClientBuffers !== null
+      ? null : result;
   }
 
   private async resolveInspectionOnGpu(
@@ -934,112 +947,119 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     ) {
       return null;
     }
-    const resultBuffer = createBuffer(
-      context.device,
-      16,
-      GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE,
-      'parallel hover result',
-    );
-    const readBuffer = createBuffer(
-      context.device,
-      16,
-      GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      'parallel hover readback',
-    );
-    context.device.queue.writeBuffer(
-      resultBuffer,
-      0,
-      new Uint32Array([0x7f80_0000, 0xffff_ffff, 0, 0]),
-    );
-    const uniforms: GPUBuffer[] = [];
-    const bindGroups: GPUBindGroup[] = [];
-    for (const page of hoverPages) {
-      const uniform = createBuffer(
-        context.device,
-        HOVER_UNIFORM_BYTES,
-        GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
-        'parallel hover page uniform',
-      );
-      const data = new ArrayBuffer(HOVER_UNIFORM_BYTES);
-      const uints = new Uint32Array(data);
-      const floats = new Float32Array(data);
-      uints[0] = page.count;
-      uints[1] = page.start;
-      uints[2] = this.buffers.axisCount;
-      uints[3] = pairRange.start;
-      floats[4] = query.axisPosition;
-      floats[5] = query.normalizedValue;
-      floats[6] = query.plotWidthPx;
-      floats[7] = query.plotHeightPx;
-      uints[8] = page.valueEncoding;
-      uints[9] = page.representativeOnly === true ? 1 : 0;
-      uints[10] = pairRange.count;
-      uints[11] = page.representativeOnly !== true && this.buffers.activeMask !== undefined ? 1 : 0;
-      context.device.queue.writeBuffer(uniform, 0, data);
-      uniforms.push(uniform);
-      bindGroups.push(
-        context.device.createBindGroup({
-          entries: [
-            { binding: 0, resource: { buffer: page.valuesBuffer } },
-            { binding: 1, resource: { buffer: gpu.axisBuffer } },
-            { binding: 2, resource: { buffer: uniform } },
-            { binding: 3, resource: { buffer: resultBuffer } },
-            {
-              binding: 4,
-              resource: {
-                buffer: page.sourceIndicesBuffer,
-                offset: page.sourceIndicesOffset ?? 0,
+    const groupCount = hoverPages.reduce((count, page) => count + Math.ceil(page.count / 256), 0);
+    const groupBytes = Math.max(EMPTY_BUFFER_BYTES, groupCount * 8);
+    // Lease scratch storage: overlapping programmatic lookups cannot share mapped buffers.
+    let scratch = gpu.hoverScratch;
+    gpu.hoverScratch = undefined;
+    if (scratch !== undefined && scratch.groupBuffer.size < groupBytes) {
+      destroyParallelHoverScratch(scratch);
+      scratch = undefined;
+    }
+    scratch ??= {
+      resultBuffer: createBuffer(context.device, 16, GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE, 'parallel hover result'),
+      readBuffer: createBuffer(context.device, 16, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, 'parallel hover readback'),
+      groupBuffer: createBuffer(context.device, groupBytes, GPUBufferUsage.STORAGE, 'parallel hover workgroup results'),
+      uniforms: [],
+    };
+    const { resultBuffer, readBuffer, groupBuffer, uniforms } = scratch;
+    try {
+      const bindGroups: GPUBindGroup[] = [];
+      let groupOffset = 0;
+      for (let pageIndex = 0; pageIndex < hoverPages.length; pageIndex += 1) {
+        const page = hoverPages[pageIndex]!;
+        const uniform = uniforms[pageIndex] ??= createBuffer(
+          context.device,
+          HOVER_UNIFORM_BYTES,
+          GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
+          'parallel hover page uniform',
+        );
+        const data = new ArrayBuffer(HOVER_UNIFORM_BYTES);
+        const uints = new Uint32Array(data);
+        const floats = new Float32Array(data);
+        uints[0] = page.count;
+        uints[1] = page.start;
+        uints[2] = this.buffers.axisCount;
+        uints[3] = pairRange.start;
+        floats[4] = query.axisPosition;
+        floats[5] = query.normalizedValue;
+        floats[6] = query.plotWidthPx;
+        floats[7] = query.plotHeightPx;
+        uints[8] = page.valueEncoding;
+        uints[9] = page.representativeOnly === true ? 1 : 0;
+        uints[10] = pairRange.count;
+        uints[11] = page.representativeOnly !== true && this.buffers.activeMask !== undefined ? 1 : 0;
+        uints[12] = groupOffset;
+        uints[13] = groupCount;
+        groupOffset += Math.ceil(page.count / 256);
+        context.device.queue.writeBuffer(uniform, 0, data);
+        bindGroups.push(
+          context.device.createBindGroup({
+            entries: [
+              { binding: 0, resource: { buffer: page.valuesBuffer } },
+              { binding: 1, resource: { buffer: gpu.axisBuffer } },
+              { binding: 2, resource: { buffer: uniform } },
+              { binding: 3, resource: { buffer: resultBuffer } },
+              {
+                binding: 4,
+                resource: {
+                  buffer: page.sourceIndicesBuffer,
+                  offset: page.sourceIndicesOffset ?? 0,
+                },
               },
-            },
-          ],
-          layout: gpu.hoverBindGroupLayout,
-        }),
+              { binding: 5, resource: { buffer: groupBuffer } },
+            ],
+            layout: gpu.hoverBindGroupLayout,
+          }),
+        );
+      }
+      const encoder = context.device.createCommandEncoder({
+        label: 'parallel hover reduction encoder',
+      });
+      let pass = encoder.beginComputePass({
+        label: 'parallel hover distance pass',
+      });
+      pass.setPipeline(gpu.hoverDistancePipeline);
+      for (let index = 0; index < hoverPages.length; index += 1) {
+        pass.setBindGroup(0, bindGroups[index]!);
+        pass.dispatchWorkgroups(Math.ceil(hoverPages[index]!.count / 256));
+      }
+      pass.end();
+      pass = encoder.beginComputePass({
+        label: 'parallel hover source pass',
+      });
+      pass.setPipeline(gpu.hoverSourcePipeline);
+      pass.setBindGroup(0, bindGroups[0]!);
+      pass.dispatchWorkgroups(1);
+      pass.end();
+      encoder.copyBufferToBuffer(resultBuffer, 0, readBuffer, 0, 16);
+      context.device.queue.submit([encoder.finish()]);
+      await readBuffer.mapAsync(GPUMapMode.READ);
+      const result = new Uint32Array(readBuffer.getMappedRange().slice(0));
+      readBuffer.unmap();
+      const distancePx = Math.sqrt(
+        new Float32Array(new Uint32Array([result[0]!]).buffer)[0]!,
       );
+      const sourceIndex = resolveParallelWebgpuHoverSourceIndex(
+        result[1]!,
+      );
+      if (
+        sourceIndex === null ||
+        sourceIndex === 0xffff_ffff ||
+        sourceIndex >= this.buffers.recordCount ||
+        distancePx > query.maxDistancePx
+      ) {
+        return null;
+      }
+      return { distancePx, sourceIndex };
+    } finally {
+      readBuffer.unmap();
+      if (!this.disposed && this.gpu === gpu && gpu.hoverScratch === undefined) {
+        gpu.hoverScratch = scratch;
+      } else {
+        destroyParallelHoverScratch(scratch);
+      }
     }
-    const encoder = context.device.createCommandEncoder({
-      label: 'parallel hover reduction encoder',
-    });
-    let pass = encoder.beginComputePass({
-      label: 'parallel hover distance pass',
-    });
-    pass.setPipeline(gpu.hoverDistancePipeline);
-    for (let index = 0; index < hoverPages.length; index += 1) {
-      pass.setBindGroup(0, bindGroups[index]!);
-      pass.dispatchWorkgroups(Math.ceil(hoverPages[index]!.count / 256));
-    }
-    pass.end();
-    pass = encoder.beginComputePass({
-      label: 'parallel hover source pass',
-    });
-    pass.setPipeline(gpu.hoverSourcePipeline);
-    for (let index = 0; index < hoverPages.length; index += 1) {
-      pass.setBindGroup(0, bindGroups[index]!);
-      pass.dispatchWorkgroups(Math.ceil(hoverPages[index]!.count / 256));
-    }
-    pass.end();
-    encoder.copyBufferToBuffer(resultBuffer, 0, readBuffer, 0, 16);
-    context.device.queue.submit([encoder.finish()]);
-    await readBuffer.mapAsync(GPUMapMode.READ);
-    const result = new Uint32Array(readBuffer.getMappedRange().slice(0));
-    readBuffer.unmap();
-    for (const uniform of uniforms) uniform.destroy();
-    resultBuffer.destroy();
-    readBuffer.destroy();
-    const distancePx = Math.sqrt(
-      new Float32Array(new Uint32Array([result[0]!]).buffer)[0]!,
-    );
-    const sourceIndex = resolveParallelWebgpuHoverSourceIndex(
-      result[1]!,
-    );
-    if (
-      sourceIndex === null ||
-      sourceIndex === 0xffff_ffff ||
-      sourceIndex >= this.buffers.recordCount ||
-      distancePx > query.maxDistancePx
-    ) {
-      return null;
-    }
-    return { distancePx, sourceIndex };
   }
 
   private async initialize(): Promise<void> {
@@ -1322,6 +1342,7 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         uniformEntry(2, GPUShaderStage.COMPUTE),
         storageEntry(3, true, GPUShaderStage.COMPUTE),
         storageEntry(4, false, GPUShaderStage.COMPUTE),
+        storageEntry(5, true, GPUShaderStage.COMPUTE),
       ],
       label: 'parallel hover bindings',
     });
@@ -2133,7 +2154,15 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   }
 }
 
+function destroyParallelHoverScratch(scratch: ParallelHoverScratch): void {
+  scratch.resultBuffer.destroy();
+  scratch.readBuffer.destroy();
+  scratch.groupBuffer.destroy();
+  for (const uniform of scratch.uniforms) uniform.destroy();
+}
+
 function destroyParallelGpuResources(gpu: ParallelGpuResources): void {
+  if (gpu.hoverScratch !== undefined) destroyParallelHoverScratch(gpu.hoverScratch);
   gpu.axisBuffer.destroy();
   gpu.binBuffer.destroy();
   gpu.preselectedMaskBuffer.destroy();

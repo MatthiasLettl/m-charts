@@ -282,6 +282,14 @@ Hybrid hover uses a two-pixel exact-detail fast path, then a coalesced
 full-population GPU fallback for density-only and overflow segments. Hit tests
 at an axis include both adjacent pairs, and the winning compact candidate is
 revalidated against raw viewport geometry before inspection is published.
+The GPU first reduces distance/source-index pairs within workgroups, then reduces
+those winners, avoiding a second source-coordinate scan and contended global
+atomics. Scratch buffers are reused with exclusive leases for concurrent
+programmatic queries. Default bindings allow one pointer lookup in flight and
+coalesce pending movement to the latest pointer. Completion is published even
+while movement continues; leaving, releasing Shift, viewport changes, and
+disposal invalidate pending results. The two-pixel fast path, six-pixel fallback
+acceptance, raw-geometry validation and source-index tie break are unchanged.
 Committed hybrid viewports fuse a bounded GPU compaction into the affected-pair
 density pass. Records inside every active viewport are deterministically
 strided while dense; once the qualified count fits the representative limit,

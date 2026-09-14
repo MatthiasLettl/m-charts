@@ -4,6 +4,18 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Responsive parallel hover after zoom
+
+- Bound default parallel hover to one lookup in flight with the latest pointer
+  queued, preventing slow GPU readbacks from starving updates during movement.
+- Invalidate pending inspection on Shift release, pointer leave, viewport changes
+  and disposal. Preserve synchronous WebGL2 inspection behavior.
+- Replace per-record global atomic picking with workgroup distance/source-index
+  reductions and a final winner reduction. Reuse leased GPU scratch buffers;
+  preserve full-population fallback, tolerances and deterministic source IDs.
+- Add scheduler regressions and an in-app browser fixture covering 1M/10M rows,
+  zoom, missing/overflow lanes, filtering, exact selection and concurrent queries.
+
 ## Consistent WebGPU demo pipelines
 
 - Shared the scatter-based pipeline panel, summaries, rule lists, diagnostics,

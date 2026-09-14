@@ -58,7 +58,10 @@ when integrating into another application.
   qualifying line is rendered with raw-derived, viewport-relative Float32
   coordinates. Hover first follows that exact detail geometry, then falls back
   to a coalesced full-population GPU lookup for visible aggregate or overflow
-  segments that have no nearby detail line.
+  segments that have no nearby detail line. Hover keeps one pointer lookup in
+  flight and retains the latest pending pointer, so slow GPU readbacks cannot
+  starve highlighting during movement. Workgroup reductions and reusable GPU
+  scratch buffers reduce zoomed lookup costs without changing hit rules.
 - Optional [client-side filtering, transformations, and styling](#optional-client-side-data-views)
   over resident datasets, avoiding repeated source loads/uploads during exploration.
 - Typed-array data contracts for high-volume rendering and selection flows.
