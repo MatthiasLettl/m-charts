@@ -4,6 +4,13 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Deployment type resolution
+
+- Add the missing `m-charts/client-data-view` source mapping to the demo and
+  tooling TypeScript configurations, matching Vite and the other chart entries.
+  Demo builds no longer depend on existing package output to resolve client-view
+  types, preventing missing-module and cascading type errors in deployment.
+
 ## Responsive parallel hover after zoom
 
 - Bound default parallel hover to one lookup in flight with the latest pointer
