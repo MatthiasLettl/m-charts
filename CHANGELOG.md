@@ -6,6 +6,9 @@ should remain unchanged.
 
 ## Demo navigation and interaction refinement
 
+- Added TypeScript source mappings for `m-charts/client-data-view` in the demo
+  and Node tooling so checks do not depend on generated package declarations.
+
 - Consolidated dashboard chrome into three compact rows, moved counts/timings to
   the footer, and removed the forced desktop minimum height. The chart grid fills
   the remaining viewport without page scrolling. Replaced text-glyph action icons

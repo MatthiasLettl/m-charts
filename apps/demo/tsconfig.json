@@ -20,6 +20,7 @@
     "noUncheckedSideEffectImports": true,
     "paths": {
       "m-charts": ["../../packages/m-charts/src/index.ts"],
+      "m-charts/client-data-view": ["../../packages/m-charts/src/client-data-view/index.ts"],
       "m-charts/plot-engine": ["../../packages/m-charts/src/plot-engine/index.ts"],
       "m-charts/plot-engine-webgpu": ["../../packages/m-charts/src/plot-engine-webgpu/index.ts"],
       "m-charts/m-scatter": ["../../packages/m-charts/src/m-scatter/index.ts"],
