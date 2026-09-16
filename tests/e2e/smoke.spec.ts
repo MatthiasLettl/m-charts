@@ -1598,6 +1598,48 @@ test('m-parallel WebGPU streaming exposes a usable frame while data is arriving'
       };
     }).__parallelFastPrototypeTestHooks?.getWebgpuDiagnostics()?.renderMode ?? null,
   )).toBe('hybrid');
+
+  const diagnostics = () => page.evaluate(() => (
+    window as typeof window & {
+      __parallelFastPrototypeTestHooks?: {
+        getWebgpuDiagnostics(): {
+          densityVisible: boolean;
+          hoverSearchRecordCount: number;
+          lastAggregationPairCount: number;
+        } | null;
+      };
+    }
+  ).__parallelFastPrototypeTestHooks?.getWebgpuDiagnostics() ?? null);
+  await expect.poll(diagnostics).toMatchObject({ densityVisible: true });
+  const initialDiagnostics = await diagnostics();
+  const bounds = await chart.boundingBox();
+  const signal = await page.locator(
+    '.parallel-fast-axis-guide[data-axis="signalValue"] .parallel-fast-axis-line',
+  ).boundingBox();
+  if (bounds === null || signal === null) throw new Error('Parallel chart axes are unavailable.');
+  const untouchedPairs = {
+    x: Math.ceil(bounds.x + 20),
+    y: Math.ceil(bounds.y + 30),
+    width: Math.floor(bounds.width * 0.6),
+    height: Math.floor(bounds.height - 60),
+  };
+  const beforeZoom = await page.screenshot({ clip: untouchedPairs });
+  // Use the actual gesture so the test covers the demo, bindings and renderer.
+  await page.mouse.move(signal.x, signal.y + signal.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(signal.x, signal.y + signal.height * 0.6, { steps: 5 });
+  await page.mouse.up();
+  await expect(chart).toHaveAttribute('data-axis-viewport-count', '1');
+  await expect.poll(diagnostics).toMatchObject({
+    densityVisible: true,
+    lastAggregationPairCount: 1,
+    hoverSearchRecordCount: initialDiagnostics!.hoverSearchRecordCount,
+  });
+  expect(await page.screenshot({ clip: untouchedPairs })).toEqual(beforeZoom);
+  await expect(chart).toHaveAttribute('data-record-count', '1000000');
+  await page.getByRole('button', { name: 'Reset viewport', exact: true }).click();
+  await expect(chart).toHaveAttribute('data-axis-viewport-count', '0');
+  expect(await page.screenshot({ clip: untouchedPairs })).toEqual(beforeZoom);
 });
 
 test('m-parallel WebGPU loads a stored 10M dataset without a tab crash', async ({
@@ -1750,17 +1792,12 @@ test('m-parallel WebGPU loads a stored 10M dataset without a tab crash', async (
     });
     expect(zoomDiagnostics?.lastAggregationPairCount).toBe(1);
     expect(zoomDiagnostics?.densityVisible).toBe(true);
-    expect(zoomDiagnostics!.refinedRecordCount).toBeGreaterThan(0);
-    expect(zoomDiagnostics!.refinedRecordCount).toBeLessThanOrEqual(
-      zoomDiagnostics!.representativeRecordCount,
-    );
+    expect(zoomDiagnostics!.refinedRecordCount).toBe(0);
     expect(zoomDiagnostics?.hoverSearchRecordCount).toBe(
-      zoomDiagnostics?.refinedRecordCount,
+      initialDiagnostics?.hoverSearchRecordCount,
     );
-    expect(zoomDiagnostics!.refinementQualifiedRecordCount).toBeGreaterThanOrEqual(
-      zoomDiagnostics!.refinedRecordCount,
-    );
-    expect(zoomDiagnostics!.refinementStride).toBeGreaterThanOrEqual(1);
+    expect(zoomDiagnostics!.refinementQualifiedRecordCount).toBe(0);
+    expect(zoomDiagnostics!.refinementStride).toBe(1);
     expect(zoomDiagnostics!.lastAggregationMs).toBeLessThan(5_000);
     await expect(signalAxis).toHaveAttribute('data-above-viewport', 'true');
     await expect(signalAxis).toHaveAttribute('data-below-viewport', 'true');
@@ -1810,17 +1847,15 @@ test('m-parallel WebGPU loads a stored 10M dataset without a tab crash', async (
               ? null
               : {
                   ...diagnostics,
-                  fullyRefined:
-                    diagnostics.refinementQualifiedRecordCount > 0 &&
-                    diagnostics.refinedRecordCount ===
-                      diagnostics.refinementQualifiedRecordCount,
+                  stableRepresentatives:
+                    diagnostics.hoverSearchRecordCount === diagnostics.representativeRecordCount,
                 };
           }),
         { timeout: 15_000 },
       )
       .toMatchObject({
         densityVisible: true,
-        fullyRefined: true,
+        stableRepresentatives: true,
         lastAggregationPairCount: 1,
         refinementStride: 1,
       });
@@ -1846,7 +1881,7 @@ test('m-parallel WebGPU loads a stored 10M dataset without a tab crash', async (
       detailDiagnostics!.representativeRecordCount,
     );
     expect(detailDiagnostics!.hoverSearchRecordCount).toBe(
-      detailDiagnostics!.refinedRecordCount,
+      initialDiagnostics!.hoverSearchRecordCount,
     );
     expect(detailDiagnostics!.lastAggregationMs).toBeLessThan(5_000);
 

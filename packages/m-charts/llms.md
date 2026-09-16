@@ -246,11 +246,11 @@ worker. Large inputs store two
 16-bit normalized values per GPU word and keep compact RGBA4444 density styles
 resident. Viewport aggregation therefore avoids repeated CPU repacking and GPU
 uploads while retaining RGBA8 for the bounded representative styles. The
-full-population density path remains 16-bit, while committed hybrid refinement
-reads back only bounded source indices and uploads raw-derived,
-viewport-relative Float32 detail coordinates. Refined direct lines and GPU
-hover therefore share the exact overlay geometry at deep zoom without a
-full-column CPU scan.
+full-population density path remains 16-bit. Hybrid representatives use
+raw-derived, viewport-relative Float32 coordinates at all zoom levels. Zoom
+reprojects only this bounded, stable source-row set without a full-column CPU
+scan, source-index readback, or viewport-based resampling. Direct lines and GPU
+hover share the same geometry at deep zoom.
 For hybrid rendering, `interactive` resolves after the exact-style
 representative frame and `ready` after the full-population density frame.
 Device loss/restoration and renderer metrics retain the shared typed engine
@@ -290,13 +290,14 @@ coalesce pending movement to the latest pointer. Completion is published even
 while movement continues; leaving, releasing Shift, viewport changes, and
 disposal invalidate pending results. The two-pixel fast path, six-pixel fallback
 acceptance, raw-geometry validation and source-index tie break are unchanged.
-Committed hybrid viewports fuse a bounded GPU compaction into the affected-pair
-density pass. Records inside every active viewport are deterministically
-strided while dense; once the qualified count fits the representative limit,
-stride one renders every qualifying line. Preview continues to use the static
-representatives. The completed pass performs only a bounded source-index
-readback and detail-coordinate upload, so no full-data CPU scan or second
-full-data GPU pass blocks gestures.
+Hybrid zoom and pan preserve the representative source indices, exact styles,
+and population across every axis, including missing and out-of-range values.
+Only segments adjacent to adjusted axes change geometry; untouched pairs keep
+their density visible while affected pairs recompute. Narrow zooms do not
+promote new records into the representative set. Use explicit client-view
+filters to restrict the population and brushes to select records. Legacy
+`refinedRecordCount` and `refinementQualifiedRecordCount` diagnostics remain
+available as zero; `refinementStride` remains one.
 
 Axis viewports are independent of brushes. Left-drag a brush-like vertical box
 to zoom the nearest axis only; middle-drag pans that one axis, middle-click

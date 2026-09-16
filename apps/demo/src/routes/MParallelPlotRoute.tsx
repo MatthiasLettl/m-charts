@@ -324,7 +324,7 @@ const PARALLEL_TRY_THIS_ITEMS = [
   {
     label: 'Zoom an axis',
     detail:
-      'Left-drag a vertical box on one axis; release to apply it. Middle-drag pans one axis and middle-click undoes.',
+      'Left-drag a vertical box to zoom one axis without filtering records. Middle-drag pans one axis; middle-click undoes.',
   },
   {
     label: 'Brush an axis',

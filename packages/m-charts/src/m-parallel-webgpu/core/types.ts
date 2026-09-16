@@ -26,8 +26,11 @@ export interface ParallelWebgpuDiagnostics {
   hoverSearchRecordCount: number;
   lastRenderMs: number;
   pageCount: number;
+  /** Compatibility metric: zoom no longer replaces representatives; always 0. */
   refinedRecordCount: number;
+  /** Compatibility metric: zoom does not qualify/filter records; always 0. */
   refinementQualifiedRecordCount: number;
+  /** Compatibility metric: zoom does not resample; always 1. */
   refinementStride: number;
   renderMode: 'density' | 'direct' | 'hybrid';
   representativeRecordCount: number;

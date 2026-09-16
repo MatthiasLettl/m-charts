@@ -4,6 +4,17 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Parallel zoom preserves the population
+
+- Keep the same hybrid representative source rows across axis zoom, pan, and
+  reset. Zoom changes only scales; brushes and explicit filters retain their
+  separate selection/filtering roles.
+- Keep untouched density pairs visible while affected pairs recompute. Preserve
+  Float32 representative and hover precision, missing values, and overflow rails
+  without viewport-qualified compaction or source-index readback.
+- Retain legacy refinement diagnostics with zero counts and stride one, and
+  clarify zoom behavior in demo guidance and package documentation.
+
 ## Resumable streaming viewport following
 
 - Add full-data bounds/following events and fit-once, pause, and resume controls

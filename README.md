@@ -52,11 +52,11 @@ when integrating into another application.
   record colors into continuous density, and render selected/preselected
   populations separately. Small datasets draw exact lines; large datasets add
   deterministic exact-style representatives. Single-axis zoom/pan uses
-  lightweight representative feedback and recomputes only the affected
-  adjacent-axis density pairs on release. That same GPU pass compacts
-  viewport-qualified records into a bounded detail layer; once they fit, every
-  qualifying line is rendered with raw-derived, viewport-relative Float32
-  coordinates. Hover first follows that exact detail geometry, then falls back
+  lightweight drag feedback and recomputes only the affected adjacent-axis
+  density pairs on release. Zoom preserves the same representative records
+  across all axes, including overflow and missing values; untouched axis pairs
+  remain stable. Raw-derived, viewport-relative Float32 representative
+  coordinates preserve deep-zoom precision. Hover follows that geometry, then falls back
   to a coalesced full-population GPU lookup for visible aggregate or overflow
   segments that have no nearby detail line. Hover keeps one pointer lookup in
   flight and retains the latest pending pointer, so slow GPU readbacks cannot

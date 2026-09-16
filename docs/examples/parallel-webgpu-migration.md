@@ -157,6 +157,8 @@ Test the intended product policy in both conditions:
 
 - WebGPU succeeds and `interactive`/`ready` resolve.
 - WebGPU is unavailable or startup rejects and WebGL2 renders after cleanup.
+- Axis zoom/pan preserve the record population and representative source rows;
+  only adjacent segments change. Use explicit filters to restrict records.
 - Axis brushes preserve exact selection filters, counts, and source indices.
 - Shift-hover inspection, opacity shortcuts, overlays, preselection, themes,
   and controlled updates behave consistently across both backends.

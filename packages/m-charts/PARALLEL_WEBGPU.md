@@ -100,18 +100,18 @@ round-robin across axes. Set
 `renderMode: 'direct' | 'density' | 'auto'` to override this creation-time
 choice. `binResolution` defaults to 256 and is bounded to 32–1024.
 
-On committed axis zoom or pan, hybrid mode fuses viewport refinement into the
-affected-pair density pass. A record qualifies when its value lies inside every
-active axis viewport. Wide views use a deterministic source-index hash stride
-to keep the detail layer bounded by `representativeRecordLimit`; as viewports
-narrow, the stride decreases, and at stride one every qualifying record is
-drawn. The GPU reads back only the bounded compacted source-index list, then
-uploads raw-derived, viewport-relative Float32 detail coordinates and exact
-styles. This adds no full-data CPU scan, page repack, second full-data pass, or
-unbounded readback. During pointer preview the original representatives provide
-immediate feedback; the refined layer is published atomically with completed
-density. Inspection pauses during that transient representative preview and
-resumes against the matching refined geometry. Exact detail hits use the
+Axis zoom and pan change scales, not the record population. Hybrid mode keeps
+its deterministic representative source rows and exact styles across every
+axis, including rows outside the viewport or with missing values. It reprojects
+the same bounded set into raw-derived, viewport-relative Float32 coordinates
+for preview and commit. Narrow zooms no longer replace the sample or promote
+all viewport-matching rows. Use explicit client-view filters to restrict rows;
+brushes select rows independently of zoom.
+
+Only density pairs adjacent to changed axes recompute; untouched pairs stay
+visible during the update and retain their geometry afterward. There is no
+viewport-qualified GPU compaction, source-index readback, or full-data CPU scan.
+Inspection uses the same representative geometry throughout. Exact hits use the
 bounded fast path. If no detail line lies within two pixels, hover searches the
 complete resident GPU population, which makes density-only and above/below
 overflow segments inspectable. Full-population fallbacks are coalesced so
@@ -154,10 +154,9 @@ independent of the underlying series palette.
 
 Shift-hover runs a two-pass GPU reduction. Direct and density-only modes search
 the complete dataset. Hybrid mode searches the currently drawn population:
-initial representatives at the full view and viewport-refined lines after a
-committed zoom, with full-population fallback for density and overflow segments
+the same representative source rows before and after zoom, with full-population fallback for density and overflow segments
 when the detail hit is more than two pixels away. GPU-resident source mappings
-return the public source index without reading back the compacted population.
+return the public source index without reading back the representative population.
 The first pass reduces distance/source-index pairs inside each workgroup; the
 second reduces only those winners. This scans source coordinates once and avoids
 per-record contention on global atomics, including tied overflow segments after
@@ -227,8 +226,8 @@ RGBA4444 density styles as two records per word. These full-population buffers
 remain resident, while the bounded exact-color representative layer keeps
 RGBA8 styles. Zoom aggregation therefore submits one compute pass without
 repacking or re-uploading pages, keeps full-dataset population coverage, and
-bounds chart-tab and GPU memory. Committed hybrid refinement promotes only its
-bounded detail population to viewport-relative Float32 coordinates. Direct
+bounds chart-tab and GPU memory. Hybrid zoom reprojects only its
+bounded, stable representative population to viewport-relative Float32 coordinates. Direct
 detail rendering and GPU hover therefore use the same raw-derived geometry as
 the hovered-line overlay even at deep zoom. Any remaining repeated axis levels
 come from the source encoding (for example the demo signal column's 0.0025-unit
@@ -237,17 +236,22 @@ detail-coordinate encoding.
 The demo adapter explicitly converts the shared scatter dataset's packed
 RGB565/opacity/style metadata into RGBA8 before density compaction.
 
+The legacy `refinedRecordCount` and `refinementQualifiedRecordCount` diagnostics
+remain zero, and `refinementStride` remains one, for API compatibility. Zoom
+never changes the representative source-row set; data updates and explicit
+filters may rebuild it.
+
 `interactive` resolves after device creation, paged upload, and the submitted
 exact-style representative frame. `ready` resolves after the unchanged
 full-population density aggregation and its submitted frame complete. Direct
 or density-only modes have no representative preview, so both gates resolve
 with the first complete frame.
 `getWebgpuDiagnostics()` reports device limits, pages, resident/upload bytes,
-render mode, bin counts, representative/direct/refined and viewport-qualified
-counts, refinement stride, selection backend, hover search count, style mode,
+render mode, bin counts, representative/direct counts, selection backend, hover
+search count, style mode,
 selected count, and the latest aggregation/render/hover timings.
 Diagnostics also report 16-bit full-population density coordinates, 32-bit
-refined-detail coordinates, full-population hover fallback count/usage, and how
+representative coordinates, full-population hover fallback count/usage, and how
 many adjacent-axis pairs the latest density pass recomputed.
 
 Creation-only options are excluded from `plot.update(...)`:

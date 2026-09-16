@@ -396,12 +396,12 @@ density is complete. Worker-produced packed pages can stream through the
 additive `createParallelWebgpuBuffers` options without changing quantization or
 aggregation semantics. Left-drag zoom locks to one axis and
 middle-drag pans one axis. Both gestures use lightweight drag feedback and
-recompute only the affected adjacent-axis density pairs on release. The same
-pass compacts viewport-qualified records into a bounded detail layer and drops
-its deterministic stride to one once every qualifying line fits. A bounded
-source-index readback promotes that detail layer to raw-derived,
-viewport-relative Float32 coordinates; hybrid hover uses precisely the same
-geometry for its fast path and falls back to a coalesced full-population GPU
+recompute only the affected adjacent-axis density pairs on release. Zoom keeps
+all records in the density and preserves the same representative source rows
+across every axis. Untouched pairs remain visible and stable; values outside
+zoomed ranges use the above/below rails. Representatives use raw-derived,
+viewport-relative Float32 coordinates during preview and after commit. Hybrid
+hover uses the same geometry and falls back to a coalesced full-population GPU
 lookup for density or overflow segments outside the detail population. Default
 bindings run one hover lookup at a time and retain the latest pending pointer;
 completed results remain visible during movement. GPU picking reduces candidates

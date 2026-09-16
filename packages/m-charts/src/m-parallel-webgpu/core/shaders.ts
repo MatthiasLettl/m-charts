@@ -35,19 +35,6 @@ struct ComputeUniform {
   selectedMaskActive: u32,
   preselectedMaskActive: u32,
   uniformStyle: u32,
-  refinementActive: u32,
-  refinementLimit: u32,
-  refinementStride: u32,
-  refinementUniformStyle: u32,
-  refinementStyleOffset: u32,
-  refinementSourceOffset: u32,
-}
-
-struct RefinementState {
-  qualifiedCount: atomic<u32>,
-  acceptedCount: atomic<u32>,
-  _padding0: atomic<u32>,
-  _padding1: atomic<u32>,
 }
 
 struct Bin {
@@ -68,8 +55,6 @@ struct Bin {
 @group(0) @binding(4) var<storage, read> preselectedMask: array<u32>;
 @group(0) @binding(5) var<storage, read> axes: array<AxisConfig>;
 @group(0) @binding(6) var<uniform> uniforms: ComputeUniform;
-@group(0) @binding(7) var<storage, read_write> refinedRecords: array<u32>;
-@group(0) @binding(8) var<storage, read_write> refinement: RefinementState;
 
 const EMPTY_BIN: u32 = 0xffffffffu;
 var<workgroup> localKeys: array<atomic<u32>, 256>;
@@ -100,12 +85,6 @@ fn readQuantizedValue(localIndex: u32, axisIndex: u32) -> u32 {
 fn readValue(localIndex: u32, axisIndex: u32) -> f32 {
   let quantized = readQuantizedValue(localIndex, axisIndex);
   return select(f32(quantized) / 65534.0, -1.0, quantized == 65535u);
-}
-
-fn hashSourceIndex(sourceIndex: u32) -> u32 {
-  var value = sourceIndex * 747796405u + 2891336453u;
-  value = ((value >> ((value >> 28u) + 4u)) ^ value) * 277803737u;
-  return (value >> 22u) ^ value;
 }
 
 fn matchesAxisBrush(value: f32, axis: AxisConfig) -> bool {
@@ -185,30 +164,6 @@ fn aggregate(
   let green = (packed >> 4u) & 15u;
   let blue = (packed >> 8u) & 15u;
   let alpha = ((packed >> 12u) & 15u) * 127u / 15u;
-  if (recordActive && uniforms.refinementActive != 0u) {
-    var viewportQualified = true;
-    let quantizationMargin = 1.0 / 65534.0;
-    for (var axisIndex = 0u; axisIndex < uniforms.axisCount; axisIndex += 1u) {
-      let axis = axes[axisIndex];
-      if (axis.metadata.z != 0u) {
-        let value = readValue(localIndex, axisIndex);
-        viewportQualified = viewportQualified && isFiniteValue(value) &&
-          value >= axis.view.x - quantizationMargin &&
-          value <= axis.view.y + quantizationMargin;
-      }
-    }
-    if (viewportQualified) {
-      atomicAdd(&refinement.qualifiedCount, 1u);
-      let stride = max(1u, uniforms.refinementStride);
-      if (hashSourceIndex(sourceIndex) % stride == 0u) {
-        let outputIndex = atomicAdd(&refinement.acceptedCount, 1u);
-        if (outputIndex < uniforms.refinementLimit) {
-          refinedRecords[uniforms.refinementSourceOffset + outputIndex] =
-            sourceIndex;
-        }
-      }
-    }
-  }
   let logicalResolution = uniforms.resolution + 3u;
   let binsPerPair = logicalResolution * logicalResolution;
   for (var pairOffset = 0u; pairOffset < uniforms.pairCount; pairOffset += 1u) {
