@@ -199,6 +199,10 @@ export interface ParallelNearestRecordQuery {
 }
 
 export interface ParallelNearestRecordResult {
+  /** WebGPU: all active records within the hover tolerance, in source order. */
+  sourceIndices?: Uint32Array;
+  /** CSS-pixel radius used for the group lookup. */
+  hitRadiusPx?: number;
   activeAxis: ParallelParameter;
   activeAxisValue: number;
   distancePx: number;

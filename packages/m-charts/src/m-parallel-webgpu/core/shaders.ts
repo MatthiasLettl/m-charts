@@ -649,11 +649,16 @@ struct HoverUniform {
   activeMask: u32,
   groupOffset: u32,
   groupCount: u32,
+  maxDistanceSquared: f32,
+  overlayResolution: u32,
 }
 
 struct HoverResult {
   distance: atomic<u32>,
   sourceIndex: atomic<u32>,
+  matchCount: atomic<u32>,
+  padding: u32,
+  matches: array<atomic<u32>>,
 }
 
 @group(0) @binding(0) var<storage, read> values: array<u32>;
@@ -661,21 +666,24 @@ struct HoverResult {
 @group(0) @binding(2) var<uniform> uniforms: HoverUniform;
 @group(0) @binding(3) var<storage, read_write> result: HoverResult;
 @group(0) @binding(4) var<storage, read> sourceIndices: array<u32>;
-@group(0) @binding(5) var<storage, read_write> groupResults: array<vec2<u32>>;
+@group(0) @binding(5) var<storage, read_write> groupResults: array<vec4<u32>>;
 
 var<workgroup> nearestRecords: array<vec2<u32>, 256>;
+var<workgroup> matchCounts: array<u32, 256>;
 
 fn nearerRecord(left: vec2<u32>, right: vec2<u32>) -> vec2<u32> {
   if (right.x < left.x || (right.x == left.x && right.y < left.y)) { return right; }
   return left;
 }
 
-fn reduceNearest(localId: u32, candidate: vec2<u32>) -> vec2<u32> {
+fn reduceNearest(localId: u32, candidate: vec2<u32>, count: u32) -> vec2<u32> {
   nearestRecords[localId] = candidate;
+  matchCounts[localId] = count;
   workgroupBarrier();
   for (var stride = 128u; stride > 0u; stride /= 2u) {
     if (localId < stride) {
       nearestRecords[localId] = nearerRecord(nearestRecords[localId], nearestRecords[localId + stride]);
+      matchCounts[localId] += matchCounts[localId + stride];
     }
     workgroupBarrier();
   }
@@ -778,22 +786,119 @@ fn findDistance(
   if (id.x < uniforms.pageRecordCount && isActiveRow(id.x)) {
     var sourceIndex = uniforms.pageStart + id.x;
     if (uniforms.sourceIndicesMapped != 0u) { sourceIndex = sourceIndices[id.x]; }
-    candidate = vec2<u32>(bitcast<u32>(distanceSquared(id.x)), sourceIndex);
+    let distance = distanceSquared(id.x);
+    if (distance <= uniforms.maxDistanceSquared) {
+      atomicOr(&result.matches[sourceIndex >> 5u], 1u << (sourceIndex & 31u));
+      candidate = vec2<u32>(bitcast<u32>(distance), sourceIndex);
+    }
   }
-  let nearest = reduceNearest(localId, candidate);
-  if (localId == 0u) { groupResults[uniforms.groupOffset + groupId.x] = nearest; }
+  let nearest = reduceNearest(localId, candidate, select(0u, 1u, candidate.y != 0xffffffffu));
+  if (localId == 0u) { groupResults[uniforms.groupOffset + groupId.x] = vec4<u32>(nearest, matchCounts[0], 0u); }
 }
 
 @compute @workgroup_size(256)
 fn findSource(@builtin(local_invocation_index) localId: u32) {
   var candidate = vec2<u32>(0x7f800000u, 0xffffffffu);
+  var count = 0u;
   for (var group = localId; group < uniforms.groupCount; group += 256u) {
-    candidate = nearerRecord(candidate, groupResults[group]);
+    candidate = nearerRecord(candidate, groupResults[group].xy);
+    count += groupResults[group].z;
   }
-  let nearest = reduceNearest(localId, candidate);
+  let nearest = reduceNearest(localId, candidate, count);
   if (localId == 0u) {
     atomicStore(&result.distance, nearest.x);
     atomicStore(&result.sourceIndex, nearest.y);
+    atomicStore(&result.matchCount, matchCounts[0]);
   }
+}
+`;
+
+// Reuse the picking projection, including missing/overflow routes and zoom.
+export const PARALLEL_WEBGPU_HOVER_OVERLAY_COMPUTE_SHADER = PARALLEL_WEBGPU_HOVER_SHADER + /* wgsl */ `
+@group(0) @binding(6) var<storage, read_write> occupiedSegments: array<atomic<u32>>;
+@group(0) @binding(7) var<storage, read_write> segmentKeys: array<u32>;
+@group(0) @binding(8) var<storage, read_write> drawArguments: array<atomic<u32>>;
+
+fn projectMatchedRecord(localIndex: u32) {
+  let resolution = uniforms.overlayResolution;
+  var start = u32(round(clamp(displayValue(readValue(localIndex, 0u), axes[0]), 0.0, 1.0) * f32(resolution - 1u)));
+  for (var pair = 0u; pair + 1u < uniforms.axisCount; pair += 1u) {
+    let end = u32(round(clamp(displayValue(readValue(localIndex, pair + 1u), axes[pair + 1u]), 0.0, 1.0) * f32(resolution - 1u)));
+    let key = (pair * resolution + start) * resolution + end;
+    let bit = 1u << (key & 31u);
+    // The read avoids serializing millions of identical categorical segments.
+    if ((atomicLoad(&occupiedSegments[key >> 5u]) & bit) == 0u) {
+      let previous = atomicOr(&occupiedSegments[key >> 5u], bit);
+      if ((previous & bit) == 0u) {
+        let output = atomicAdd(&drawArguments[1], 1u);
+        segmentKeys[output] = key;
+      }
+    }
+    start = end;
+  }
+}
+
+@compute @workgroup_size(256)
+fn findDistanceAndProject(
+  @builtin(global_invocation_id) id: vec3<u32>,
+  @builtin(local_invocation_index) localId: u32,
+  @builtin(workgroup_id) groupId: vec3<u32>,
+) {
+  var candidate = vec2<u32>(0x7f800000u, 0xffffffffu);
+  if (id.x < uniforms.pageRecordCount && isActiveRow(id.x)) {
+    var sourceIndex = uniforms.pageStart + id.x;
+    if (uniforms.sourceIndicesMapped != 0u) { sourceIndex = sourceIndices[id.x]; }
+    let distance = distanceSquared(id.x);
+    if (distance <= uniforms.maxDistanceSquared) {
+      atomicOr(&result.matches[sourceIndex >> 5u], 1u << (sourceIndex & 31u));
+      candidate = vec2<u32>(bitcast<u32>(distance), sourceIndex);
+      projectMatchedRecord(id.x);
+    }
+  }
+  let nearest = reduceNearest(localId, candidate, select(0u, 1u, candidate.y != 0xffffffffu));
+  if (localId == 0u) { groupResults[uniforms.groupOffset + groupId.x] = vec4<u32>(nearest, matchCounts[0], 0u); }
+}
+
+@compute @workgroup_size(256)
+fn projectGroup(@builtin(global_invocation_id) id: vec3<u32>) {
+  if (id.x >= uniforms.pageRecordCount || !isActiveRow(id.x)) { return; }
+  var sourceIndex = uniforms.pageStart + id.x;
+  if (uniforms.sourceIndicesMapped != 0u) { sourceIndex = sourceIndices[id.x]; }
+  if ((atomicLoad(&result.matches[sourceIndex >> 5u]) & (1u << (sourceIndex & 31u))) == 0u) { return; }
+  projectMatchedRecord(id.x);
+}
+
+`;
+
+export const PARALLEL_WEBGPU_HOVER_OVERLAY_RENDER_SHADER = /* wgsl */ `
+struct OverlayUniform {
+  color: vec4<f32>,
+  resolution: f32,
+  axisCount: f32,
+  width: f32,
+  height: f32,
+  lineWidth: f32,
+}
+@group(0) @binding(0) var<storage, read> segmentKeys: array<u32>;
+@group(0) @binding(1) var<uniform> overlay: OverlayUniform;
+@vertex
+fn vertexMain(@builtin(vertex_index) vertex: u32, @builtin(instance_index) instance: u32) -> @builtin(position) vec4<f32> {
+  let resolution = u32(overlay.resolution);
+  let key = segmentKeys[instance];
+  let pair = key / (resolution * resolution);
+  let start = (key / resolution) % resolution;
+  let end = key % resolution;
+  let scale = vec2<f32>(overlay.width, overlay.height);
+  let a = vec2<f32>(f32(pair) / (overlay.axisCount - 1.0), 1.0 - f32(start) / (overlay.resolution - 1.0)) * scale;
+  let b = vec2<f32>(f32(pair + 1u) / (overlay.axisCount - 1.0), 1.0 - f32(end) / (overlay.resolution - 1.0)) * scale;
+  let delta = normalize(b - a);
+  let normal = vec2<f32>(-delta.y, delta.x) * overlay.lineWidth * 0.5;
+  let corners = array<vec2<f32>, 6>(a - normal, a + normal, b - normal, b - normal, a + normal, b + normal);
+  let position = corners[vertex] / scale;
+  return vec4<f32>(position.x * 2.0 - 1.0, 1.0 - position.y * 2.0, 0.0, 1.0);
+}
+@fragment
+fn fragmentMain() -> @location(0) vec4<f32> {
+  return vec4<f32>(overlay.color.rgb * overlay.color.a, overlay.color.a);
 }
 `;

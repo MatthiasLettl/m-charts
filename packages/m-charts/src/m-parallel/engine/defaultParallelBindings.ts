@@ -883,10 +883,6 @@ function applyResolvedInspection(
   resolveMs: number,
   lookupSource: 'fallback' | 'index' | 'none',
 ): void {
-  plot.commands.setHoverState({
-    dimBackground: false,
-    sourceIndex: nearest?.recordIndex ?? null,
-  });
   plot.commands.setInspection(
     nearest === null ? null : { ...nearest, source: 'local-nearest-segment' },
     {

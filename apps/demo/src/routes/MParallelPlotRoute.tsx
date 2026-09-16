@@ -298,7 +298,7 @@ const INITIAL_PLOT_INTERACTION_GATE_STATE: PlotInteractionGateState = {
 };
 const PARALLEL_SHORTCUT_GROUPS = [
   {
-    items: [{ keys: ['Shift'], action: 'Inspect hovered line path' }],
+    items: [{ keys: ['Shift'], action: 'Inspect records under pointer' }],
     label: 'Inspect',
   },
   {
@@ -337,7 +337,7 @@ const PARALLEL_TRY_THIS_ITEMS = [
   },
   {
     label: 'Inspect',
-    detail: 'Hold Shift over the plot to show the nearest line and axis values.',
+    detail: 'Hold Shift to inspect paths under the pointer. WebGPU highlights all records within 3 px; axis values appear for a single match.',
   },
   {
     label: 'Opacity',
@@ -480,11 +480,13 @@ export function MParallelPlotRoute({
     datasetState.status === 'loaded' && datasetState.datasetKind === 'webgpu-buffers'
       ? (datasetState.dataset as LoadedParallelWebgpuDataset).streamingSource
       : undefined;
+  const clientDatasetVersion = datasetState.status === 'loaded' && datasetState.datasetKind === 'webgpu-buffers'
+    ? (datasetState.dataset as LoadedParallelWebgpuDataset).datasetVersion : undefined;
   const clientViewBinding = useMemo<ParallelClientViewBinding | undefined>(() =>
     rendererBackend !== 'webgpu' || webgpuStreaming || readyBuffers === null ? undefined : {
       view: createParallelClientDataView({ buffers: readyBuffers, datasetKey: 'parallel-webgpu-demo',
-        fingerprint: true, asyncEvaluator: createDemoAsyncEvaluator(), fields: demoClientFields(readyBuffers.recordCount) }),
-    }, [readyBuffers, rendererBackend, webgpuStreaming]);
+        datasetVersion: clientDatasetVersion, fingerprint: clientDatasetVersion === undefined, asyncEvaluator: createDemoAsyncEvaluator(), fields: demoClientFields(readyBuffers.recordCount) }),
+    }, [readyBuffers, rendererBackend, webgpuStreaming, clientDatasetVersion]);
   useDisposeClientView(clientViewBinding?.view);
   const clientViewState = useClientViewState(clientViewBinding?.view);
   const clientDisplayBuffers = useMemo(() => clientViewBinding === undefined || readyBuffers === null
@@ -1714,7 +1716,7 @@ export function MParallelPlotRoute({
                 </button>
               </div>
             </section>
-            {clientViewBinding && <ClientViewControls chart="parallel" view={clientViewBinding.view} selectedSourceIndices={clientSelectedIndices}
+            {clientViewBinding && <ClientViewControls chart="parallel" sourceDomains={readyBuffers?.domainsByAxis} transformedDomains={clientDisplayBuffers?.domainsByAxis} view={clientViewBinding.view} selectedSourceIndices={clientSelectedIndices}
               uploads={clientUploads}
               onApplied={(action) => {
                 if (action === 'reset' || action === 'selection' || action === 'import') {
@@ -2456,7 +2458,7 @@ function MParallelEngineChart({
         data-density-blend-mode="src-alpha-one-minus-src-alpha"
         data-density-mode="adaptive-alpha-source-over"
         data-gap-count={buffers.lineSeriesBuffers.gapCount}
-        data-hover-highlight-count={inspection === null ? 0 : 1}
+        data-hover-highlight-count={inspection === null ? 0 : inspection.sourceIndices?.length ?? 1}
         data-hover-visual-mode={
           rendererBackend === 'webgpu'
             ? 'canvas2d-hover-overlay'
@@ -3047,7 +3049,8 @@ function MParallelInspectionMarkers({
   buffers: ParallelBuffers;
   inspection: ParallelFastInspectionState;
 }) {
-  const axisLabels = getParallelFastInspectionAxisLabels(
+  const matchCount = inspection.sourceIndices?.length ?? 1;
+  const axisLabels = matchCount > 1 ? [] : getParallelFastInspectionAxisLabels(
     axisViewports,
     buffers,
     inspection,
@@ -3062,6 +3065,16 @@ function MParallelInspectionMarkers({
 
   return (
     <>
+      {inspection.sourceIndices !== undefined ? (
+        <div
+          className="parallel-fast-inspection-count"
+          data-testid="parallel-fast-inspection-count"
+          role="status"
+        >
+          {matchCount.toLocaleString()} {matchCount === 1 ? 'record' : 'records'} here
+          <span>Within {inspection.hitRadiusPx ?? 3} px of pointer</span>
+        </div>
+      ) : null}
       <div
         aria-hidden="true"
         className="parallel-fast-inspection-marker"

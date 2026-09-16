@@ -2,10 +2,18 @@ import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { createClientDataViewWorkerEvaluator, type ClientDataAsyncEvaluator, type ClientDataView, type ClientDataField } from 'm-charts/client-data-view';
 
 export function demoClientFields(count: number, sourceIndices?: Uint32Array): Record<string, ClientDataField> {
+  const rows = sourceIndices ?? new Uint32Array(count);
+  const group = new Uint8Array(count);
+  const reference = new Uint8Array(count);
+  for (let row = 0; row < count; row++) {
+    if (sourceIndices === undefined) rows[row] = row;
+    group[row] = row % 5;
+    reference[row] = row % 17 === 0 ? 1 : 0;
+  }
   return {
-    sourceRow: { kind: 'numeric', values: sourceIndices ?? Uint32Array.from({ length: count }, (_, i) => i) },
-    group: { kind: 'categorical', values: Uint8Array.from({ length: count }, (_, i) => i % 5) },
-    isReferenceMember: { kind: 'boolean', values: Uint8Array.from({ length: count }, (_, i) => i % 17 === 0 ? 1 : 0) },
+    sourceRow: { kind: 'numeric', values: rows },
+    group: { kind: 'categorical', values: group },
+    isReferenceMember: { kind: 'boolean', values: reference },
   };
 }
 export function useClientViewState(view: ClientDataView | undefined) {

@@ -14,13 +14,14 @@ export interface ClientAxisEncoding {
 const sources = new WeakMap<object, ArrayLike<number>>();
 
 /** Decode display coordinates once; retain the original column for a no-op projection. */
-export function decodeClientField(values: ArrayLike<ClientDataValue>, encoding?: ClientAxisEncoding): ClientDataField {
+export function decodeClientField(values: ArrayLike<ClientDataValue>, encoding?: ClientAxisEncoding, lazy = false): ClientDataField {
   const kind = encoding?.kind ?? 'numeric';
   if (kind === 'numeric' && encoding?.encodedScale === undefined && encoding?.encodedOffset === undefined) return { kind, values };
   const categories = new Map(encoding?.categories?.map((c) => [c.encoded, c.value]));
   const origin = encoding?.datetimeOriginNs === undefined ? null : BigInt(encoding.datetimeOriginNs);
-  const decoded = Array.from({ length: values.length }, (_, row): ClientDataValue => {
-    const value = values[row];
+  const compactRead = (values as { __parallelCompactGetValue?: (index: number) => number }).__parallelCompactGetValue;
+  const decode = (row: number): ClientDataValue => {
+    const value = compactRead === undefined ? values[row] : compactRead(row);
     if (value == null || typeof value === 'number' && !Number.isFinite(value)) return null;
     if (kind === 'boolean') return value === true || value === 1 ? true : value === false || value === 0 ? false : null;
     if (kind === 'categorical') {
@@ -33,7 +34,17 @@ export function decodeClientField(values: ArrayLike<ClientDataValue>, encoding?:
     }
     const numeric = finiteNumeric(value);
     return numeric === null ? null : numeric * (encoding?.encodedScale ?? 1) + (encoding?.encodedOffset ?? 0);
-  });
+  };
+  // Compact parallel columns can describe tens of millions of rows. Decode
+  // semantics on access; an untouched view must not allocate boxed columns.
+  const decoded: ArrayLike<ClientDataValue> = lazy ? new Proxy({ length: values.length }, {
+    get(target, property) {
+      if (property === 'length') return target.length;
+      if (typeof property !== 'string') return undefined;
+      const row = Number(property);
+      return Number.isInteger(row) && row >= 0 && row < target.length && String(row) === property ? decode(row) : undefined;
+    },
+  }) : Array.from({ length: values.length }, (_, row) => decode(row));
   // Encoded chart columns use numbers; semantic raw string arrays have no
   // reusable numeric representation and must be encoded on projection.
   if (ArrayBuffer.isView(values) || Array.from({ length: Math.min(values.length, 1) }, (_, i) => values[i]).every((v) => typeof v === 'number')) {

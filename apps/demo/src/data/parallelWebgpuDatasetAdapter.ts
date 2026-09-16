@@ -1,3 +1,4 @@
+import { createClientDataFingerprint } from 'm-charts/client-data-view';
 import {
   createParallelWebgpuBuffers,
   type ParallelAxisDomains,
@@ -104,6 +105,7 @@ export function getParallelWebgpuDemoAxisSchema(
 
 export interface LoadedParallelWebgpuDataset {
   buffers: ParallelBuffers;
+  datasetVersion?: string;
   generated: boolean;
   loadMs: number;
   storedBytes: number;
@@ -337,16 +339,27 @@ export async function loadParallelWebgpuDataset(options: {
   }
 
   if (options.residentClientView) {
-    // The worker exposes lazy columns at manifest time. Client predicates must
-    // only see finalized values, and draining also releases queued GPU pages.
+    // Finalize lazy columns before predicates run, retaining worker-packed GPU
+    // pages for the initial upload instead of repacking every row on the UI thread.
+    const pages: ParallelWebgpuPackedPage[] = [];
     for await (const page of primary.packedData.createPages()) {
-      void page;
+      pages.push(page);
       throwIfAborted(options.signal);
     }
-    buffers.webgpuPackedData = undefined;
+    buffers.webgpuPackedData = {
+      ...primary.packedData,
+      async *createPages() {
+        while (pages.length > 0) yield pages.shift()!;
+      },
+    };
   }
   return {
     buffers,
+    // These benchmark manifests identify deterministic generator inputs. Hash
+    // the manifest/schema and small secondary fixture, not millions of lazy IDs.
+    datasetVersion: createClientDataFingerprint({ rowCount: 1, fields: {
+      source: { kind: 'categorical', values: [JSON.stringify({ manifest: primary.manifest, secondaryRecords, tableMode: options.tableMode })] },
+    } }),
     generated: false,
     loadMs: performance.now() - options.startedAt,
     storedBytes: primary.byteLength,
@@ -505,15 +518,23 @@ function createPrimaryPageViews(primary: {
     accepted: createLazyPageViews(primary.coordinatePages, primary.manifest, 'accepted'),
     phase: createLazyPageViews(primary.coordinatePages, primary.manifest, 'phase'),
     signal: createLazyPageViews(primary.coordinatePages, primary.manifest, 'signalValue'),
-    styles: new Proxy({ length: primary.manifest.pages.length }, {
-      get(target, property) {
-        if (property === 'length') return target.length;
-        if (typeof property !== 'string' || !/^\d+$/u.test(property)) return undefined;
-        const buffer = primary.stylePages[Number(property)];
-        return buffer === undefined ? undefined : new Uint32Array(buffer);
-      },
-    }) as unknown as Uint32Array[],
+    styles: createLazyStyleViews(primary.stylePages, primary.manifest.pages.length),
   };
+}
+
+function createLazyStyleViews(buffers: ArrayBuffer[], length: number): Uint32Array[] {
+  const cache: Uint32Array[] = [];
+  return new Proxy({ length }, {
+    get(target, property) {
+      if (property === 'length') return target.length;
+      if (typeof property !== 'string' || !/^\d+$/u.test(property)) return undefined;
+      const index = Number(property);
+      const buffer = buffers[index];
+      if (buffer === undefined) return undefined;
+      const existing = cache[index];
+      return existing?.buffer === buffer ? existing : cache[index] = new Uint32Array(buffer);
+    },
+  }) as unknown as Uint32Array[];
 }
 
 function createLazyPageViews(
@@ -521,6 +542,7 @@ function createLazyPageViews(
   manifest: ScatterWebgpuPagedManifest,
   key: string,
 ): (Uint8Array | Uint16Array | Float32Array)[] {
+  const cache: (Uint8Array | Uint16Array | Float32Array)[] = [];
   return new Proxy({ length: manifest.pages.length }, {
     get(target, property) {
       if (property === 'length') return target.length;
@@ -529,13 +551,15 @@ function createLazyPageViews(
       const buffer = buffers[pageIndex];
       const column = manifest.pages[pageIndex]?.columns[key];
       if (buffer === undefined || column === undefined) return undefined;
+      const existing = cache[pageIndex];
+      if (existing?.buffer === buffer) return existing;
       if (column.type === 'Uint8Array') {
-        return new Uint8Array(buffer, column.byteOffset, column.length);
+        return cache[pageIndex] = new Uint8Array(buffer, column.byteOffset, column.length);
       }
       if (column.type === 'Uint16Array') {
-        return new Uint16Array(buffer, column.byteOffset, column.length);
+        return cache[pageIndex] = new Uint16Array(buffer, column.byteOffset, column.length);
       }
-      return new Float32Array(buffer, column.byteOffset, column.length);
+      return cache[pageIndex] = new Float32Array(buffer, column.byteOffset, column.length);
     },
   }) as unknown as (Uint8Array | Uint16Array | Float32Array)[];
 }

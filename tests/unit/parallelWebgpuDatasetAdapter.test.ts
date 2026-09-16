@@ -197,7 +197,12 @@ try {
     signal: new AbortController().signal, startedAt: performance.now(),
     tableMode: 'multi', residentClientView: true,
   });
-  assert.equal(resident.buffers.webgpuPackedData, undefined);
+  assert.ok(resident.buffers.webgpuPackedData, 'resident client controls retain worker-packed upload pages');
+  const residentPages = [];
+  for await (const page of resident.buffers.webgpuPackedData.createPages()) residentPages.push(page);
+  assert.equal(residentPages.length, 1);
+  assert.equal(residentPages[0]!.values.length, 14);
+  assert.equal(resident.datasetVersion, loaded.datasetVersion, 'streaming and resident loads share the same deterministic dataset version');
   assert.deepEqual(Array.from({ length: 4 }, (_, row) => resident.buffers.rawValuesByAxis.phase![row]), [0, 1, 2, 3],
     'client views must see finalized lazy CPU columns before evaluating fields');
   assert.equal(streamedPages.length, 1);

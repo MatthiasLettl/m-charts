@@ -5,13 +5,15 @@ import { useClientViewState } from '../state/demoClientView';
 
 export type ClientPipelineAction = 'filter' | 'selection' | 'transformation' | 'style' | 'reset' | 'import';
 
-export function ClientViewControls({ view, selectedSourceIndices, selectedCount, resolveSelectedSourceIndices, onApplied, chart, uploads }: {
+export function ClientViewControls({ view, selectedSourceIndices, selectedCount, resolveSelectedSourceIndices, onApplied, chart, uploads, sourceDomains, transformedDomains }: {
   view: ClientDataView;
   selectedSourceIndices: ArrayLike<number>;
   selectedCount?: number;
   resolveSelectedSourceIndices?: () => ArrayLike<number>;
   onApplied?: (action: ClientPipelineAction) => void;
   chart: 'histogram' | 'parallel';
+  sourceDomains?: Readonly<Record<string, { min: number; max: number }>>;
+  transformedDomains?: Readonly<Record<string, { min: number; max: number }>>;
   uploads?: { sourceUploadBytes: number; viewUploadBytes: number };
 }) {
   const state = useClientViewState(view)!;
@@ -24,14 +26,15 @@ export function ClientViewControls({ view, selectedSourceIndices, selectedCount,
   const rangeFields = filterStage === 'transformed' ? evaluation.fields : sourceFields;
   const defaultRange = useMemo(() => {
     const values = rangeFields[field]?.values;
-    let low = Infinity; let high = -Infinity;
-    if (values) for (let i = 0; i < values.length; i += 1) {
+    const domain = (filterStage === 'transformed' ? transformedDomains : sourceDomains)?.[field];
+    let low = domain?.min ?? Infinity; let high = domain?.max ?? -Infinity;
+    if (domain === undefined && values) for (let i = 0; i < values.length; i += 1) {
       const value = values[i];
       if (typeof value === 'number' && Number.isFinite(value)) { low = Math.min(low, value); high = Math.max(high, value); }
     }
     if (!Number.isFinite(low)) return ['0', '1'] as const;
     return [String(Number((low + (high - low) * 0.25).toPrecision(6))), String(Number((low + (high - low) * 0.75).toPrecision(6)))] as const;
-  }, [field, rangeFields]);
+  }, [field, rangeFields, filterStage, sourceDomains, transformedDomains]);
   const [ranges, setRanges] = useState<Record<string, [string, string]>>({});
   const rangeKey = `${filterStage}:${field}`;
   const [min, max] = ranges[rangeKey] ?? defaultRange;

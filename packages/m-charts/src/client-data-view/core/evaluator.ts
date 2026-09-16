@@ -80,16 +80,24 @@ function evaluateStages(
     const enabledFilters = state.filters
       .filter((filter) => filter.enabled !== false && filter.stage !== 'transformed')
       .map((filter) => compilePredicate(filter.predicate, dataset.fields));
-    activeRowCount = 0;
-    for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-      if (!enabledFilters.every((filter) => filter(rowIndex))) continue;
-      activeMask[rowIndex >>> 5] |= 1 << (rowIndex & 31);
-      activeRowCount += 1;
-    }
-    activeSourceIndices = new Uint32Array(activeRowCount);
-    for (let rowIndex = 0, activeIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-      if ((activeMask[rowIndex >>> 5]! & (1 << (rowIndex & 31))) !== 0) {
-        activeSourceIndices[activeIndex++] = rowIndex;
+    if (enabledFilters.length === 0) {
+      // Initial/no-op views do not need a predicate call and bit update per row.
+      activeMask.fill(0xffff_ffff);
+      if (rowCount % 32 !== 0) activeMask[activeMask.length - 1] = 0xffff_ffff >>> (32 - rowCount % 32);
+      activeSourceIndices = new Uint32Array(rowCount);
+      for (let row = 0; row < rowCount; row++) activeSourceIndices[row] = row;
+    } else {
+      activeRowCount = 0;
+      for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        if (!enabledFilters.every((filter) => filter(rowIndex))) continue;
+        activeMask[rowIndex >>> 5] |= 1 << (rowIndex & 31);
+        activeRowCount += 1;
+      }
+      activeSourceIndices = new Uint32Array(activeRowCount);
+      for (let rowIndex = 0, activeIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+        if ((activeMask[rowIndex >>> 5]! & (1 << (rowIndex & 31))) !== 0) {
+          activeSourceIndices[activeIndex++] = rowIndex;
+        }
       }
     }
   }

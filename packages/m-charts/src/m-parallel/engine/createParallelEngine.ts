@@ -478,8 +478,9 @@ export function createParallelEngine(
     nextInspection: ParallelFastInspectionState | null,
   ): void {
     applyHoverVisualState({
-      dimBackground: false,
+      dimBackground: (nextInspection?.sourceIndices?.length ?? 0) > 0,
       sourceIndex: nextInspection?.recordIndex ?? null,
+      sourceIndices: nextInspection?.sourceIndices,
     });
   }
 
@@ -825,12 +826,14 @@ export function createParallelEngine(
       return null;
     }
     const resolvedState = {
-      dimBackground: false,
+      dimBackground: state.dimBackground && state.sourceIndices !== undefined,
       sourceIndex: state.sourceIndex,
+      sourceIndices: state.sourceIndices,
     };
 
     const previousState = hoverState;
-    const sourceChanged = previousState.sourceIndex !== resolvedState.sourceIndex;
+    const sourceChanged = previousState.sourceIndex !== resolvedState.sourceIndex ||
+      previousState.sourceIndices !== resolvedState.sourceIndices;
     const dimChanged = previousState.dimBackground !== resolvedState.dimBackground;
     if (!sourceChanged && !dimChanged) {
       const updateStartedAt = performance.now();
@@ -848,8 +851,12 @@ export function createParallelEngine(
     }
 
     hoverState = { ...resolvedState };
+    // Dim through composition without rebuilding the WebGPU density layer.
+    canvas.style.opacity = resolvedState.dimBackground ? '0.25' : '';
     const hoverMetrics = sourceChanged
-      ? hoverRenderer.setHoverSourceIndex(optionsState.buffers, resolvedState.sourceIndex)
+      ? resolvedState.sourceIndices !== undefined && hoverRenderer.setHoverSourceIndices !== undefined
+        ? hoverRenderer.setHoverSourceIndices(optionsState.buffers, resolvedState.sourceIndices)
+        : hoverRenderer.setHoverSourceIndex(optionsState.buffers, resolvedState.sourceIndex)
       : {
           baseRedrawMs: null,
           changed: false,
@@ -874,12 +881,12 @@ export function createParallelEngine(
         rendererState: 'ready',
       });
     }
-    const hoverDrawMetrics = hoverRenderer.draw();
+    const hoverDrawMetrics = hoverMetrics.changed ? hoverRenderer.draw() : null;
     const result = {
       ...hoverMetrics,
       baseRedrawMs,
       changed: hoverMetrics.changed || dimChanged,
-      skipped: false,
+      skipped: !hoverMetrics.changed && !dimChanged,
       updateMs: hoverMetrics.updateMs + (baseRedrawMs ?? 0),
     };
     emitMetrics({

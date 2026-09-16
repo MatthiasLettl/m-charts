@@ -37,7 +37,7 @@ export function createParallelClientDataSet(options: CreateParallelClientDataVie
     const metadata = buffers.axisMetadataByAxis?.[key];
     const kind = metadata?.kind ?? 'numeric';
     const raw = buffers.rawValuesByAxis[key]!;
-    const { values } = decodeClientField(raw, metadata);
+    const { values } = decodeClientField(raw, metadata, true);
     if (values !== raw) decodedSources.set(values, raw);
     fields[key] = { kind, values };
   }
@@ -61,6 +61,7 @@ export function evaluateParallelClientView(
   let coordinates = previous?.source === source && previous.fields === evaluation.fields && previous.mapping === mapping
     ? previous.coordinates : undefined;
   if (coordinates === undefined) {
+    let coordinatesChanged = false;
     const rawValuesByAxis: ParallelRawValuesByAxis = {};
     const domainsByAxis = { ...source.domainsByAxis };
     const axisMetadataByAxis = { ...source.axisMetadataByAxis };
@@ -70,6 +71,7 @@ export function evaluateParallelClientView(
       const metadata = source.axisMetadataByAxis?.[key];
       const values = field.values;
       if (values === source.rawValuesByAxis[key] || decodedSources.get(values) === source.rawValuesByAxis[key]) { rawValuesByAxis[key] = source.rawValuesByAxis[key]!; continue; }
+      coordinatesChanged = true;
       const projection = projectClientField(field, source.rawValuesByAxis[key]!, metadata);
       const output = projection.values instanceof Float64Array || projection.values instanceof Float32Array ? projection.values : Float64Array.from(projection.values);
       rawValuesByAxis[key] = output;
@@ -81,7 +83,7 @@ export function evaluateParallelClientView(
       } as NonNullable<ParallelBuffers['axisMetadataByAxis']>[string];
 
     }
-    coordinates = { ...source, rawValuesByAxis, domainsByAxis, axisMetadataByAxis,
+    coordinates = !coordinatesChanged ? source : { ...source, rawValuesByAxis, domainsByAxis, axisMetadataByAxis,
       normalizedValuesDerivedFromRaw: true, normalizedValuesByAxis: {}, webgpuPackedData: undefined, webglSegmentBuffers: undefined };
   }
   const sourceStyleMode = binding.view.getState().sourceStyleMode ?? 'preserve';
@@ -96,7 +98,10 @@ export function evaluateParallelClientView(
       styleBuffers = color === undefined ? undefined : { color, colorFormat: 'rgba8', opacity: new Float32Array(0), styledRecordCount: source.recordCount };
     }
   }
-  const result = { ...evaluation, sourceStyleMode, buffers: { ...coordinates, activeMask: evaluation.activeMask, styleBuffers } };
+  const result = { ...evaluation, sourceStyleMode, buffers: { ...coordinates, activeMask: evaluation.activeMask, styleBuffers,
+    // Packed pages encode source styles; transformed styling must be repacked.
+    webgpuPackedData: styleBuffers === source.styleBuffers ? coordinates.webgpuPackedData : undefined,
+  } };
   caches.set(binding, { source, fields: evaluation.fields, mapping, coordinates, result, fallback });
   return result;
 }

@@ -122,7 +122,8 @@ export function createParallelWebgpuPlot(
       return nextRenderer;
     },
     hoverRendererFactory(canvas, buffers, rendererOptions) {
-      return new ParallelCanvasHoverRenderer(canvas, buffers, rendererOptions);
+      return new ParallelCanvasHoverRenderer(canvas, buffers, rendererOptions,
+        (target, indices, color) => renderer?.drawHoverGroup(target, indices, color) ?? false);
     },
   });
   if (renderer === null) {

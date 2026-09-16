@@ -1,5 +1,10 @@
 import * as parallel from '../../packages/m-charts/src/m-parallel-webgpu/index.js';
+import * as webgl from '../../packages/m-charts/src/m-parallel/index.js';
 
+// Explicit comparison mode for measuring the previous CPU overlay on the same fixture.
+if (new URLSearchParams(location.search).get('overlay') === 'cpu') {
+  parallel.ParallelWebgpuRenderer.prototype.drawHoverGroup = () => false;
+}
 const status = document.querySelector('#status')!;
 const results = document.querySelector('#results')!;
 const errors: string[] = [];
@@ -32,6 +37,31 @@ const query = (normalizedValue: number, maxDistancePx = 6) => ({
   axisPosition: 0.5, normalizedValue, maxDistancePx, plotWidthPx: 800, plotHeightPx: 400,
 });
 
+await run('WebGL2 retains single-record hover and clears on leave', async () => {
+  const element = host();
+  const buffers = webgl.createParallelFastBuffers({
+    axisOrder: ['a', 'b'], ids: ['low', 'middle', 'overlapping', 'high'],
+    valuesByAxis: { a: [0, 0.5, 0.5, 1], b: [0, 0.5, 0.5, 1] },
+  }, { includeWebglSegmentBuffers: true });
+  const plot = webgl.createParallelPlot(element, { buffers });
+  try {
+    await until(() => plot.commands.getRenderSnapshot().renderState === 'ready');
+    plot.use(webgl.createDefaultParallelBindings({ inputElement: element, coordinateTarget: element }));
+    const bounds = element.getBoundingClientRect();
+    element.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: bounds.left + 400,
+      clientY: bounds.top + (1 - webgl.parallelRenderedNormalizedValueToDisplayValue(0.5)) * 400,
+      shiftKey: true, bubbles: true, pointerId: 1,
+    }));
+    await until(() => plot.commands.getStateSnapshot().inspection !== null);
+    const inspection = plot.commands.getStateSnapshot().inspection!;
+    assert(inspection.recordIndex === 2 && inspection.sourceIndices === undefined, 'WebGL2 keeps its existing single-record tie behavior');
+    assert(element.querySelector('canvas')!.style.opacity === '', 'WebGL2 background remains unchanged');
+    element.dispatchEvent(new PointerEvent('pointerleave'));
+    await until(() => plot.commands.getStateSnapshot().inspection === null);
+  } finally { plot.dispose(); }
+});
+
 await run('partial workgroups, ties, missing values, overflow, filtering and zoom reset', async () => {
   const values = Float32Array.from({ length: 513 }, (_, i) => [NaN, 0, 1, 0.5][i % 4]!);
   values[512] = 0.75;
@@ -42,7 +72,9 @@ await run('partial workgroups, ties, missing values, overflow, filtering and zoo
   const plot = parallel.createParallelWebgpuPlot(host(), { buffers, renderMode: 'direct', clientView: { view }, aggregationBackend: 'rust-wasm' });
   plots.push(plot); await plot.ready;
   const hit = async (value: number) => (await plot.commands.resolveInspectionAtPoint(query(value)))?.recordIndex ?? null;
-  assert(await hit(0.5) === 3, 'equal distances must pick the lowest source index');
+  assert(await hit(0.5) === 3, 'equal distances keep the lowest source index for compatibility');
+  assert((await plot.commands.resolveInspectionAtPoint(query(0.5)))?.sourceIndices?.length === 128, 'all coincident rows are returned');
+  assert((await plot.commands.resolveInspectionAtPoint(query(parallel.PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y)))?.sourceIndices?.length === 128, 'all missing rows are returned');
   assert(await hit(0.75) === 512, 'winner in the partial final workgroup');
   assert(await hit(parallel.PARALLEL_MISSING_AXIS_ROUTE_NORMALIZED_Y) === 0, 'missing values');
   plot.commands.setAxisViewports({ a: { min: 0.25, max: 0.75 }, b: { min: 0.25, max: 0.75 } });
@@ -95,7 +127,10 @@ await run('slow hover updates during movement, latest pointer, Shift release, le
       shiftKey, bubbles: true, pointerId: 1,
     }));
   };
-  for (let i = 0; i < 40; i += 1) { move(i % 2 ? 0.5 : 1); await frame(); }
+  const movementStarted = performance.now();
+  for (let i = 0; performance.now() - movementStarted < 1_200; i += 1) {
+    move(i % 2 ? 0.5 : 1); await frame();
+  }
   assert(updates >= 3, `continuous movement starved hover (${updates} updates)`);
   assert(maximumActive === 1, `overlapping lookups: ${maximumActive}`);
   move(0.5); await sleep(220);
@@ -116,8 +151,85 @@ await run('slow hover updates during movement, latest pointer, Shift release, le
   assert(updates === beforeDispose, 'disposal must suppress late events');
 });
 
+for (const overlapCount of [64, 8192]) await run(`${overlapCount} overlapping paths: source-mask words, group changes and isolated hits`, async () => {
+  const element = host();
+  const ids = Array.from({ length: overlapCount + 1 }, (_, i) => String(i));
+  const a = Float32Array.from(ids, (_, i) => i === overlapCount ? 0.9 : 0.5);
+  const b = a.slice();
+  const c = Float32Array.from(ids, (_, i) => i === overlapCount ? 0.9 : i % 2 ? 1 : 0);
+  const buffers = parallel.createParallelWebgpuBuffers({
+    axisOrder: ['a', 'b', 'c'], ids, valuesByAxis: { a, b, c },
+  }, {
+    preparedDomainsByAxis: { a: { min: 0, max: 1, span: 1 }, b: { min: 0, max: 1, span: 1 }, c: { min: 0, max: 1, span: 1 } },
+  });
+  const view = parallel.createParallelClientDataView({ buffers });
+  // Force hybrid mode with a deliberately tiny representative set: a direct
+  // hit must still find every overlapping record in the density population.
+  const plot = parallel.createParallelWebgpuPlot(element, {
+    buffers, directSegmentLimit: 1, representativeRecordLimit: 1,
+    clientView: { view }, aggregationBackend: 'rust-wasm',
+  });
+  plots.push(plot); await plot.ready; await plot.waitForGpuIdle();
+  const overlap = await plot.commands.resolveInspectionAtPoint(query(0.5));
+  assert(overlap?.sourceIndices?.length === overlapCount, `expected all ${overlapCount} overlapping records, got ${overlap?.sourceIndices?.length}`);
+  assert(overlap?.sourceIndices?.every((index, i) => index === i), 'matches must be deduplicated and source ordered across mask words');
+  assert(overlap?.hitRadiusPx === 3, 'stable small hover radius');
+  const onAxis = await plot.commands.resolveInspectionAtPoint({ ...query(0.5), axisPosition: 1 });
+  assert(onAxis?.sourceIndices?.length === overlapCount, 'both adjacent pairs participate without counting the same record twice');
+  const pixelsPerUnit = 400 * (parallel.PARALLEL_AXIS_MAX_DISPLAY_VALUE - parallel.PARALLEL_AXIS_MIN_DISPLAY_VALUE);
+  assert((await plot.commands.resolveInspectionAtPoint(query(0.5 + 2 / pixelsPerUnit)))?.sourceIndices?.length === overlapCount, 'nearby segments within three pixels are included');
+  assert(await plot.commands.resolveInspectionAtPoint(query(0.5 + 4 / pixelsPerUnit)) === null, 'segments beyond three pixels are excluded');
+  assert(await plot.commands.resolveInspectionAtPoint(query(0.5 + 2 / pixelsPerUnit, 1)) === null, 'tighter caller tolerance is honored');
+  plot.commands.setInspection({ ...overlap!, source: 'local-nearest-segment' });
+  const canvases = element.querySelectorAll('canvas');
+  assert(canvases[0]!.style.opacity === '0.25', 'background dims while inspecting');
+  const overlay = canvases[1]!;
+  const context = overlay.getContext('2d')!;
+  const pixelAt = (x: number, value: number) => {
+    const display = parallel.parallelRenderedNormalizedValueToDisplayValue(value);
+    const px = Math.min(overlay.width - 3, Math.round(x * overlay.width));
+    const py = Math.min(overlay.height - 3, Math.round((1 - display) * overlay.height));
+    return context.getImageData(px - 2, py - 2, 5, 5).data.some((v, i) => i % 4 === 3 && v > 0);
+  };
+  assert(pixelAt(0.75, 0.25) && pixelAt(0.75, 0.75), 'both diverging paths must be drawn across the other axes');
+  assert(!pixelAt(0.75, 0.9), 'unmatched isolated path must not be highlighted');
+  // Concurrent queries lease separate readback buffers but share screen geometry.
+  // Displaying an older result must regenerate its own union, not the newest hit.
+  const concurrent = await Promise.all([0.5, 0.9, 0.5, 0.7].map((value) => plot.commands.resolveInspectionAtPoint(query(value))));
+  assert(concurrent[0]?.sourceIndices?.length === overlapCount && concurrent[1]?.sourceIndices?.length === 1 && concurrent[3] === null,
+    'concurrent results retain independent counts and identities');
+  plot.commands.setInspection({ ...concurrent[0]!, source: 'local-nearest-segment' });
+  assert(pixelAt(0.75, 0.25) && pixelAt(0.75, 0.75) && !pixelAt(0.75, 0.9), 'older GPU result draws its own paths');
+  element.style.height = '500px';
+  plot.commands.resize();
+  await frame();
+  plot.commands.clearInspection();
+  plot.commands.setInspection({ ...concurrent[2]!, source: 'local-nearest-segment' });
+  assert(pixelAt(0.75, 0.25) && pixelAt(0.75, 0.75), 'resized overlay regenerates geometry for its new dimensions');
+  element.style.height = '400px';
+  plot.commands.resize();
+  await frame();
+  view.addFilter({ id: 'lower', predicate: { op: 'lt', field: 'c', value: 0.5 } });
+  await until(() => !plot.getWebgpuDiagnostics().clientView?.pending);
+  await plot.waitForGpuIdle();
+  const filtered = await plot.commands.resolveInspectionAtPoint(query(0.5));
+  assert(filtered?.sourceIndices?.length === overlapCount / 2 && filtered.sourceIndices.every((index) => index % 2 === 0), 'filtered rows excluded from full population');
+  plot.commands.setInspection({ ...filtered!, source: 'local-nearest-segment' });
+  assert(pixelAt(0.75, 0.25) && !pixelAt(0.75, 0.75), 'changed group updates even when nearest source is unchanged');
+  plot.commands.clearInspection();
+  assert(canvases[0]!.style.opacity === '', 'clear restores background');
+  assert(!pixelAt(0.75, 0.25), 'clear removes highlighted group');
+  view.replaceState({ ...view.exportState(), filters: [] });
+  await until(() => !plot.getWebgpuDiagnostics().clientView?.pending);
+  await plot.waitForGpuIdle();
+  const isolated = await plot.commands.resolveInspectionAtPoint(query(0.9));
+  assert(isolated?.recordIndex === overlapCount && isolated.sourceIndices?.length === 1, 'isolated hit retains individual inspection');
+  assert(await plot.commands.resolveInspectionAtPoint(query(0.7)) === null, 'empty space does not snap to distant lines');
+  plot.dispose();
+});
+
 const rows = Number(new URLSearchParams(location.search).get('rows') ?? 1_000_000);
-await run(`${rows.toLocaleString()} rows: zoomed fallback performance, precision and mapped source IDs`, async () => {
+await run(`${rows.toLocaleString()} rows: zoomed full-population performance, precision and source IDs`, async () => {
   const values = Float32Array.from({ length: rows }, (_, i) => (i % 1024) / 1023);
   const buffers = parallel.createParallelWebgpuBuffers({
     axisOrder: ['a', 'b'], ids: Array.from({ length: rows }, (_, i) => String(i)), valuesByAxis: { a: values, b: values },
@@ -128,25 +240,53 @@ await run(`${rows.toLocaleString()} rows: zoomed fallback performance, precision
   plots.push(plot); await plot.ready;
   assert(plot.getWebgpuDiagnostics().aggregationBackend === (rows <= 2_000_000 ? 'rust-wasm' : 'typescript'), 'expected selection backend');
   plot.commands.setAxisViewports({ a: { min: 0.49, max: 0.51 }, b: { min: 0.49, max: 0.51 } });
-  await until(() => plot.getWebgpuDiagnostics().densityVisible && plot.getWebgpuDiagnostics().refinedRecordCount > 0);
+  await until(() => plot.getWebgpuDiagnostics().densityVisible);
   await plot.waitForGpuIdle();
   const samples: number[] = [];
+  const overlaySamples: number[] = [];
+  const interactionSamples: number[] = [];
   for (let i = 0; i < 21; i += 1) {
     const started = performance.now();
     const hit = await plot.commands.resolveInspectionAtPoint(query(parallel.PARALLEL_ABOVE_VIEWPORT_ROUTE_NORMALIZED_Y, 28));
     if (i > 0) samples.push(performance.now() - started);
     assert(hit?.recordIndex === 522, `wrong fallback identity: ${hit?.recordIndex}`);
+    const expectedCount = Math.floor(rows / 1024) * (1024 - 522) + Math.max(0, rows % 1024 - 522);
+    assert(hit?.sourceIndices?.length === expectedCount, 'dense matches across all GPU pages must not be capped');
+    if (i < 6) {
+      const overlayStarted = performance.now();
+      plot.commands.setInspection({ ...hit!, source: 'local-nearest-segment' });
+      if (i > 0) overlaySamples.push(performance.now() - overlayStarted);
+      await plot.waitForGpuIdle();
+      if (i > 0) interactionSamples.push(performance.now() - started);
+      const overlay = plot.commands.getHoverCanvas();
+      const context = overlay.getContext('2d')!;
+      const y = Math.round((1 - parallel.PARALLEL_ABOVE_VIEWPORT_DISPLAY_VALUE) * overlay.height);
+      assert(context.getImageData(Math.floor(overlay.width / 2), y - 2, 1, 5).data.some((v, index) => index % 4 === 3 && v > 0), 'dense GPU overlay must draw the matched overflow route');
+      if (i === 5) plot.commands.clearInspection();
+      if (i === 5) assert(!context.getImageData(Math.floor(overlay.width / 2), y - 2, 1, 5).data.some((v, index) => index % 4 === 3 && v > 0), 'dense GPU overlay must clear');
+    }
   }
-  assert(plot.getWebgpuDiagnostics().lastHoverUsedFullPopulation, 'exercise fallback outside the refined sample');
-  const center = await plot.commands.resolveInspectionAtPoint(query(0.51, 28));
-  assert(center?.recordIndex !== undefined && (center.recordIndex % 1024) === 512, 'refined source mapping');
+  assert(plot.getWebgpuDiagnostics().lastHoverUsedFullPopulation, 'search all records even when a representative matches');
+  const center = await plot.commands.resolveInspectionAtPoint(query((512 / 1023 - 0.49) / 0.02, 28));
+  assert(center?.recordIndex !== undefined && (center.recordIndex % 1024) === 512, 'full-population source mapping');
   const miss = await plot.commands.resolveInspectionAtPoint(query(0.5, 1));
   assert(miss === null, 'empty space outside the hit tolerance');
   samples.sort((a, b) => a - b);
   const median = samples[Math.floor(samples.length / 2)]!;
   const p95 = samples[Math.ceil(samples.length * 0.95) - 1]!;
-  document.querySelector('#timings')!.textContent = JSON.stringify({ rows, medianMs: median, p95Ms: p95, samples, diagnostics: plot.getWebgpuDiagnostics() }, null, 2);
-  assert(p95 < 50, `zoomed hover p95 ${p95.toFixed(1)} ms exceeds 50 ms budget`);
+  document.querySelector('#timings')!.textContent = JSON.stringify({ rows, medianMs: median, p95Ms: p95, overlaySamples, interactionSamples, samples, diagnostics: plot.getWebgpuDiagnostics() }, null, 2);
+  const budgetMs = rows > 10_000_000 ? 100 : 50;
+  assert(p95 < budgetMs, `zoomed hover p95 ${p95.toFixed(1)} ms exceeds ${budgetMs} ms budget`);
+  if (new URLSearchParams(location.search).get('overlay') !== 'cpu') {
+    assert(Math.max(...overlaySamples) < 50, 'dense overlay must not block the main thread for 50 ms');
+  }
+  plot.commands.commitBrushIntervals({ a: { min: 0.49, max: 0.51 } });
+  await until(() => plot.commands.getStateSnapshot().selectedSourceIndices.length > 0);
+  await plot.waitForGpuIdle();
+  const expectedSelected = Math.floor(rows / 1024) * 20 + Math.max(0, Math.min(20, rows % 1024 - 502));
+  assert(plot.commands.getStateSnapshot().selectedSourceIndices.length === expectedSelected, 'large-data GPU candidate selection remains exact');
+  plot.commands.clearBrushes();
+  await until(() => plot.commands.getStateSnapshot().selectedSourceIndices.length === 0);
   plot.use(parallel.createDefaultParallelBindings({ inspection: { explicitHoverModeActive: () => true } }));
 });
 await run('no browser or GPU errors', async () => { await frame(); assert(errors.length === 0, errors.join('\n')); });

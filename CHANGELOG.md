@@ -4,6 +4,38 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Parallel WebGPU interaction and startup performance
+
+- Fuse picking and highlight projection into one compute pass. Reuse GPU geometry
+  for the latest result, reduce match counts on the GPU, batch uniform uploads,
+  and cache bind groups. Decode IDs directly from mapped memory; only older or
+  resized results reconstruct a membership mask for reprojection.
+- Add a real 25M-row four-axis crossing benchmark with sustained pointer movement,
+  plus concurrent-result and resize pixel checks. Preserve all matched IDs and
+  existing picking tolerance.
+
+- Project and merge dense hover groups on the GPU, using resident coordinates,
+  a screen-sized segment occupancy mask, and indirect drawing. Preserve all
+  matched source IDs and the public Canvas 2D overlay; bound geometry to 64 MiB.
+- Avoid main-thread comparisons of millions of identical group IDs on every
+  pointer update. Validate overlay rendering, clearing and complete interaction
+  timing in addition to picking at 1M, 10M and 25M rows.
+- Preserve worker-packed pages for unchanged client coordinates/styles, decode
+  semantic fields lazily, cache compact page views, and use deterministic demo
+  manifest versions and prepared filter ranges instead of scanning every row
+  during React rendering. Yield between fallback packing chunks of 250k rows.
+
+## Parallel WebGPU overlap inspection
+
+- Highlight every active record within 3 CSS pixels of the pointer, including
+  full-population matches hidden underneath representative lines. Return all
+  matches without a cap, with source-order deduplication and viewport/filter support.
+- Add optional `sourceIndices` and `hitRadiusPx` to inspection payloads while
+  preserving nearest-record fields. Support group overlays through optional
+  `setHoverSourceIndices`; WebGL2 retains its existing behavior.
+- Show the match count and tolerance in the demo, dim the background, and show
+  individual axis values only for a single match. Clear the group on hover exit.
+
 ## Directional parallel range reset
 
 - Add keyboard-accessible ↑/↓ pills to the shared WebGPU and WebGL2 demo axis

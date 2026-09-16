@@ -1303,6 +1303,39 @@ kbd {
   top: 0;
 }
 
+.parallel-fast-inspection-count {
+  position: absolute;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 4;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid rgba(224, 77, 62, 0.3);
+  border-radius: 0.5rem;
+  background: var(--surface, #fffaf9);
+  color: var(--text, #9f2f22);
+  font-size: 0.75rem;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.parallel-fast-inspection-count span {
+  font-size: 0.65rem;
+  font-weight: 400;
+}
+
+.parallel-fast-axis-overlay .parallel-fast-inspection-count {
+  top: -2.1rem;
+  right: 0;
+}
+
+:root[data-theme="dark"] .parallel-fast-inspection-count {
+  background: #25201f;
+  color: #ffd4cc;
+}
+
 .parallel-fast-inspection-marker {
   position: absolute;
   z-index: 3;

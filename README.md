@@ -56,9 +56,9 @@ when integrating into another application.
   density pairs on release. Zoom preserves the same representative records
   across all axes, including overflow and missing values; untouched axis pairs
   remain stable. Raw-derived, viewport-relative Float32 representative
-  coordinates preserve deep-zoom precision. Hover follows that geometry, then falls back
-  to a coalesced full-population GPU lookup for visible aggregate or overflow
-  segments that have no nearby detail line. Hover keeps one pointer lookup in
+  coordinates preserve deep-zoom precision. Once density is visible, hover
+  searches the full population and highlights all paths within 3 CSS pixels,
+  including overlap hidden underneath representative lines. Hover keeps one pointer lookup in
   flight and retains the latest pending pointer, so slow GPU readbacks cannot
   starve highlighting during movement. Workgroup reductions and reusable GPU
   scratch buffers reduce zoomed lookup costs without changing hit rules.
@@ -196,6 +196,15 @@ creation-only aggregation backend selector.
 Parallel follows the same compatibility model: `m-parallel` retains WebGL2,
 while `m-parallel-webgpu` injects asynchronous pairwise density, exact
 selection finalization, rendered-line hover, and axis viewport rendering.
+WebGPU parallel Shift-hover highlights every active record within 3 CSS pixels
+of the pointer (or a caller's tighter tolerance), including overlapping paths
+that diverge on other axes. The demo shows the full match count and reserves
+individual axis labels for a single match. Inspection adds optional
+`sourceIndices` and `hitRadiusPx`; existing nearest-record fields remain compatible.
+Dense hover groups combine GPU picking and segment projection in one pass with
+screen-bounded geometry storage. Hover draws reuse this GPU result without
+re-uploading membership or scanning the dataset again. Parallel client controls retain worker-packed upload pages and
+lazy semantic columns to avoid blocking large-dataset startup.
 
 Keep reusable `core` and `engine` modules independent of React, React Router,
 demo routes, generated fixtures, app state, theme modules, local environment

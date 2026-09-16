@@ -26,6 +26,7 @@ import type { ParallelFastRenderState } from './parallelState.js';
 export interface ParallelFastHoverVisualState {
   dimBackground: boolean;
   sourceIndex: number | null;
+  sourceIndices?: Uint32Array;
 }
 
 export interface ParallelFastInspectionState extends ParallelNearestRecordResult {
@@ -78,6 +79,10 @@ export interface ParallelFastHoverRendererLike {
   setHoverSourceIndex(
     buffers: ParallelBuffers,
     sourceIndex: number | null,
+  ): ParallelWebgl2HoverUpdateMetrics;
+  setHoverSourceIndices?(
+    buffers: ParallelBuffers,
+    sourceIndices: Uint32Array,
   ): ParallelWebgl2HoverUpdateMetrics;
   updateTheme(theme: ParallelFastTheme | undefined): void;
   updateAxisViewports?(axisViewports: ParallelAxisViewports): void;

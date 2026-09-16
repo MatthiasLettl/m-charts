@@ -1,8 +1,8 @@
+import { ParallelGpuHoverOverlay } from './gpuHoverOverlay.js';
 import { clientRowIsActive } from '../../client-data-view/core/chartProjection.js';
 import {
   normalizeParallelBrushIntervals,
   selectParallelRecordIdsByBrushes,
-  findNearestParallelRecordByPoint,
   type ParallelAxisViewports,
   type ParallelBrushIntervals,
   type ParallelBrushSelectionResult,
@@ -85,7 +85,12 @@ interface ParallelHoverScratch {
   resultBuffer: GPUBuffer;
   readBuffer: GPUBuffer;
   groupBuffer: GPUBuffer;
-  uniforms: GPUBuffer[];
+  uniformBuffer: GPUBuffer;
+  uniformData: ArrayBuffer;
+  bindings: Array<{
+    values: GPUBuffer; indices: GPUBuffer; offset: number; pipeline: GPUComputePipeline;
+    overlayKeys?: GPUBuffer; bindGroup: GPUBindGroup; sourceBindGroup?: GPUBindGroup;
+  }>;
 }
 
 interface ParallelGpuResources {
@@ -127,6 +132,7 @@ interface ParallelHoverQuery {
 }
 
 interface ParallelHoverCandidate {
+  sourceIndices: Uint32Array;
   distancePx: number;
   sourceIndex: number;
 }
@@ -136,6 +142,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   readonly ready: Promise<void>;
   readonly setupMetrics: ParallelWebgl2RendererSetupMetrics;
 
+  private hoverOverlay: ParallelGpuHoverOverlay | null = null;
+  private readonly hoverMembership = new WeakMap<Uint32Array, { mask?: Uint32Array<ArrayBuffer>; buffers: ParallelBuffers; viewport: number; gpu: ParallelGpuResources; preparedVersion?: number }>();
   private aggregationInFlight: Promise<void> | null = null;
   private aggregationRequested = false;
   private aggregationRequestedRange: ParallelPairRange | null = null;
@@ -153,8 +161,6 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   private clientViewUploadBytes = 0;
   private totalSourceUploadBytes = 0;
   private sourceBufferBuildCount = 0;
-  private hoverFallbackInFlight: Promise<ParallelHoverCandidate | null> | null = null;
-  private hoverFallbackVersion = 0;
   private lineOpacityScale: number;
   private preselectedSourceIndices: Uint32Array;
   private selectedSourceIndices: Uint32Array<ArrayBufferLike> =
@@ -427,8 +433,6 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         const previous = this.buffers;
         const gpu = this.gpu; const context = this.context;
         if (next === null || gpu === null || context === null) return;
-        this.hoverFallbackVersion += 1;
-        if (this.hoverFallbackInFlight !== null) await this.hoverFallbackInFlight;
         if (this.disposed || this.gpu !== gpu) return;
         const coordinatesChanged = next.rawValuesByAxis !== previous.rawValuesByAxis || next.domainsByAxis !== previous.domainsByAxis;
         const visibilityChanged = next.activeMask !== previous.activeMask;
@@ -809,13 +813,12 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     const buffers = this.buffers;
     const viewportVersion = this.axisViewportVersion;
     const gpu = this.gpu;
-    const result = await this.resolveInspectionOnGpu(query) ??
-      (this.gpu === null
-        ? findNearestParallelRecordByPoint({
-            ...query,
-            buffers: this.buffers,
-          })
-        : null);
+    // A consistent, narrow CSS-pixel radius reveals overlap without snapping
+    // across empty space. Honor callers requesting an even tighter tolerance.
+    const result = await this.resolveInspectionOnGpu({
+      ...query,
+      maxDistancePx: Math.min(3, Math.max(0, query.maxDistancePx)),
+    });
     this.diagnostics = {
       ...this.diagnostics,
       lastHoverResolveMs: performance.now() - startedAt,
@@ -848,66 +851,22 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       query.maxDistancePx,
       query.plotWidthPx,
     );
-    const primaryPages = this.diagnostics.renderMode === 'hybrid'
-      ? gpu.directPages
-      : gpu.pages;
-    const primaryCandidate = await this.resolveHoverCandidateOnGpu(
+    // Once density is visible it represents the full active population, even
+    // when a representative line already passes exactly under the pointer.
+    const fullPopulation = this.diagnostics.renderMode !== 'hybrid' || this.densityVisible;
+    const candidate = await this.resolveHoverCandidateOnGpu(
       query,
       pairRange,
-      primaryPages,
+      fullPopulation ? gpu.pages : gpu.directPages,
     );
-    const primary = this.createInspectionFromHoverCandidate(
-      query,
-      pairRange,
-      primaryCandidate,
-    );
-    const exactHitDistancePx = Math.min(2, query.maxDistancePx);
-    if (
-      primary !== null &&
-      (
-        this.diagnostics.renderMode !== 'hybrid' ||
-        primary.distancePx <= exactHitDistancePx
-      )
-    ) {
-      return primary;
-    }
-    if (this.diagnostics.renderMode !== 'hybrid' || !this.densityVisible) {
-      return primary;
-    }
-    const fallbackCandidate = await this.resolveFullPopulationHoverCandidate(
-      query,
-      pairRange,
-      gpu.pages,
-    );
-    const fallback = this.createInspectionFromHoverCandidate(
-      query,
-      pairRange,
-      fallbackCandidate,
-    );
-    const reliableHitDistancePx = Math.min(6, query.maxDistancePx);
-    const reliablePrimary = primary !== null &&
-        primary.distancePx <= reliableHitDistancePx
-      ? primary
-      : null;
-    const reliableFallback = fallback !== null &&
-        fallback.distancePx <= reliableHitDistancePx
-      ? fallback
-      : null;
-    if (
-      reliableFallback !== null &&
-      (
-        reliablePrimary === null ||
-        reliableFallback.distancePx < reliablePrimary.distancePx
-      )
-    ) {
-      this.diagnostics = {
-        ...this.diagnostics,
-        hoverFallbackCount: this.diagnostics.hoverFallbackCount + 1,
-        lastHoverUsedFullPopulation: true,
-      };
-      return reliableFallback;
-    }
-    return reliablePrimary;
+    this.diagnostics = {
+      ...this.diagnostics,
+      lastHoverUsedFullPopulation: fullPopulation,
+      hoverSearchRecordCount: fullPopulation
+        ? this.buffers.recordCount
+        : gpu.directPages.reduce((count, page) => count + page.count, 0),
+    };
+    return this.createInspectionFromHoverCandidate(query, pairRange, candidate);
   }
 
   private createInspectionFromHoverCandidate(
@@ -926,35 +885,18 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     if (geometry === null || geometry.distancePx > query.maxDistancePx) {
       return null;
     }
-    return createParallelWebgpuInspectionResult(
-      this.buffers,
-      candidate.sourceIndex,
-      geometry.pair,
-      query.axisPosition,
-      geometry.distancePx,
-      this.axisViewports,
-    );
-  }
-
-  private async resolveFullPopulationHoverCandidate(
-    query: ParallelHoverQuery,
-    pairRange: ParallelPairRange,
-    pages: ParallelGpuPage[],
-  ): Promise<ParallelHoverCandidate | null> {
-    const version = ++this.hoverFallbackVersion;
-    if (this.hoverFallbackInFlight !== null) {
-      await this.hoverFallbackInFlight;
-      if (version !== this.hoverFallbackVersion) return null;
-    }
-    const inFlight = this.resolveHoverCandidateOnGpu(query, pairRange, pages);
-    this.hoverFallbackInFlight = inFlight;
-    try {
-      return await inFlight;
-    } finally {
-      if (this.hoverFallbackInFlight === inFlight) {
-        this.hoverFallbackInFlight = null;
-      }
-    }
+    return {
+      ...createParallelWebgpuInspectionResult(
+        this.buffers,
+        candidate.sourceIndex,
+        geometry.pair,
+        query.axisPosition,
+        geometry.distancePx,
+        this.axisViewports,
+      ),
+      sourceIndices: candidate.sourceIndices,
+      hitRadiusPx: query.maxDistancePx,
+    };
   }
 
   private async resolveHoverCandidateOnGpu(
@@ -973,35 +915,42 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       return null;
     }
     const groupCount = hoverPages.reduce((count, page) => count + Math.ceil(page.count / 256), 0);
-    const groupBytes = Math.max(EMPTY_BUFFER_BYTES, groupCount * 8);
+    const groupBytes = Math.max(EMPTY_BUFFER_BYTES, groupCount * 16);
+    // One bit per source row: bounded readback with no cap on matched records.
+    const resultBytes = 16 + Math.ceil(this.buffers.recordCount / 32) * 4;
+    const uniformStride = Math.max(HOVER_UNIFORM_BYTES, context.device.limits.minUniformBufferOffsetAlignment);
+    const uniformBytes = Math.max(1, hoverPages.length) * uniformStride;
     // Lease scratch storage: overlapping programmatic lookups cannot share mapped buffers.
     let scratch = gpu.hoverScratch;
     gpu.hoverScratch = undefined;
-    if (scratch !== undefined && scratch.groupBuffer.size < groupBytes) {
+    if (scratch !== undefined && (scratch.groupBuffer.size < groupBytes || scratch.resultBuffer.size < resultBytes || scratch.uniformBuffer.size < uniformBytes)) {
       destroyParallelHoverScratch(scratch);
       scratch = undefined;
     }
     scratch ??= {
-      resultBuffer: createBuffer(context.device, 16, GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE, 'parallel hover result'),
-      readBuffer: createBuffer(context.device, 16, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, 'parallel hover readback'),
+      resultBuffer: createBuffer(context.device, resultBytes, GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | GPUBufferUsage.STORAGE, 'parallel hover result'),
+      readBuffer: createBuffer(context.device, resultBytes, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ, 'parallel hover readback'),
       groupBuffer: createBuffer(context.device, groupBytes, GPUBufferUsage.STORAGE, 'parallel hover workgroup results'),
-      uniforms: [],
+      uniformBuffer: createBuffer(context.device, uniformBytes, GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM, 'parallel hover uniforms'),
+      uniformData: new ArrayBuffer(uniformBytes),
+      bindings: [],
     };
-    const { resultBuffer, readBuffer, groupBuffer, uniforms } = scratch;
+    const { resultBuffer, readBuffer, groupBuffer, uniformBuffer, uniformData, bindings } = scratch;
     try {
+      const encoder = context.device.createCommandEncoder({ label: 'parallel hover lookup and projection' });
+      const overlay = this.buffers.recordCount >= 4096
+        ? this.hoverOverlay ??= new ParallelGpuHoverOverlay(context.device, context.format) : null;
+      const prepared = overlay?.prepare(encoder, this.canvas.width, this.canvas.height, this.buffers.axisCount);
+      const pickingPipeline = overlay?.pickingPipeline ?? gpu.hoverDistancePipeline;
+      const pickingLayout = overlay?.pickingPipeline.getBindGroupLayout(0) ?? gpu.hoverBindGroupLayout;
       const bindGroups: GPUBindGroup[] = [];
+      let sourceBindGroup: GPUBindGroup | undefined;
       let groupOffset = 0;
       for (let pageIndex = 0; pageIndex < hoverPages.length; pageIndex += 1) {
         const page = hoverPages[pageIndex]!;
-        const uniform = uniforms[pageIndex] ??= createBuffer(
-          context.device,
-          HOVER_UNIFORM_BYTES,
-          GPUBufferUsage.COPY_DST | GPUBufferUsage.UNIFORM,
-          'parallel hover page uniform',
-        );
-        const data = new ArrayBuffer(HOVER_UNIFORM_BYTES);
-        const uints = new Uint32Array(data);
-        const floats = new Float32Array(data);
+        const uniformOffset = pageIndex * uniformStride;
+        const uints = new Uint32Array(uniformData, uniformOffset, HOVER_UNIFORM_BYTES / 4);
+        const floats = new Float32Array(uniformData, uniformOffset, HOVER_UNIFORM_BYTES / 4);
         uints[0] = page.count;
         uints[1] = page.start;
         uints[2] = this.buffers.axisCount;
@@ -1016,35 +965,42 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         uints[11] = page.representativeOnly !== true && this.buffers.activeMask !== undefined ? 1 : 0;
         uints[12] = groupOffset;
         uints[13] = groupCount;
+        floats[14] = query.maxDistancePx * query.maxDistancePx;
+        uints[15] = prepared?.resolution ?? 0;
         groupOffset += Math.ceil(page.count / 256);
-        context.device.queue.writeBuffer(uniform, 0, data);
-        bindGroups.push(
-          context.device.createBindGroup({
-            entries: [
-              { binding: 0, resource: { buffer: page.valuesBuffer } },
-              { binding: 1, resource: { buffer: gpu.axisBuffer } },
-              { binding: 2, resource: { buffer: uniform } },
-              { binding: 3, resource: { buffer: resultBuffer } },
-              {
-                binding: 4,
-                resource: {
-                  buffer: page.sourceIndicesBuffer,
-                  offset: page.sourceIndicesOffset ?? 0,
-                },
-              },
-              { binding: 5, resource: { buffer: groupBuffer } },
-            ],
-            layout: gpu.hoverBindGroupLayout,
-          }),
-        );
+        const cached = bindings[pageIndex];
+        const overlayKeys = (prepared?.entries[1]?.resource as GPUBufferBinding | undefined)?.buffer;
+        // Buffer identity changes only on growth/reconfiguration, not pointer movement.
+        if (cached !== undefined && cached.values === page.valuesBuffer && cached.indices === page.sourceIndicesBuffer &&
+          cached.offset === (page.sourceIndicesOffset ?? 0) && cached.pipeline === pickingPipeline &&
+          cached.overlayKeys === overlayKeys) {
+          bindGroups.push(cached.bindGroup);
+          if (pageIndex === 0) sourceBindGroup = cached.sourceBindGroup;
+          continue;
+        }
+        const entries: GPUBindGroupEntry[] = [
+          { binding: 0, resource: { buffer: page.valuesBuffer } },
+          { binding: 1, resource: { buffer: gpu.axisBuffer } },
+          { binding: 2, resource: { buffer: uniformBuffer, offset: uniformOffset, size: HOVER_UNIFORM_BYTES } },
+          { binding: 3, resource: { buffer: resultBuffer } },
+          { binding: 4, resource: { buffer: page.sourceIndicesBuffer, offset: page.sourceIndicesOffset ?? 0 } },
+          { binding: 5, resource: { buffer: groupBuffer } },
+        ];
+        if (pageIndex === 0) sourceBindGroup = context.device.createBindGroup({ entries, layout: gpu.hoverBindGroupLayout });
+        const bindGroup = context.device.createBindGroup({
+          entries: prepared === undefined ? entries : [...entries, ...prepared.entries], layout: pickingLayout,
+        });
+        bindings[pageIndex] = { values: page.valuesBuffer, indices: page.sourceIndicesBuffer,
+          offset: page.sourceIndicesOffset ?? 0, pipeline: pickingPipeline, overlayKeys, bindGroup,
+          sourceBindGroup: pageIndex === 0 ? sourceBindGroup : undefined };
+        bindGroups.push(bindGroup);
       }
-      const encoder = context.device.createCommandEncoder({
-        label: 'parallel hover reduction encoder',
-      });
+      context.device.queue.writeBuffer(uniformBuffer, 0, uniformData, 0, uniformBytes);
+      encoder.clearBuffer(resultBuffer);
       let pass = encoder.beginComputePass({
         label: 'parallel hover distance pass',
       });
-      pass.setPipeline(gpu.hoverDistancePipeline);
+      pass.setPipeline(pickingPipeline);
       for (let index = 0; index < hoverPages.length; index += 1) {
         pass.setBindGroup(0, bindGroups[index]!);
         pass.dispatchWorkgroups(Math.ceil(hoverPages[index]!.count / 256));
@@ -1054,14 +1010,13 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         label: 'parallel hover source pass',
       });
       pass.setPipeline(gpu.hoverSourcePipeline);
-      pass.setBindGroup(0, bindGroups[0]!);
+      pass.setBindGroup(0, sourceBindGroup!);
       pass.dispatchWorkgroups(1);
       pass.end();
-      encoder.copyBufferToBuffer(resultBuffer, 0, readBuffer, 0, 16);
+      encoder.copyBufferToBuffer(resultBuffer, 0, readBuffer, 0, resultBytes);
       context.device.queue.submit([encoder.finish()]);
       await readBuffer.mapAsync(GPUMapMode.READ);
-      const result = new Uint32Array(readBuffer.getMappedRange().slice(0));
-      readBuffer.unmap();
+      const result = new Uint32Array(readBuffer.getMappedRange(0, resultBytes));
       const distancePx = Math.sqrt(
         new Float32Array(new Uint32Array([result[0]!]).buffer)[0]!,
       );
@@ -1076,7 +1031,20 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
       ) {
         return null;
       }
-      return { distancePx, sourceIndex };
+      // Count is reduced with the nearest hit on the GPU; no CPU popcount scan.
+      const matchCount = result[2]!;
+      const matches = new Uint32Array(matchCount);
+      let matchIndex = 0;
+      for (let word = 4; word < result.length; word += 1) {
+        let bits = result[word]!;
+        while (bits !== 0) {
+          const bit = 31 - Math.clz32(bits & -bits);
+          matches[matchIndex++] = (word - 4) * 32 + bit;
+          bits = (bits & (bits - 1)) >>> 0;
+        }
+      }
+      this.hoverMembership.set(matches, { buffers: this.buffers, viewport: this.axisViewportVersion, gpu, preparedVersion: prepared?.version });
+      return { distancePx, sourceIndex, sourceIndices: matches };
     } finally {
       readBuffer.unmap();
       if (!this.disposed && this.gpu === gpu && gpu.hoverScratch === undefined) {
@@ -1085,6 +1053,31 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
         destroyParallelHoverScratch(scratch);
       }
     }
+  }
+
+  /** @internal Draw dense hover groups using the resident GPU coordinates. */
+  drawHoverGroup(canvas: HTMLCanvasElement, sourceIndices: Uint32Array, color: readonly number[]): boolean {
+    const match = this.hoverMembership.get(sourceIndices);
+    if (match === undefined || this.context === null || this.gpu === null ||
+      match.gpu !== this.gpu || match.buffers !== this.buffers || match.viewport !== this.axisViewportVersion) return false;
+    this.hoverOverlay ??= new ParallelGpuHoverOverlay(this.context.device, this.context.format);
+    if (match.preparedVersion !== undefined && this.hoverOverlay.drawPrepared(
+      canvas, match.preparedVersion, this.buffers.axisCount, color,
+    )) return true;
+    // Only stale/concurrent results need membership re-upload. Decode ordinary
+    // queries directly from mapped memory, avoiding a multi-megabyte mask copy.
+    if (match.mask === undefined) {
+      match.mask = new Uint32Array(4 + Math.ceil(this.buffers.recordCount / 32));
+      for (const sourceIndex of sourceIndices) {
+        match.mask[4 + (sourceIndex >>> 5)]! |= 1 << (sourceIndex & 31);
+      }
+    }
+    this.hoverOverlay.draw(canvas, {
+      axisBuffer: this.gpu.axisBuffer, axisCount: this.buffers.axisCount,
+      pages: this.diagnostics.renderMode === 'hybrid' && !this.densityVisible ? this.gpu.directPages : this.gpu.pages,
+      membership: match.mask, activeMask: this.buffers.activeMask !== undefined, color,
+    });
+    return true;
   }
 
   private async initialize(): Promise<void> {
@@ -1356,7 +1349,9 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
     );
     const recordsPerPage = Math.max(
       1,
-      Math.floor(maximumPageBytes / bytesPerRecord),
+      // CPU packing also serves callers without prepared pages. Yield between
+      // bounded chunks instead of blocking on several million rows at a time.
+      Math.min(250_000, Math.floor(maximumPageBytes / bytesPerRecord)),
     );
     const pages: ParallelGpuPage[] = [];
     let residentBytes =
@@ -1469,7 +1464,14 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
             `Parallel packed page starts at ${page.start}; expected ${nextStart}.`,
           );
         }
-        appendPage(page.start, page.count, page.values, page.densityStyles);
+        let values = page.values;
+        if (this.buffers.activeMask !== undefined) {
+          const mask = packClientVisibility(this.buffers, page.start, page.count);
+          values = new Uint32Array(page.values.length + mask.length);
+          values.set(page.values);
+          values.set(mask, page.values.length);
+        }
+        appendPage(page.start, page.count, values, page.densityStyles);
         nextStart += page.count;
         await yieldToMainThread();
       }
@@ -1500,7 +1502,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
               packedData.representativeRecordLimit ===
                 this.diagnostics.representativeRecordCount
             ? {
-                sourceIndices: await packedData.representativeSourceIndices,
+                sourceIndices: (await packedData.representativeSourceIndices).filter(
+                  (row) => clientRowIsActive(this.buffers.activeMask, row)),
               }
             : {}),
         })
@@ -1998,6 +2001,8 @@ export class ParallelWebgpuRenderer implements ParallelFastRendererLike {
   }
 
   private destroyGpuResources(): void {
+    this.hoverOverlay?.dispose();
+    this.hoverOverlay = null;
     const gpu = this.gpu;
     if (gpu === null) return;
     destroyParallelGpuResources(gpu);
@@ -2009,7 +2014,7 @@ function destroyParallelHoverScratch(scratch: ParallelHoverScratch): void {
   scratch.resultBuffer.destroy();
   scratch.readBuffer.destroy();
   scratch.groupBuffer.destroy();
-  for (const uniform of scratch.uniforms) uniform.destroy();
+  scratch.uniformBuffer.destroy();
 }
 
 function destroyParallelGpuResources(gpu: ParallelGpuResources): void {

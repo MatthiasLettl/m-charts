@@ -136,3 +136,38 @@ for (const backend of ['typescript', 'rust-wasm'] as const) {
   const aggregation = provider.build(styled.columns, { plotSpec: spec, includeMembership: true });
   assert.ok(aggregation.subplots.flatMap((p) => p.bins).flatMap((b) => b.stack).every((stack) => stack.color === 0x654321ff));
 }
+
+// Client controls must not discard decoder-prepared upload pages for a no-op view.
+const preparedSource = { ...source, webgpuPackedData: { async *createPages() { /* already packed by a host worker */ } } };
+const preparedView = { view: createParallelClientDataView({ buffers: preparedSource }) };
+const untouched = evaluateParallelClientView(preparedView, preparedSource);
+assert.equal(untouched.buffers.webgpuPackedData, preparedSource.webgpuPackedData);
+assert.equal(untouched.buffers.rawValuesByAxis, source.rawValuesByAxis);
+assert.equal(untouched.buffers.domainsByAxis, source.domainsByAxis);
+preparedView.view.addFilter({ id: 'visible', predicate: { op: 'gt', field: 'a', value: 1 } });
+assert.equal(evaluateParallelClientView(preparedView, preparedSource).buffers.webgpuPackedData, preparedSource.webgpuPackedData,
+  'visibility can be appended to prepared coordinates without repacking them');
+preparedView.view.addStyle({ id: 'override', channels: { color: { op: 'constant', value: '#123456' } } });
+assert.equal(evaluateParallelClientView(preparedView, preparedSource).buffers.webgpuPackedData, undefined,
+  'source-packed colors cannot override client styles');
+preparedView.view.addTransformation({ id: 'move', op: 'affine', input: 'a', output: 'a', factor: 2, offset: 0 });
+assert.equal(evaluateParallelClientView(preparedView, preparedSource).buffers.webgpuPackedData, undefined,
+  'transformed coordinates must invalidate prepared pages');
+
+// A 25M-row semantic column stays lazy; its declared length must not trigger
+// row decoding, boxed arrays, or datetime BigInt allocations at attachment.
+let columnReads = 0;
+const compactBoolean = new Proxy({ length: 25_000_000, __parallelCompactGetValue(row: number) { columnReads++; return row % 2; } }, {
+  get(target, property) {
+    if (property in target) return target[property as keyof typeof target];
+    columnReads++;
+    return Number(property) % 2;
+  },
+});
+const lazySource = { ...source, recordCount: 25_000_000, axisOrder: ['accepted'], rawValuesByAxis: { accepted: compactBoolean } };
+const lazyDataset = createParallelClientDataSet({ buffers: lazySource, datasetVersion: 'fixture-v1' });
+assert.ok(columnReads <= 1, 'creating semantic fields must not traverse the population');
+assert.equal(lazyDataset.fields.accepted!.values.length, 25_000_000);
+assert.equal(lazyDataset.fields.accepted!.values[24_999_999], true);
+assert.equal(lazyDataset.fields.accepted!.values[24_999_998], false);
+assert.equal(lazyDataset.fields.accepted!.values[25_000_000], undefined);

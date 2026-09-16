@@ -107,6 +107,7 @@ function FixtureMParallelEngineChart({
   const [renderState, setRenderState] = useState<ParallelRenderState>('idle');
   const [axisViewports, setAxisViewports] = useState<ParallelAxisViewports>({});
   const [drawCallCount, setDrawCallCount] = useState(0);
+  const [hoverCount, setHoverCount] = useState(0);
   const [hoverSourceIndex, setHoverSourceIndex] = useState<number | null>(null);
 
   useEffect(() => {
@@ -188,6 +189,7 @@ function FixtureMParallelEngineChart({
     });
     const unsubscribeInspection = plot.on('inspectionchange', (event) => {
       setHoverSourceIndex(event.inspection?.recordIndex ?? null);
+      setHoverCount(event.inspection === null ? 0 : event.inspection.sourceIndices?.length ?? 1);
     });
     const unsubscribeAxisViewport = plot.on('axisviewportchange', (event) => {
       setAxisViewports(event.axisViewports);
@@ -235,6 +237,7 @@ function FixtureMParallelEngineChart({
         data-draw-call-count={drawCallCount}
         data-gap-count={buffers.lineSeriesBuffers.gapCount}
         data-hover-source-index={hoverSourceIndex ?? 'none'}
+        data-hover-highlight-count={hoverCount}
         data-record-count={buffers.recordCount}
         data-render-state={renderState}
         data-renderer={
@@ -246,6 +249,12 @@ function FixtureMParallelEngineChart({
         data-selected-count={selectedSourceIndices.length}
         data-testid="parallel-fast-chart-layout"
       />
+      {rendererBackend === 'webgpu' && hoverCount > 0 ? (
+        <div className="parallel-fast-inspection-count" role="status">
+          {hoverCount.toLocaleString()} {hoverCount === 1 ? 'record' : 'records'} here
+          <span>Within 3 px of pointer</span>
+        </div>
+      ) : null}
       <FixtureAxisOverlay
         axisViewports={axisViewports}
         brushIntervals={displayBrushIntervals}

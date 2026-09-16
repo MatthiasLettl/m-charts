@@ -118,12 +118,10 @@ brushes select rows independently of zoom.
 Only density pairs adjacent to changed axes recompute; untouched pairs stay
 visible during the update and retain their geometry afterward. There is no
 viewport-qualified GPU compaction, source-index readback, or full-data CPU scan.
-Inspection uses the same representative geometry throughout. Exact hits use the
-bounded fast path. If no detail line lies within two pixels, hover searches the
-complete resident GPU population, which makes density-only and above/below
-overflow segments inspectable. Full-population fallbacks are coalesced so
-pointer bursts cannot queue repeated large scans. Near an axis, both adjacent
-segment pairs participate in hit testing.
+Inspection searches all active resident records once density is visible, even
+when an exact representative line matches. Before density is ready, it searches
+only the drawn representatives. Near an axis, both adjacent segment pairs
+participate; each matching record is returned once.
 
 Arbitrary per-record colors use continuous aggregate color in the density
 layer and exact colors in the representative layer. Transparent source-order
@@ -159,23 +157,40 @@ viewport-aware contrasting halo. This keeps the full population readable,
 avoids dark hatching in dense selections, and makes sparse selected paths
 independent of the underlying series palette.
 
-Shift-hover runs a two-pass GPU reduction. Direct and density-only modes search
-the complete dataset. Hybrid mode searches the currently drawn population:
-the same representative source rows before and after zoom, with full-population fallback for density and overflow segments
-when the detail hit is more than two pixels away. GPU-resident source mappings
-return the public source index without reading back the representative population.
-The first pass reduces distance/source-index pairs inside each workgroup; the
-second reduces only those winners. This scans source coordinates once and avoids
-per-record contention on global atomics, including tied overflow segments after
-zoom. Only the winning record is read back. Result, readback, workgroup and
-uniform buffers are reused with exclusive leases for concurrent queries.
+Shift-hover collects every record within 3 CSS pixels of the pointer, or the
+caller's `maxDistancePx` if smaller. Full paths are highlighted with a translucent
+overlay and the background is dimmed without rebuilding density. The demo shows
+“N records here” and the radius; individual axis values appear only for a single
+match. There is no match-count cap or silent subsampling.
+Datasets of 4,096 or more rows fuse picking and highlight projection in the
+same compute pass. Groups of at least 4,096 matches draw that resident segment
+union indirectly, avoiding a membership re-upload and second population scan.
+Match counts reduce alongside the nearest hit on the GPU. Per-page uniforms use
+one batched upload and cached bind groups; ID decoding reads mapped memory
+directly without retaining a second copy of the membership mask. Older concurrent
+results and resized canvases regenerate geometry on demand. There
+is no per-record CPU geometry traversal or GPU geometry readback. Endpoint bins
+normally have one-device-pixel spacing (at most half a pixel displacement);
+very tall/many-axis plots are limited to 2,048 bins per endpoint and 64 MiB of
+geometry. Every matched record contributes; only coincident screen segments are
+merged. Small groups retain the quarter-device-pixel Canvas overlay, and the
+public hover canvas remains Canvas 2D through canvas-to-canvas composition.
 
-Default bindings permit one pointer lookup in flight and retain only the latest
-pending pointer. A completed result is published during continuous movement,
-then the newest pointer is processed on the next frame. Shift release, pointer
-leave, viewport changes and disposal invalidate pending results. The exact-hit
-fast path, six-pixel fallback acceptance and lowest-source-index tie break remain
-unchanged; synchronous WebGL2 lookups retain their existing behavior.
+Inspection payloads add `sourceIndices: Uint32Array` (deduplicated, source order)
+and `hitRadiusPx`. Existing `recordIndex`, `id`, values and projection fields still
+identify the nearest member, with the lowest source index breaking ties. Hosts
+should use the group length before displaying those values as a unique result.
+Custom hover renderers can implement the optional `setHoverSourceIndices` method;
+legacy renderers still receive the nearest member through `setHoverSourceIndex`.
+
+The GPU picking pass scans source coordinates once, writes a one-bit-per-source match mask,
+and reduces distance/source-index pairs in two passes for the compatibility
+nearest record. Mask readback is bounded by population size, not match count.
+Scratch buffers use exclusive leases for concurrent queries. Default bindings
+allow one pointer lookup in flight, retain only the latest pending pointer, and
+publish completions during movement. Shift release, pointer leave, viewport
+changes and disposal invalidate pending results. WebGL2 retains single-record
+inspection and its existing tolerance.
 
 ## Axis viewports
 
@@ -258,7 +273,7 @@ render mode, bin counts, representative/direct counts, selection backend, hover
 search count, style mode,
 selected count, and the latest aggregation/render/hover timings.
 Diagnostics also report 16-bit full-population density coordinates, 32-bit
-representative coordinates, full-population hover fallback count/usage, and how
+representative coordinates, full-population hover usage (legacy fallback count remains available), and how
 many adjacent-axis pairs the latest density pass recomputed.
 
 Creation-only options are excluded from `plot.update(...)`:
@@ -312,11 +327,48 @@ For validation entirely in the in-app browser, start `pnpm dev` and open
 `/@fs<absolute-repo-path>/tests/browser/parallelHover.html` on the dev server.
 The fixture checks GPU picking, WASM selection, cancellation and continuous
 movement with deliberately delayed readbacks, then reports zoomed fallback
-median/p95 timings at 1M rows. Add `?rows=10000000` for 10M rows; that size uses
-the existing TypeScript selection fallback. The same fixture is exercised by
-`tests/e2e/parallelHoverPerformance.spec.ts` in automated WebGPU runs.
+median/p95 lookup timings plus main-thread overlay and GPU-completed interaction
+timings at 1M rows. Add `?rows=10000000` or `?rows=25000000` for larger populations;
+these use the existing TypeScript selection fallback. Add `&overlay=cpu` to
+compare the previous Canvas group projection on the same data. Pixel checks
+cover diverging groups, filtering and clearing, including the GPU overlay.
+Open `parallelHoverCrossing.html` in the same directory for the four-axis demo
+crossing workload at 25M rows (or `?rows=10000000`). It reuses the local dataset,
+generating it in IndexedDB if absent. It reports lookup, submission,
+GPU-completed interaction and frame-wait timings, then drives the actual pointer
+bindings for two seconds and checks that the final pointer wins and leave clears.
+Run GPU benchmarks sequentially: other plots/GPU tests distort queue timings.
+Both fixtures are exercised by `tests/e2e/parallelHoverPerformance.spec.ts` in
+automated WebGPU runs.
+
+The fused path targets unnecessary transfers and repeated work before adding
+Wasm: Wasm alone would not remove the GPU readback, membership re-upload, or
+second GPU population scan. Public source IDs still require readback and decoding.
+Following [WebGPU timing guidance](https://webgpufundamentals.org/webgpu/lessons/webgpu-timing.html),
+submission time is reported separately from the complete interaction awaited via
+`onSubmittedWorkDone`; that wall time includes CPU work and synchronization and
+is not a shader timestamp. Frame waits and sustained update cadence are separate
+measurements. These results depend on the adapter, display cadence and workload.
+
+On an Apple M4 Pro in the in-app browser (1200×800 CSS pixels, DPR 2), the 25M-row
+crossing returned 192k–1.22M matches. Before fusion, GPU-completed interaction
+wall time was 16.4 ms median / 22.3 ms p95; the final implementation measured
+13.0 / 18.8 ms, with 0.1 / 0.2 ms overlay submission. Sustained input produced
+75.4 inspection updates/second (13.2 ms median / 17.2 ms p95 between updates).
+These warm measurements are not a guaranteed frame rate: first use, heavier
+match populations, GPU contention and weaker adapters can still exceed 16.7 ms.
 
 ## Optional resident client pipeline
+
+Attaching a no-op parallel client view preserves source coordinate identities
+and worker-prepared upload pages. Categorical/boolean/date fields decode lazily,
+so creating controls does not allocate a boxed semantic column for every row.
+Coordinate or style edits invalidate incompatible packed data; visibility masks
+are appended without repacking source coordinates. The demo versions its
+deterministic benchmark sources from their manifest and secondary fixture,
+uses prepared domains for filter defaults, and releases upload pages as consumed.
+Callers without prepared pages use CPU packing in chunks of at most 250,000 rows
+with a main-thread yield between chunks.
 
 Create `createParallelClientDataView({ buffers })` and pass `clientView: { view }`
 to the WebGPU factory to enable source filters → ordered transforms →

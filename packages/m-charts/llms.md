@@ -275,21 +275,33 @@ lines for small data, while large data combines density with deterministic
 exact-style representatives. Representatives prioritize per-axis extrema and
 categorical coverage, retain local category/extrema coverage across
 source-order blocks, and use pseudo-randomized bucket sampling for the
-remaining bounded capacity. A two-pass GPU reduction resolves hover against
-all records in direct/density-only modes and against the currently drawn
-population in hybrid mode, mapping the winner back to its public source index.
-Hybrid hover uses a two-pixel exact-detail fast path, then a coalesced
-full-population GPU fallback for density-only and overflow segments. Hit tests
-at an axis include both adjacent pairs, and the winning compact candidate is
-revalidated against raw viewport geometry before inspection is published.
-The GPU first reduces distance/source-index pairs within workgroups, then reduces
-those winners, avoiding a second source-coordinate scan and contended global
-atomics. Scratch buffers are reused with exclusive leases for concurrent
-programmatic queries. Default bindings allow one pointer lookup in flight and
-coalesce pending movement to the latest pointer. Completion is published even
-while movement continues; leaving, releasing Shift, viewport changes, and
-disposal invalidate pending results. The two-pixel fast path, six-pixel fallback
-acceptance, raw-geometry validation and source-index tie break are unchanged.
+remaining bounded capacity. WebGPU hover returns every active record within
+`min(3, maxDistancePx)` CSS pixels, with no match-count cap. It searches the full
+resident population once density is visible, otherwise only drawn representatives.
+A one-bit-per-source mask deduplicates matches across adjacent pairs; the GPU
+also reduces nearest candidates in two passes for compatibility fields.
+Inspection adds optional `sourceIndices: Uint32Array` (source order) and
+`hitRadiusPx`; `recordIndex`, `id`, projection and values identify the nearest
+member, with source-index tie breaking. Show individual values only when the
+group has one member. The demo displays the count and radius, highlights all
+matching paths, and dims the background through composition without a density
+redraw. Groups of at least 4,096 matches project and deduplicate screen segments
+in the picking compute pass and draw the resident result indirectly; every
+matched row contributes. Match counts are reduced on the GPU, uniforms upload
+once per lookup, and bind groups are cached. ID decoding reads mapped memory
+directly; stale/concurrent results reconstruct their membership mask on demand. Geometry is
+bounded to 64 MiB, with normally one-device-pixel endpoint bins (maximum 2,048
+bins, further limited by axis count/device limits). Small groups use Canvas;
+the public Canvas 2D overlay is preserved through canvas-to-canvas composition.
+No-op client views preserve worker-packed pages and original coordinate identity;
+semantic columns decode lazily. Coordinate/style edits invalidate packed pages,
+while filters append visibility masks. The demo hashes deterministic manifest
+metadata instead of visiting every lazy row and uses prepared filter domains.
+Custom hover renderers can implement `setHoverSourceIndices`; legacy
+renderers continue receiving `setHoverSourceIndex` for the nearest member.
+Scratch buffers use exclusive leases. Bindings serialize pointer lookups and
+coalesce movement; leave, Shift release, viewport changes and disposal invalidate
+pending results. WebGL2 keeps its existing single-record inspection.
 Hybrid zoom and pan preserve the representative source indices, exact styles,
 and population across every axis, including missing and out-of-range values.
 Only segments adjacent to adjusted axes change geometry; untouched pairs keep
@@ -824,8 +836,10 @@ Parallel coordinates:
   representatives retain 42%, dense selected bundles use a clean bright-yellow
   line, and only sparse selected bins receive a subtle contrasting halo.
 - Holding `Shift` while moving the pointer inspects the nearest source line
-  through the hover overlay. Background lines are not dimmed or redrawn by
-  hover. Inspection clears on `Shift` release or pointer leave unless
+  in WebGL2. WebGPU highlights all records within 3 CSS pixels and dims the
+  background without redrawing it. Use `inspection.sourceIndices` for the group;
+  single-record fields identify its nearest member. Inspection clears on
+  `Shift` release or pointer leave unless
   `inspection.explicitHoverModeActive()` says hover mode is active.
 - `Escape` clears active brushes only when brushes exist; repeated Escape is
   ignored.
