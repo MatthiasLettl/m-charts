@@ -1,4 +1,9 @@
 import {
+  bindStreamingViewportInteractions,
+  createStreamingViewportController,
+  type StreamingViewportController,
+} from '../../plot-engine/core/streamingViewport.js';
+import {
   calculateFastScatterDomain,
   createDefaultFastScatterViewport,
   encodeFastScatterSchemaRows,
@@ -68,7 +73,7 @@ export interface FastScatterWebgpuLiveStreamProgress {
   readonly loadedCount: number;
 }
 
-export interface FastScatterWebgpuStreamingController {
+export interface FastScatterWebgpuStreamingController extends StreamingViewportController<FastScatterDataDomain> {
   readonly done: Promise<void>;
   abort(reason?: unknown): void;
   getColumns(): FastScatterPointColumns;
@@ -96,6 +101,8 @@ export interface FastScatterWebgpuStreamingPlotOptions
   readonly signal?: AbortSignal;
   readonly viewport?: FastScatterViewport;
   readonly viewportPolicy?: 'expand' | 'preserve';
+  /** Disable the default pause binding when the application owns interaction policy. */
+  readonly pauseViewportFollowingOnInteraction?: boolean;
 }
 
 export interface LoadFastScatterRecordBatchSourceOptions {
@@ -186,7 +193,8 @@ export async function createFastScatterWebgpuStreamingPlot(
     onStreamProgress,
     signal,
     viewport: requestedViewport,
-    viewportPolicy = dataSource.domain === undefined && requestedViewport === undefined
+    pauseViewportFollowingOnInteraction = true,
+    viewportPolicy = requestedViewport === undefined
       ? 'expand'
       : 'preserve',
     ...plotOptions
@@ -273,11 +281,30 @@ export async function createFastScatterWebgpuStreamingPlot(
     throw error;
   }
   let disposed = false;
-  let followGrowingViewport = viewportPolicy === 'expand';
   const originalUpdate = plot.update.bind(plot);
-  const stopFollowingUserViewport = plot.on('viewportchange', () => {
-    followGrowingViewport = false;
+  const viewportTracking = createStreamingViewportController({
+    bounds: dataDomain,
+    following: viewportPolicy === 'expand',
+    equal: equalScatterBounds,
+    apply: (bounds, reason) => {
+      const fitted = createDefaultFastScatterViewport(bounds);
+      const current = plot.commands.getStateSnapshot().viewport;
+      plot.commands.setViewport(reason === 'fit' ? fitted : {
+        x: mergeStreamRange(current.x, fitted.x),
+        yByPlot: Object.fromEntries(Object.entries(fitted.yByPlot).map(([id, range]) => [
+          id, mergeStreamRange(current.yByPlot[id] ?? range, range),
+        ])),
+      }, reason);
+    },
   });
+  const stopZoomStart = pauseViewportFollowingOnInteraction
+    ? plot.on('brushstart', (event) => {
+        if (event.defaultAction === 'zoom') viewportTracking.pause();
+      })
+    : () => {};
+  const stopFollowingUserViewport = pauseViewportFollowingOnInteraction
+    ? bindStreamingViewportInteractions(viewportTracking.pause, (listener) => plot.on('viewportchange', listener))
+    : () => {};
 
   const done = (async () => {
     let finishedAppend = false;
@@ -319,9 +346,8 @@ export async function createFastScatterWebgpuStreamingPlot(
             : { maxPointSize: dataSource.maxPointSize }),
           startPoint,
         });
-        if (followGrowingViewport && dataSource.domain === undefined) {
-          originalUpdate({ viewport: createDefaultFastScatterViewport(dataDomain) });
-        }
+        if (disposed) break;
+        viewportTracking.updateBounds(dataDomain);
         progress = {
           capacity: pointCapacity,
           complete: false,
@@ -355,7 +381,6 @@ export async function createFastScatterWebgpuStreamingPlot(
           // Preserve the original stream/startup error.
         }
       }
-      stopFollowingUserViewport();
       signal?.removeEventListener('abort', abortFromCaller);
       if (!disposed) closeStreamIterator(iterator);
     }
@@ -364,6 +389,7 @@ export async function createFastScatterWebgpuStreamingPlot(
 
   const originalDispose = plot.dispose.bind(plot);
   const streaming: FastScatterWebgpuStreamingController = {
+    ...viewportTracking.controller,
     abort(reason = new DOMException('Scatter stream loading was aborted.', 'AbortError')) {
       if (!abortController.signal.aborted) abortController.abort(reason);
       closeStreamIterator(iterator);
@@ -376,11 +402,15 @@ export async function createFastScatterWebgpuStreamingPlot(
     dispose() {
       if (disposed) return;
       disposed = true;
+      stopFollowingUserViewport();
+      stopZoomStart();
+      viewportTracking.dispose();
       streaming.abort();
       originalDispose();
     },
     streaming,
     update(updateOptions: Parameters<typeof originalUpdate>[0]) {
+      if (disposed) return;
       if (
         updateOptions.columns !== undefined ||
         updateOptions.dataDomain !== undefined ||
@@ -390,7 +420,8 @@ export async function createFastScatterWebgpuStreamingPlot(
           'A streamed scatter plot owns columns, dataDomain, and spec through dataSource.',
         );
       }
-      if (updateOptions.viewport !== undefined) followGrowingViewport = false;
+      if (updateOptions.viewport !== undefined && pauseViewportFollowingOnInteraction &&
+        !equalScatterBounds(updateOptions.viewport, plot.commands.getStateSnapshot().viewport)) viewportTracking.pause();
       originalUpdate(updateOptions);
     },
   });
@@ -1323,4 +1354,12 @@ function mergeStreamRange(
   next: { min: number; max: number },
 ): { min: number; max: number } {
   return { min: Math.min(current.min, next.min), max: Math.max(current.max, next.max) };
+}
+
+
+function equalScatterBounds(a: FastScatterViewport, b: FastScatterViewport): boolean {
+  return a.x.min === b.x.min && a.x.max === b.x.max &&
+    Object.keys(a.yByPlot).length === Object.keys(b.yByPlot).length &&
+    Object.entries(a.yByPlot).every(([id, range]) =>
+      range.min === b.yByPlot[id]?.min && range.max === b.yByPlot[id]?.max);
 }

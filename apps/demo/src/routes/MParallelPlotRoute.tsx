@@ -1,3 +1,5 @@
+import { StreamingViewportControls } from '../components/StreamingViewportControls';
+import { getStreamingViewport } from '../data/streamingViewport';
 import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import { createParallelClientDataView, evaluateParallelClientView, type ParallelClientViewBinding } from 'm-charts/m-parallel-webgpu';
 import { ClientViewControls } from '../components/ClientViewControls';
@@ -473,6 +475,7 @@ export function MParallelPlotRoute({
     ? parseParallelWebgpuStreamKind(searchParams)
     : null;
   const webgpuStreaming = webgpuStreamingKind !== null;
+  const [streamingViewport, setStreamingViewport] = useState<ReturnType<typeof getStreamingViewport>>(null);
   const webgpuStreamingSource =
     datasetState.status === 'loaded' && datasetState.datasetKind === 'webgpu-buffers'
       ? (datasetState.dataset as LoadedParallelWebgpuDataset).streamingSource
@@ -1452,6 +1455,7 @@ export function MParallelPlotRoute({
                       selectedVisualUpdateDelayMs={100}
                       shortcutGate={getPlotInteractionActive}
                       theme={plotTheme}
+                      onStreamingViewportReady={setStreamingViewport}
                       streamingSource={webgpuStreamingSource}
                       onStreamProgress={(progress, buffers) => {
                         setStreamProgress(progress);
@@ -1636,18 +1640,19 @@ export function MParallelPlotRoute({
                         } adjusted`}
                   </span>
                   <button
-                    aria-label="Reset viewport"
+                    aria-label={webgpuStreamingSource !== undefined ? 'Show all / Resume following' : 'Reset viewport'}
                     className="secondary-link route-reset-button"
                     data-testid="parallel-reset-viewport"
-                    disabled={adjustedAxisCount === 0}
+                    disabled={adjustedAxisCount === 0 && webgpuStreamingSource === undefined}
                     onClick={() => chartHandleRef.current?.resetAxisViewports()}
                     type="button"
                   >
-                    Reset viewport
+                    {webgpuStreamingSource !== undefined ? 'Show all / Resume following' : 'Reset viewport'}
                   </button>
                 </div>
               </div>
             </section>
+            <StreamingViewportControls controller={streamingViewport} />
             <InteractionCheatSheet
               groups={PARALLEL_SHORTCUT_GROUPS}
               tryItems={PARALLEL_TRY_THIS_ITEMS}
@@ -2018,6 +2023,7 @@ function MParallelEngineChart({
   shortcutGate,
   theme,
   streamingSource,
+  onStreamingViewportReady,
   onStreamProgress,
 }: {
   clientView?: ParallelClientViewBinding;
@@ -2057,6 +2063,7 @@ function MParallelEngineChart({
   shortcutGate: () => boolean;
   theme?: Parameters<ParallelPlotCommands['updateTheme']>[0];
   streamingSource?: ParallelWebgpuStreamSource;
+  onStreamingViewportReady: (controller: ReturnType<typeof getStreamingViewport>) => void;
   onStreamProgress: (
     progress: ParallelWebgpuStreamProgress,
     buffers: ParallelBuffers,
@@ -2226,6 +2233,7 @@ function MParallelEngineChart({
         return;
       }
     plotRef.current = plot;
+      onStreamingViewportReady(getStreamingViewport(plot));
     setRenderState({
       message: plot.commands.getRenderSnapshot().renderStateMessage,
       status: plot.commands.getRenderSnapshot().renderState,
@@ -2254,7 +2262,9 @@ function MParallelEngineChart({
         });
       },
       resetAxisViewports: () => {
-        plot.commands.resetAxisViewports({ source: 'route' });
+        const streaming = getStreamingViewport(plot);
+        if (streaming !== null) streaming.setViewportFollowing(true);
+        else plot.commands.resetAxisViewports({ source: 'route' });
       },
       setAxisViewports: (nextAxisViewports) => {
         plot.commands.setAxisViewports(nextAxisViewports, { source: 'route' });
@@ -2371,10 +2381,12 @@ function MParallelEngineChart({
     return () => {
       disposed = true;
       cleanupAttachedPlot();
+      onStreamingViewportReady(null);
     };
   }, [
     clientView,
     onHandleChange,
+    onStreamingViewportReady,
     onOverlaysChange,
     plotDataKey,
     preserveDrawingBuffer,

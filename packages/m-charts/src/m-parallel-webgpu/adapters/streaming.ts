@@ -1,4 +1,9 @@
 import {
+  bindStreamingViewportInteractions,
+  createStreamingViewportController,
+  type StreamingViewportController,
+} from '../../plot-engine/core/streamingViewport.js';
+import {
   createParallelWebgpuBuffers,
   type ParallelAxisDomains,
   type ParallelAxisViewports,
@@ -47,7 +52,7 @@ export interface ParallelWebgpuStreamProgress {
   readonly loadedCount: number;
 }
 
-export interface ParallelWebgpuStreamingController {
+export interface ParallelWebgpuStreamingController extends StreamingViewportController<ParallelAxisDomains> {
   readonly done: Promise<void>;
   abort(reason?: unknown): void;
   getBuffers(): ParallelBuffers;
@@ -65,6 +70,8 @@ export interface ParallelWebgpuStreamingPlotOptions
   readonly dataSource: ParallelWebgpuStreamSource;
   readonly onStreamProgress?: (progress: ParallelWebgpuStreamProgress) => void;
   readonly signal?: AbortSignal;
+  readonly viewportPolicy?: 'expand' | 'preserve';
+  readonly pauseViewportFollowingOnInteraction?: boolean;
 }
 
 /**
@@ -75,7 +82,12 @@ export async function createParallelWebgpuStreamingPlot(
   hostElement: HTMLElement,
   options: ParallelWebgpuStreamingPlotOptions,
 ): Promise<ParallelWebgpuStreamingPlotInstance> {
-  const { dataSource, onStreamProgress, signal, ...plotOptions } = options;
+  const {
+    dataSource, onStreamProgress, signal,
+    viewportPolicy = Object.values(options.axisViewports ?? {}).some((range) => range != null) ? 'preserve' : 'expand',
+    pauseViewportFollowingOnInteraction = true,
+    ...plotOptions
+  } = options;
   validateCountHint(dataSource.expectedCount, 'expectedCount');
   validateCountHint(dataSource.initialCapacity, 'initialCapacity');
   throwIfAborted(signal);
@@ -151,6 +163,22 @@ export async function createParallelWebgpuStreamingPlot(
   let currentBrushIntervals: ParallelBrushIntervals = plotOptions.brushIntervals ?? {};
   let currentSelectedSourceIndices = plotOptions.selectedSourceIndices;
   const originalUpdate = plot.update.bind(plot);
+  const viewportTracking = createStreamingViewportController({
+    bounds: dataSource.domainsByAxis,
+    following: viewportPolicy === 'expand',
+    equal: (a, b) => a === b,
+    apply: (_bounds, reason) => plot.commands.setAxisViewports({}, { reason }),
+  });
+  const stopFollowingUserViewport = pauseViewportFollowingOnInteraction
+    ? bindStreamingViewportInteractions(viewportTracking.pause, (listener) => {
+        const stopCommit = plot.on('axisviewportchange', listener);
+        const stopPreview = plot.on('axisviewportpreview', listener);
+        return () => { stopCommit(); stopPreview(); };
+      })
+    : () => {};
+  const stopViewportPreview = plot.on('axisviewportpreview', (event) => {
+    currentAxisViewports = event.axisViewports;
+  });
   const stopViewportTracking = plot.on('axisviewportchange', (event) => {
     currentAxisViewports = event.axisViewports;
   });
@@ -301,6 +329,7 @@ export async function createParallelWebgpuStreamingPlot(
   void done.catch(() => undefined);
 
   const streaming: ParallelWebgpuStreamingController = {
+    ...viewportTracking.controller,
     abort(reason = new DOMException('Parallel stream loading was aborted.', 'AbortError')) {
       if (!abortController.signal.aborted) abortController.abort(reason);
     },
@@ -314,6 +343,9 @@ export async function createParallelWebgpuStreamingPlot(
       if (disposed) return;
       disposed = true;
       stopViewportTracking();
+      stopViewportPreview();
+      stopFollowingUserViewport();
+      viewportTracking.dispose();
       stopBrushTracking();
       stopSelectionTracking();
       streaming.abort();
@@ -321,8 +353,14 @@ export async function createParallelWebgpuStreamingPlot(
     },
     streaming,
     update(updateOptions: ParallelWebgpuPlotUpdateOptions) {
+      if (disposed) return;
       if (updateOptions.buffers !== undefined) {
         throw new Error('A streamed parallel plot owns buffers through dataSource.');
+      }
+      if (updateOptions.axisViewports !== undefined) {
+        if (pauseViewportFollowingOnInteraction &&
+          !equalAxisViewports(updateOptions.axisViewports, currentAxisViewports)) viewportTracking.pause();
+        currentAxisViewports = updateOptions.axisViewports;
       }
       originalUpdate(updateOptions);
     },
@@ -869,4 +907,9 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 function yieldToMainThread(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+function equalAxisViewports(a: ParallelAxisViewports, b: ParallelAxisViewports): boolean {
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((axis) =>
+    a[axis]?.min === b[axis]?.min && a[axis]?.max === b[axis]?.max);
 }

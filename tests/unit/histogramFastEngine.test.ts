@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { HistogramWebgpuAggregationProvider } from '../../packages/m-charts/src/m-histogram-webgpu/core/aggregation.ts';
 
 import { createHistogramPlot } from '../../packages/m-charts/src/m-histogram/engine/index.ts';
 import { createHistogramEngine } from '../../packages/m-charts/src/m-histogram/engine/createHistogramEngine.ts';
@@ -776,3 +777,50 @@ assert.equal(
 countingPlot.dispose();
 
 console.log('histogram-fast engine tests passed');
+
+// Full-data fitting must work while the displayed bins are restricted by zoom,
+// for both aggregation implementations used by streamed WebGPU histograms.
+for (const aggregationBackend of ['typescript', 'rust-wasm'] as const) {
+  const fitHost = new FakeElement(document);
+  fitHost.setRect(420, 260);
+  const provider = new HistogramWebgpuAggregationProvider(aggregationBackend);
+  const fitPlot = createHistogramEngine(
+    fitHost as unknown as HTMLElement,
+    {
+      ...createOptions((rendererOptions) => new MockRenderer(rendererOptions)),
+      columns: { ids: ['a', 'b', 'c', 'd'], valuesByParameter: { temperature: new Float64Array([1, 1.5, 5, 9]) } },
+      spec: { mode: 'histogram', parameters: [{ ...spec.parameters[0], domain: aggregationBackend === 'rust-wasm' ? { min: 0, max: 100 } : undefined }], subplots: [spec.subplots[0]] },
+    },
+    {
+      aggregationProvider: provider,
+      canvasClassName: 'histogram-test-canvas',
+      canvasLabel: 'Histogram test canvas',
+      canvasRenderer: 'histogram-test',
+      createRenderer: (options) => new MockRenderer(options as HistogramWebglRendererOptions),
+      hostClassName: 'histogram-test-host',
+      setupErrorMessage: 'Histogram test setup failed.',
+    },
+  );
+  const full = fitPlot.commands.getDataViewport();
+  const zoom = { subplotById: {
+    ...full.subplotById,
+    temperature: { x: { min: 0, max: 2 }, y: { min: 0, max: 1 } },
+  } };
+  fitPlot.commands.setViewport(zoom, 'rectangle-zoom');
+  const beforeFit = fitPlot.commands.getStateSnapshot().viewport;
+  assert.deepEqual(fitPlot.commands.getDataViewport(), full, `${aggregationBackend}: zoom must not change full-data bounds`);
+  assert.deepEqual(fitPlot.commands.getStateSnapshot().viewport, beforeFit, 'Reading bounds must not move the viewport');
+  fitPlot.update({
+    columns: {
+      ids: ['a', 'b', 'c', 'd', 'e'],
+      valuesByParameter: { temperature: new Float64Array([1, 1.5, 5, 9, 50]) },
+    },
+    viewport: beforeFit,
+  });
+  assert.ok(fitPlot.commands.getDataViewport().subplotById.temperature.x.max >= 50);
+  assert.deepEqual(fitPlot.commands.getStateSnapshot().viewport, beforeFit, 'New offscreen data must not move a preserved viewport');
+  fitPlot.commands.setViewport(fitPlot.commands.getDataViewport(), 'fit');
+  assert.ok(fitPlot.commands.getStateSnapshot().viewport.subplotById.temperature.x.max >= 50);
+  assert.equal(provider.getDiagnostics().backend, aggregationBackend);
+  fitPlot.dispose();
+}

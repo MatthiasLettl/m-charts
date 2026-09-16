@@ -1,3 +1,5 @@
+import { StreamingViewportControls } from '../components/StreamingViewportControls';
+import { getStreamingViewport } from '../data/streamingViewport';
 import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import { createHistogramClientDataView, type HistogramClientViewBinding } from 'm-charts/m-histogram-webgpu';
 import { ClientViewControls } from '../components/ClientViewControls';
@@ -420,6 +422,7 @@ export function MHistogramPlotRoute({
     viewportCommitSeq: 0,
   });
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const [streamingViewport, setStreamingViewport] = useState<ReturnType<typeof getStreamingViewport>>(null);
   const plotRef = useRef<HistogramPlotInstance | null>(null);
   const metricsHistoryRef = useRef<HistogramMetricsEvent[]>([]);
   const lastCommittedViewportRef = useRef<HistogramViewport | null>(null);
@@ -1036,7 +1039,8 @@ export function MHistogramPlotRoute({
               preserveDrawingBuffer: commonOptions.preserveDrawingBuffer,
               selectedSourceIndices: commonOptions.selectedSourceIndices,
               theme: commonOptions.theme,
-              viewportPolicy: 'expand',
+              viewport: commonOptions.viewport,
+              viewportPolicy: commonOptions.viewport === undefined ? 'expand' : 'preserve',
             }).then((createdPlot) => {
               streamingPlot = createdPlot;
               streamedColumnsRef.current = createdPlot.streaming.getColumns();
@@ -1054,8 +1058,16 @@ export function MHistogramPlotRoute({
         plot.dispose();
         return;
       }
+      if (streamingPlot !== null && [...searchParamsRef.current.keys()].some(
+        (key) => key.startsWith(`${HISTOGRAM_VIEWPORT_PREFIX}.`),
+      )) {
+        plot.update({ viewport: parseHistogramViewportSearchParams(
+          searchParamsRef.current, plot.commands.getDataViewport(),
+        ) });
+      }
       mountedPlot = plot;
     plotRef.current = plot;
+    setStreamingViewport(getStreamingViewport(plot));
     binding = plot.use(
       createDefaultHistogramBindings({
         suppressContextMenu: true,
@@ -1087,6 +1099,12 @@ export function MHistogramPlotRoute({
         setSnapshot(plot.commands.getStateSnapshot());
       }),
       plot.on('viewportchange', ({ phase, reason, viewport }) => {
+        if (reason === 'stream') {
+          const updated = plot.commands.getStateSnapshot();
+          lastCommittedViewportRef.current = updated.viewport;
+          setSnapshot(updated);
+          return;
+        }
         if (phase === 'preview') {
           setSnapshot((current) =>
             current === null
@@ -1268,6 +1286,7 @@ export function MHistogramPlotRoute({
       setWebgpuDiagnostics(null);
       if (plotRef.current === mountedPlot) {
         plotRef.current = null;
+        setStreamingViewport(null);
         resetViewportSeedRef.current = null;
       }
     };
@@ -1654,6 +1673,21 @@ export function MHistogramPlotRoute({
 
   const resetViewport = useCallback(() => {
     const plot = plotRef.current;
+    const streaming = getStreamingViewport(plot);
+    if (streaming !== null) {
+      cancelPendingViewportWrite();
+      cancelPendingViewportReconcile();
+      viewportHistoryRef.current = [];
+      pendingViewportSyncRef.current = null;
+      plot?.update({ focusedSubplotId: null });
+      streaming.setViewportFollowing(true);
+      setSearchParams((currentParams) => {
+        const nextParams = new URLSearchParams(currentParams);
+        nextParams.delete(HISTOGRAM_FOCUSED_SUBPLOT_PARAM);
+        return nextParams;
+      });
+      return;
+    }
     const resetSeed = resetViewportSeedRef.current;
     if (plot === null || resetSeed === null) {
       return;
@@ -2138,18 +2172,21 @@ export function MHistogramPlotRoute({
                 </div>
                 <div className="route-viewport-group">
                   <button
-                    aria-label="Reset viewport"
+                    aria-label={datasetState.status === 'loaded' && datasetState.streamingSource !== undefined
+                      ? 'Show all / Resume following' : 'Reset viewport'}
                     className="secondary-link route-reset-button"
                     data-testid="histogram-fast-reset-viewport"
                     disabled={snapshot?.aggregation === undefined}
                     onClick={resetViewport}
                     type="button"
                   >
-                    Reset viewport
+                    {datasetState.status === 'loaded' && datasetState.streamingSource !== undefined
+                      ? 'Show all / Resume following' : 'Reset viewport'}
                   </button>
                 </div>
               </div>
             </section>
+            <StreamingViewportControls controller={streamingViewport} />
             <InteractionCheatSheet
               groups={HISTOGRAM_SHORTCUT_GROUPS}
               tryItems={HISTOGRAM_TRY_THIS_ITEMS}

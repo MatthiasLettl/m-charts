@@ -8,3 +8,4 @@ export * from './lifecycle.js';
 export * from './metrics.js';
 export * from './scheduler.js';
 export * from './webgl.js';
+export * from './streamingViewport.js';

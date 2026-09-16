@@ -47,7 +47,7 @@ export interface ParallelFastSelectionCommandOptions {
 
 export interface ParallelFastAxisViewportCommandOptions {
   phase?: 'preview' | 'commit';
-  reason?: 'pan' | 'reset' | 'set' | 'undo' | 'zoom';
+  reason?: 'pan' | 'reset' | 'set' | 'undo' | 'zoom' | 'stream' | 'fit';
   source?: ParallelFastInteractionSource;
 }
 

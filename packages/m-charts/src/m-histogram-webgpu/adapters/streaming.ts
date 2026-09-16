@@ -1,5 +1,9 @@
 import {
-  createDefaultHistogramViewport,
+  bindStreamingViewportInteractions,
+  createStreamingViewportController,
+  type StreamingViewportController,
+} from '../../plot-engine/core/streamingViewport.js';
+import {
   type HistogramColorArray,
   type HistogramColumns,
   type HistogramNumericArray,
@@ -35,7 +39,7 @@ export interface HistogramWebgpuStreamProgress {
   readonly loadedCount: number;
 }
 
-export interface HistogramWebgpuStreamingController {
+export interface HistogramWebgpuStreamingController extends StreamingViewportController<HistogramViewport> {
   readonly done: Promise<void>;
   abort(reason?: unknown): void;
   getColumns(): HistogramColumns;
@@ -58,6 +62,7 @@ export interface HistogramWebgpuStreamingPlotOptions
   readonly viewport?: HistogramViewport;
   /** `expand` follows growing aggregate bounds until the user changes the viewport. */
   readonly viewportPolicy?: 'expand' | 'preserve';
+  readonly pauseViewportFollowingOnInteraction?: boolean;
 }
 
 const RENDER_PREFIX_GROWTH_FACTOR = 2;
@@ -72,6 +77,7 @@ export async function createHistogramWebgpuStreamingPlot(
     onStreamProgress,
     signal,
     viewport: requestedViewport,
+    pauseViewportFollowingOnInteraction = true,
     viewportPolicy = requestedViewport === undefined ? 'expand' : 'preserve',
     ...plotOptions
   } = options;
@@ -144,14 +150,36 @@ export async function createHistogramWebgpuStreamingPlot(
     throw error;
   }
 
-  let currentViewport = requestedViewport;
-  let followGrowingViewport = viewportPolicy === 'expand';
+  let currentViewport = plot.commands.getStateSnapshot().viewport;
   let selectedSourceIndices = plotOptions.selectedSourceIndices;
   const originalUpdate = plot.update.bind(plot);
+  const viewportTracking = createStreamingViewportController({
+    bounds: plot.commands.getDataViewport(),
+    following: viewportPolicy === 'expand',
+    equal: equalHistogramBounds,
+    apply: (bounds, reason) => {
+      plot.commands.setViewport(reason === 'fit' ? bounds : expandHistogramViewport(currentViewport, bounds), reason);
+    },
+  });
   const stopViewportTracking = plot.on('viewportchange', (event) => {
     currentViewport = event.viewport;
-    if (event.reason !== 'initial') followGrowingViewport = false;
   });
+  const stopZoomStart = pauseViewportFollowingOnInteraction
+    ? plot.on('brushstart', (event) => {
+        if (event.defaultAction === 'zoom') viewportTracking.pause();
+      })
+    : () => {};
+  const stopFollowingUserViewport = pauseViewportFollowingOnInteraction
+    ? bindStreamingViewportInteractions(viewportTracking.pause, (listener) => plot.on('viewportchange', listener))
+    : () => {};
+  const originalSetBinSizes = plot.commands.setBinSizes.bind(plot.commands);
+  plot.commands.setBinSizes = (request) => {
+    if (disposed) return null;
+    const result = originalSetBinSizes(request);
+    currentViewport = plot.commands.getStateSnapshot().viewport;
+    viewportTracking.updateBounds(plot.commands.getDataViewport());
+    return result;
+  };
   const stopSelectionTracking = plot.on('selectionchange', (event) => {
     selectedSourceIndices = event.sourceIndices;
   });
@@ -162,19 +190,12 @@ export async function createHistogramWebgpuStreamingPlot(
     const nextColumns = createVisibleHistogramStreamColumns(storage, loadedCount);
     originalUpdate({
       columns: nextColumns,
-      ...(followGrowingViewport || currentViewport === undefined
-        ? {}
-        : { viewport: currentViewport }),
+      viewport: currentViewport,
       ...(selectedSourceIndices === undefined
         ? {}
         : { selectedSourceIndices }),
     });
-    if (followGrowingViewport) {
-      currentViewport = createDefaultHistogramViewport(
-        plot.commands.getStateSnapshot().aggregation,
-      );
-      originalUpdate({ viewport: currentViewport });
-    }
+    viewportTracking.updateBounds(plot.commands.getDataViewport());
     plot.commands.render();
     columns = nextColumns;
     renderedCount = loadedCount;
@@ -236,6 +257,7 @@ export async function createHistogramWebgpuStreamingPlot(
   void done.catch(() => undefined);
 
   const streaming: HistogramWebgpuStreamingController = {
+    ...viewportTracking.controller,
     abort(reason = new DOMException('Histogram stream loading was aborted.', 'AbortError')) {
       if (!abortController.signal.aborted) abortController.abort(reason);
     },
@@ -249,12 +271,16 @@ export async function createHistogramWebgpuStreamingPlot(
       if (disposed) return;
       disposed = true;
       stopViewportTracking();
+      stopFollowingUserViewport();
+      stopZoomStart();
+      viewportTracking.dispose();
       stopSelectionTracking();
       streaming.abort();
       originalDispose();
     },
     streaming,
     update(updateOptions: Parameters<typeof originalUpdate>[0]) {
+      if (disposed) return;
       if (
         updateOptions.aggregation !== undefined ||
         updateOptions.columns !== undefined ||
@@ -265,13 +291,18 @@ export async function createHistogramWebgpuStreamingPlot(
         );
       }
       if (updateOptions.viewport !== undefined) {
+        if (pauseViewportFollowingOnInteraction &&
+          !equalHistogramBounds(updateOptions.viewport, currentViewport)) viewportTracking.pause();
         currentViewport = updateOptions.viewport;
-        followGrowingViewport = false;
       }
       if (updateOptions.selectedSourceIndices !== undefined) {
         selectedSourceIndices = updateOptions.selectedSourceIndices;
       }
       originalUpdate(updateOptions);
+      currentViewport = plot.commands.getStateSnapshot().viewport;
+      if (updateOptions.binSizes !== undefined) {
+        viewportTracking.updateBounds(plot.commands.getDataViewport());
+      }
     },
   });
   return plot as HistogramWebgpuStreamingPlotInstance;
@@ -718,4 +749,25 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 function yieldToMainThread(): Promise<void> {
   return new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+}
+
+function expandHistogramViewport(current: HistogramViewport, bounds: HistogramViewport): HistogramViewport {
+  return {
+    subplotById: Object.fromEntries(Object.entries(bounds.subplotById).map(([id, next]) => {
+      const previous = current.subplotById[id] ?? next;
+      return [id, {
+        x: { min: Math.min(previous.x.min, next.x.min), max: Math.max(previous.x.max, next.x.max) },
+        y: { min: Math.min(previous.y.min, next.y.min), max: Math.max(previous.y.max, next.y.max) },
+      }];
+    })),
+  };
+}
+
+function equalHistogramBounds(a: HistogramViewport, b: HistogramViewport): boolean {
+  return Object.keys(a.subplotById).length === Object.keys(b.subplotById).length &&
+    Object.entries(a.subplotById).every(([id, range]) => {
+      const other = b.subplotById[id];
+      return other !== undefined && range.x.min === other.x.min && range.x.max === other.x.max &&
+        range.y.min === other.y.min && range.y.max === other.y.max;
+    });
 }

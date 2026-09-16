@@ -385,6 +385,17 @@ export function createHistogramEngine(
         renderStateMessage,
       };
     },
+    getDataViewport() {
+      const aggregation = state.options.columns === undefined
+        ? state.aggregation
+        : state.aggregationProvider.build(state.options.columns, {
+            binSizes: state.binSizes,
+            includeMembership: false,
+            plotSpec: state.options.spec,
+            preparedState: state.preparedAggregationState,
+          });
+      return createDefaultHistogramViewport(aggregation);
+    },
     getStateSnapshot() {
       return {
         activeSubplotId: activePlotId,

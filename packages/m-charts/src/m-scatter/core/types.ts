@@ -45,6 +45,8 @@ export type FastScatterSelectionKind = 'replace' | 'append';
 export type FastScatterSelectionTool = 'rectangle' | 'lasso' | 'programmatic';
 
 export type FastScatterViewportChangeReason =
+  | 'stream'
+  | 'fit'
   | 'initial'
   | 'reset'
   | 'wheel'

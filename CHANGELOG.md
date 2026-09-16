@@ -4,6 +4,18 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Resumable streaming viewport following
+
+- Add full-data bounds/following events and fit-once, pause, and resume controls
+  to all three WebGPU streaming adapters; preserve expand/preserve options.
+- Identify stream/fit viewport changes and offer an opt-out interaction binding
+  so applications retain policy ownership. Keep controls alive after streaming
+  completes and preserve preview viewports during parallel updates.
+- Fit histograms from full data even when the displayed bins are zoomed;
+  support both TypeScript and Rust/WASM aggregation without changing backends.
+- Add demo following status, fit/pause/resume controls, reset-to-latest behavior,
+  paced-stream browser test controls, and policy/full-data fitting regressions.
+
 ## Deployment type resolution
 
 - Add the missing `m-charts/client-data-view` source mapping to the demo and

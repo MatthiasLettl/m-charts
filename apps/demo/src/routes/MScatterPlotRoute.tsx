@@ -1,3 +1,5 @@
+import { StreamingViewportControls } from '../components/StreamingViewportControls';
+import { getStreamingViewport } from '../data/streamingViewport';
 import { ClientPipelinePanel, ClientPipelineState, ClientViewItemList } from '../components/ClientPipelinePanel';
 import { createDemoAsyncEvaluator, useDisposeClientView } from '../state/demoClientView';
 import {
@@ -1137,6 +1139,7 @@ export function MScatterPlotRoute({
     message?: string;
     status: ScatterRenderState;
   }>({ status: 'idle' });
+  const [streamingViewport, setStreamingViewport] = useState<ReturnType<typeof getStreamingViewport>>(null);
   const fastScatterPlotRef = useRef<ScatterPlotInstance | null>(null);
   const [renderMetrics, setRenderMetrics] = useState<FastScatterMetricsEvent | null>(
     null,
@@ -1549,7 +1552,7 @@ export function MScatterPlotRoute({
         pendingInteractionReasonRef.current !== null &&
         pendingInteractionFastViewportRef.current !== null;
 
-      if (!suppressViewportHistoryRef.current) {
+      if (reason !== 'stream' && !suppressViewportHistoryRef.current) {
         if (debounceMs === null || !hasPendingInteraction) {
           const previousViewport = currentFastViewport;
           const latestHistoryEntry =
@@ -2083,6 +2086,14 @@ export function MScatterPlotRoute({
     rendererMetrics.lassoSelection ?? rendererMetrics.rectangleSelection;
 
   const resetViewport = useCallback(() => {
+    const streaming = getStreamingViewport(fastScatterPlotRef.current);
+    if (streaming !== null) {
+      cancelPendingInteractionSearchState();
+      viewportHistoryRef.current = [];
+      setFocusedPlotId(null);
+      streaming.setViewportFollowing(true);
+      return;
+    }
     const currentUrlState = urlStateRef.current;
     if (
       currentUrlState === null ||
@@ -2574,6 +2585,7 @@ export function MScatterPlotRoute({
                 onRenderStateChange={(status, message) => {
                   setRendererState({ message, status });
                 }}
+                onStreamingViewportReady={setStreamingViewport}
                 plotRef={fastScatterPlotRef}
                 onViewportChange={handleFastViewportChange}
                 onViewportUndoRequest={undoZoom}
@@ -3446,7 +3458,8 @@ export function MScatterPlotRoute({
                 </div>
                 <div className="scatter-fast-viewport-group">
                   <button
-                    aria-label="Reset viewport"
+                    aria-label={datasetState.status === 'loaded' && datasetState.streaming !== undefined
+                      ? 'Show all / Resume following' : 'Reset viewport'}
                     className="secondary-link scatter-fast-reset-button"
                     data-testid="scatter-fast-reset-viewport"
                     disabled={
@@ -3457,11 +3470,13 @@ export function MScatterPlotRoute({
                     onClick={resetViewport}
                     type="button"
                   >
-                    Reset viewport
+                    {datasetState.status === 'loaded' && datasetState.streaming !== undefined
+                      ? 'Show all / Resume following' : 'Reset viewport'}
                   </button>
                 </div>
               </div>
             </section>
+            <StreamingViewportControls controller={streamingViewport} />
             {rendererBackend === 'webgpu' ? (
               <section
                 className="control-section scatter-reference-line-controls"
@@ -4465,7 +4480,35 @@ async function loadWebgpuStreamingDataset(
     ...(secondaryFixtureUrl === null ? {} : { secondaryFixtureUrl }),
     signal,
   });
-  const columns = prepared.firstBatch.columns as FastScatterDisplayColumns;
+  const unknownDomain = isDemoTestControlEnabled(new URLSearchParams(window.location.search), '__e2eStreamUnknownDomain');
+  const batchColumns = (input: FastScatterPointColumns): FastScatterPointColumns => {
+    if (!unknownDomain) return input;
+    const encoded = input as FastScatterEncodedSchemaColumns;
+    const range = (values: ArrayLike<number>) => {
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < values.length; i += 1) {
+        const value = values[i]!;
+        if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+      }
+      return Number.isFinite(min) ? { min, max } : { min: 0, max: 1 };
+    };
+    return { ...encoded, axisByColumn: Object.fromEntries(
+      Object.entries(encoded.axisByColumn).map(([key, axis]) => [key,
+        axis.kind === 'categorical' || axis.kind === 'boolean' ? axis : {
+          ...axis, domain: range(key === encoded.xKey ? encoded.x : encoded.y[key] ?? []),
+        },
+      ]),
+    ) } as FastScatterPointColumns;
+  };
+  const source: FastScatterWebgpuStreamSource = unknownDomain ? {
+    ...prepared.source,
+    domain: undefined,
+    batches: { async *[Symbol.asyncIterator]() {
+      for await (const batch of prepared.source.batches) yield { ...batch, columns: batchColumns(batch.columns) };
+    } },
+  } : prepared.source;
+  const columns = batchColumns(prepared.firstBatch.columns) as FastScatterDisplayColumns;
   const packedStyleBytes = prepared.firstBatch.packedStyles?.byteLength ?? 0;
   const byteLength = columns.x.byteLength + Object.values(columns.y).reduce(
     (total, values) => total + values.byteLength,
@@ -4474,7 +4517,7 @@ async function loadWebgpuStreamingDataset(
   return {
     adaptedDataset: {
       columns,
-      domain: prepared.source.domain,
+      domain: source.domain,
       hoverIndex: null,
       isLegacyViewport: false,
       spec: prepared.source.spec,
@@ -4499,7 +4542,7 @@ async function loadWebgpuStreamingDataset(
       ? 'server-function-webgpu-stream'
       : kind === 'http' ? 'http-webgpu-stream' : 'local-webgpu-stream',
     sourceUrl: prepared.sourceUrl,
-    streaming: { kind, source: prepared.source },
+    streaming: { kind, source },
     tableMetadata: {
       tableCount: prepared.tableNames.length,
       tableNames: prepared.tableNames,
@@ -7065,6 +7108,7 @@ function PlaceholderChartShell({
   onPlotInteractionHoverChange,
   onPlotInteractionSurfacePointerDown,
   plotRef,
+  onStreamingViewportReady,
   onRendererMetrics,
   onRenderStateChange,
   onSelectionChange,
@@ -7118,6 +7162,7 @@ function PlaceholderChartShell({
   onPlotInteractionFocusChange: (hasFocusWithin: boolean) => void;
   onPlotInteractionHoverChange: (isHovered: boolean) => void;
   onPlotInteractionSurfacePointerDown: (element: HTMLDivElement | null) => void;
+  onStreamingViewportReady: (controller: ReturnType<typeof getStreamingViewport>) => void;
   plotRef: RefObject<ScatterPlotInstance | null>;
   onRendererMetrics: (action: SetStateAction<RendererMetricsState>) => void;
   onRenderStateChange: (state: ScatterRenderState, message?: string) => void;
@@ -7445,6 +7490,7 @@ function PlaceholderChartShell({
         return;
       }
     plotRef.current = plot;
+    onStreamingViewportReady(getStreamingViewport(plot));
     plot.canvas.dataset.testid =
       rendererBackend === 'webgpu'
         ? 'scatter-fast-webgpu-canvas'
@@ -7634,10 +7680,7 @@ function PlaceholderChartShell({
           viewport,
           ...streamOptions
         } = webgpuOptions;
-        void _columns;
-        void _dataDomain;
         void _pointCapacity;
-        void _spec;
         let streamingPlot: FastScatterWebgpuStreamingPlotInstance | null = null;
         streamingPlot = await createScatterWebgpuStreamingPlot(host, {
           ...streamOptions,
@@ -7651,7 +7694,10 @@ function PlaceholderChartShell({
             );
           },
           viewport,
-          viewportPolicy: 'preserve',
+          viewportPolicy: areFastScatterViewportsEqual(viewport, createDefaultFastScatterViewport(
+            webgpuStreamingSource.domain ?? _dataDomain ?? calculateFastScatterDomain(_columns, _spec),
+          ))
+            ? 'expand' : 'preserve',
         });
         onWebgpuStreamProgress(
           streamingPlot.streaming.getProgress(),
@@ -7696,11 +7742,13 @@ function PlaceholderChartShell({
     return () => {
       disposed = true;
       cleanupPlot();
+      onStreamingViewportReady(null);
     };
   }, [
     hasFastViewport,
     clientView,
     onWebgpuStreamProgress,
+    onStreamingViewportReady,
     plotCreationDataset,
     plotRef,
     rendererBackend,

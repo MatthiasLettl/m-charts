@@ -82,6 +82,10 @@ export async function prepareScatterWebgpuDemoStream(options: {
       options.kind,
     );
   }
+  // Development-only pacing lets browser tests exercise interactions between batches.
+  const delayParam = import.meta.env?.DEV && typeof window !== 'undefined'
+    ? Number(new URLSearchParams(window.location.search).get('__e2eStreamDelayMs')) : 0;
+  const batchDelayMs = Number.isFinite(delayParam) ? Math.max(0, Math.min(5000, delayParam)) : 0;
   const iterator = prepared.source.batches[Symbol.asyncIterator]();
   const first = await iterator.next();
   if (first.done || first.value.columns.x.length === 0) {
@@ -103,6 +107,20 @@ export async function prepareScatterWebgpuDemoStream(options: {
           while (true) {
             const next = await iterator.next();
             if (next.done) return;
+            if (batchDelayMs > 0) {
+              await new Promise<void>((resolve, reject) => {
+                if (options.signal.aborted) { reject(options.signal.reason); return; }
+                const abort = () => {
+                  clearTimeout(timer);
+                  reject(options.signal.reason);
+                };
+                const timer = setTimeout(() => {
+                  options.signal.removeEventListener('abort', abort);
+                  resolve();
+                }, batchDelayMs);
+                options.signal.addEventListener('abort', abort, { once: true });
+              });
+            }
             yield next.value;
           }
         } finally {

@@ -32,6 +32,8 @@ export type HistogramSelectionTool = 'rectangle' | 'lasso' | 'programmatic';
 export type HistogramSourceIndicesStatus = 'available' | 'pending' | 'unavailable';
 
 export type HistogramViewportChangeReason =
+  | 'stream'
+  | 'fit'
   | 'initial'
   | 'reset'
   | 'wheel'

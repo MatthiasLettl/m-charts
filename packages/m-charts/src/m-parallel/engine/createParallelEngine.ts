@@ -422,7 +422,7 @@ export function createParallelEngine(
     if (phase === 'preview' && axisViewportPreviewOrigin === null) {
       axisViewportPreviewOrigin = cloneAxisViewports(axisViewports);
     }
-    if (phase === 'commit' && reason !== 'undo') {
+    if (phase === 'commit' && reason !== 'undo' && reason !== 'stream') {
       axisViewportHistory.push(
         axisViewportPreviewOrigin ?? cloneAxisViewports(axisViewports),
       );

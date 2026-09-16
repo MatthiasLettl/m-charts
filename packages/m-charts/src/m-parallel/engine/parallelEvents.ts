@@ -73,7 +73,7 @@ export interface ParallelFastRendererMetricsEvent {
 export interface ParallelFastAxisViewportChangeEvent {
   axisViewports: ParallelAxisViewports;
   phase: 'preview' | 'commit';
-  reason: 'pan' | 'reset' | 'set' | 'undo' | 'zoom';
+  reason: 'pan' | 'reset' | 'set' | 'undo' | 'zoom' | 'stream' | 'fit';
   source: ParallelFastInteractionSource;
 }
 

@@ -322,3 +322,16 @@ fit the complete resident domain before fitting the bin counts.
 
 Pipeline selection actions use the selected row count to enable controls and resolve
 deferred source membership on demand before freezing row identities in a filter.
+
+## Streaming viewport policy
+
+Streaming plots expose `streaming.getBounds()`, `getViewportFollowing()`,
+`fitViewport()`, `setViewportFollowing(boolean)`, and `on('boundschange' |
+'followingchange', handler)`. Automatic growth pauses on viewport interaction;
+fit-once stays paused and explicit resume fits the latest bounds immediately.
+Use `pauseViewportFollowingOnInteraction: false` for application-owned policy.
+Viewport events identify automatic updates with `reason: 'stream'` and explicit
+fitting with `reason: 'fit'`. Prepared full-stream domains stay stable; parallel
+continues to require them. Histogram `commands.getDataViewport()` calculates
+full-data fit bounds independently of the current zoom. See
+[the viewport policy guide](../../docs/streaming-viewport.md) for defaults, events, and demo verification.

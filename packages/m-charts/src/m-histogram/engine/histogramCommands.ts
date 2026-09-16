@@ -40,6 +40,8 @@ export interface HistogramPlotCommands {
   getOverlays(): readonly HistogramOverlayDescriptor[];
   getPlotRectAtPoint(pointerCssX: number, pointerCssY: number): HistogramPlotRect | null;
   getRenderSnapshot(): HistogramRenderSnapshot;
+  /** Full-data fit bounds at the current bin sizes, without changing the viewport. */
+  getDataViewport(): HistogramViewport;
   getStateSnapshot(): HistogramStateSnapshot;
   emitBrushEvent(event: HistogramBrushEvent): void;
   hoverAtPoint(request: {

@@ -478,3 +478,16 @@ The same browser fixtures can be opened in the in-app browser; see
 [Client data views](CLIENT_DATA_VIEW.md#residency-and-release-validation) for URLs, metrics, budgets and limitations.
 GPU plots expose `waitForGpuIdle()` for submitted-work fencing. Scatter/parallel
 client diagnostics include `totalSourceUploadBytes` and `sourceBufferBuildCount`.
+
+## Streaming viewport policy
+
+Streaming plots expose `streaming.getBounds()`, `getViewportFollowing()`,
+`fitViewport()`, `setViewportFollowing(boolean)`, and `on('boundschange' |
+'followingchange', handler)`. Automatic growth pauses on viewport interaction;
+fit-once stays paused and explicit resume fits the latest bounds immediately.
+Use `pauseViewportFollowingOnInteraction: false` for application-owned policy.
+Viewport events identify automatic updates with `reason: 'stream'` and explicit
+fitting with `reason: 'fit'`. Prepared full-stream domains stay stable; parallel
+continues to require them. Histogram `commands.getDataViewport()` calculates
+full-data fit bounds independently of the current zoom. See
+[the viewport policy guide](../../docs/streaming-viewport.md) for defaults, events, and demo verification.
