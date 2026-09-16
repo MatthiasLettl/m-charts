@@ -62,6 +62,9 @@ when integrating into another application.
   flight and retains the latest pending pointer, so slow GPU readbacks cannot
   starve highlighting during movement. Workgroup reductions and reusable GPU
   scratch buffers reduce zoomed lookup costs without changing hit rules.
+  Parallel demos show keyboard-accessible ↑ Reset / ↓ Reset pills connected to overflow rails;
+  each restores only that axis's maximum/minimum, preserving the opposite
+  bound, other axes, and brushes. The separate ∅ Missing rail stays inert.
 - Optional [client-side filtering, transformations, and styling](#optional-client-side-data-views)
   over resident datasets, avoiding repeated source loads/uploads during exploration.
 - Typed-array data contracts for high-volume rendering and selection flows.

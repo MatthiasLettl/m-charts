@@ -324,7 +324,7 @@ const PARALLEL_TRY_THIS_ITEMS = [
   {
     label: 'Zoom an axis',
     detail:
-      'Left-drag a vertical box to zoom one axis without filtering records. Middle-drag pans one axis; middle-click undoes.',
+      'Left-drag a vertical box to zoom one axis without filtering records. Click ↑ Reset or ↓ Reset to restore only that end of its range. Middle-drag pans one axis; middle-click undoes.',
   },
   {
     label: 'Brush an axis',
@@ -1415,6 +1415,9 @@ export function MParallelPlotRoute({
                         <MParallelAxisBrushOverlay
                           axisViewports={axisViewports}
                           buffers={clientDisplayBuffers ?? readyBuffers}
+                          onAxisViewportsChange={(nextAxisViewports) => {
+                            chartHandleRef.current?.setAxisViewports(nextAxisViewports);
+                          }}
                           overlays={parallelOverlays}
                         />
                       }
@@ -2536,10 +2539,12 @@ function PlotLoadingOverlay({
 function MParallelAxisBrushOverlay({
   axisViewports,
   buffers,
+  onAxisViewportsChange,
   overlays,
 }: {
   axisViewports: ParallelAxisViewports;
   buffers: ParallelBuffers;
+  onAxisViewportsChange: (axisViewports: ParallelAxisViewports) => void;
   overlays: readonly ParallelFastOverlayDescriptor[];
 }) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -2661,6 +2666,20 @@ function MParallelAxisBrushOverlay({
           viewportActive && completeDomain.max > viewport.max;
         const hasMissingValues =
           (buffers.missingValueCountByAxis?.[parameter] ?? 0) > 0;
+        const restoreRangeEnd = (end: 'min' | 'max') => {
+          const nextViewport = { min: domain.min, max: domain.max };
+          nextViewport[end] = completeDomain[end];
+          const nextAxisViewports = { ...axisViewports };
+          if (
+            nextViewport.min === completeDomain.min &&
+            nextViewport.max === completeDomain.max
+          ) {
+            delete nextAxisViewports[parameter];
+          } else {
+            nextAxisViewports[parameter] = nextViewport;
+          }
+          onAxisViewportsChange(nextAxisViewports);
+        };
 
         return (
           <div
@@ -2701,9 +2720,9 @@ function MParallelAxisBrushOverlay({
               aria-label="Missing value"
               className="parallel-fast-axis-special-rail parallel-fast-axis-missing-rail"
               data-visible={hasMissingValues ? 'true' : 'false'}
-              title="Missing value"
+              title="Missing value — this record has no value for this axis"
             >
-              <span aria-hidden="true">∅</span>
+              <span aria-hidden="true">∅ Missing</span>
             </div>
             <div
               aria-hidden={!hasBelowViewportValues}
@@ -2711,18 +2730,44 @@ function MParallelAxisBrushOverlay({
               className="parallel-fast-axis-special-rail parallel-fast-axis-overflow-rail parallel-fast-axis-overflow-rail-below"
               data-visible={hasBelowViewportValues ? 'true' : 'false'}
               title={`Below visible range (< ${axisBoundaries.min.title})`}
-            >
-              <span aria-hidden="true">↓</span>
-            </div>
+            />
             <div
               aria-hidden={!hasAboveViewportValues}
               aria-label="Above visible range"
               className="parallel-fast-axis-special-rail parallel-fast-axis-overflow-rail parallel-fast-axis-overflow-rail-above"
               data-visible={hasAboveViewportValues ? 'true' : 'false'}
               title={`Above visible range (> ${axisBoundaries.max.title})`}
-            >
-              <span aria-hidden="true">↑</span>
-            </div>
+            />
+            {hasBelowViewportValues ? (
+              <button
+                aria-label={`Restore full minimum for ${axisLabel}`}
+                className="parallel-fast-axis-range-reset parallel-fast-axis-range-reset-below"
+                data-testid="parallel-axis-restore-min"
+                onClick={() => restoreRangeEnd('min')}
+                onDoubleClickCapture={(event) => event.stopPropagation()}
+                onPointerDownCapture={(event) => event.stopPropagation()}
+                title="Values below visible range — restore full minimum only"
+                type="button"
+              >
+                <span aria-hidden="true">↓</span>
+                Reset
+              </button>
+            ) : null}
+            {hasAboveViewportValues ? (
+              <button
+                aria-label={`Restore full maximum for ${axisLabel}`}
+                className="parallel-fast-axis-range-reset parallel-fast-axis-range-reset-above"
+                data-testid="parallel-axis-restore-max"
+                onClick={() => restoreRangeEnd('max')}
+                onDoubleClickCapture={(event) => event.stopPropagation()}
+                onPointerDownCapture={(event) => event.stopPropagation()}
+                title="Values above visible range — restore full maximum only"
+                type="button"
+              >
+                <span aria-hidden="true">↑</span>
+                Reset
+              </button>
+            ) : null}
             <div className="parallel-fast-axis-line" />
             <div className="parallel-fast-axis-ticks" aria-hidden="true">
               {renderedTicks.map((tick) => {

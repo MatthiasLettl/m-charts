@@ -966,6 +966,18 @@ kbd {
   opacity: 1;
 }
 
+.parallel-fast-axis-missing-rail span {
+  top: 0.45rem;
+  right: auto;
+  left: 50%;
+  padding: 0 0.2rem;
+  background: #fff;
+  font-size: 0.6rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
 .parallel-fast-axis-overflow-rail {
   background: rgba(37, 99, 235, 0.78);
   color: #1d4ed8;
@@ -990,6 +1002,70 @@ kbd {
 
 .parallel-fast-axis-overflow-rail-above[data-visible="true"] {
   transform: translate(-50%, -50%) scaleX(1);
+}
+
+.parallel-fast-axis-range-reset {
+  position: absolute;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  width: max-content;
+  height: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0 0.45rem;
+  border: 1px solid #93b4f5;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font: 600 0.65rem/1 system-ui, sans-serif;
+  cursor: pointer;
+  touch-action: manipulation;
+  transform: translateX(-50%);
+}
+
+.parallel-fast-axis-range-reset span {
+  font-size: 0.85rem;
+}
+
+.parallel-fast-axis-range-reset:hover {
+  border-color: #2563eb;
+  background: #dbeafe;
+}
+
+.parallel-fast-axis-range-reset:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+/* Keep the lower control above overflow, leaving missing values below it. */
+.parallel-fast-axis-range-reset-below {
+  bottom: var(--parallel-fast-below-viewport-anchor, 6%);
+}
+
+.parallel-fast-axis-range-reset-above {
+  bottom: calc(100% - var(--parallel-fast-above-viewport-anchor, 1%));
+}
+
+.parallel-fast-axis-guide-first .parallel-fast-axis-range-reset {
+  transform: translateX(-35%);
+}
+
+.parallel-fast-axis-guide-last .parallel-fast-axis-range-reset {
+  transform: translateX(-65%);
+}
+
+.parallel-fast-axis-guide-first .parallel-fast-axis-missing-rail span {
+  left: 50%;
+  transform: none;
+}
+
+.parallel-fast-axis-guide-last .parallel-fast-axis-missing-rail span {
+  right: 50%;
+  left: auto;
+  transform: none;
 }
 
 .parallel-fast-axis-line {
@@ -1092,22 +1168,32 @@ kbd {
 
 .parallel-fast-axis-value {
   position: absolute;
-  left: calc(50% + 0.62rem);
-  color: #667085;
+  left: 50%;
+  max-width: min(var(--parallel-fast-axis-tick-max-width, 5.5rem), 20vw);
+  overflow: hidden;
+  padding: 0.1rem 0.25rem;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.28);
+  background: var(--plot-bg);
+  color: var(--plot-label);
   font-size: 0.64rem;
   font-weight: 700;
   line-height: 1.15;
   white-space: nowrap;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
   z-index: 2;
-  pointer-events: none;
 }
 
 .parallel-fast-axis-value-max {
-  top: calc(var(--parallel-fast-normal-axis-top, 4%) - 1.45rem);
+  top: calc(var(--parallel-fast-normal-axis-top, 4%) + 0.4rem);
 }
 
 .parallel-fast-axis-value-min {
-  bottom: calc(var(--parallel-fast-normal-axis-bottom, 8%) - 0.35rem);
+  bottom: max(
+    calc(var(--parallel-fast-normal-axis-bottom, 8%) + 0.4rem),
+    calc(var(--parallel-fast-below-viewport-anchor, 6%) + 2rem)
+  );
 }
 
 .parallel-fast-axis-guide-first .parallel-fast-axis-label {
@@ -1121,9 +1207,14 @@ kbd {
   transform: none;
 }
 
+.parallel-fast-axis-guide-first .parallel-fast-axis-value {
+  transform: none;
+}
+
 .parallel-fast-axis-guide-last .parallel-fast-axis-value {
-  right: calc(50% + 0.62rem);
+  right: 50%;
   left: auto;
+  transform: none;
 }
 
 .parallel-fast-axis-brush {
@@ -4082,9 +4173,28 @@ button.secondary-link:disabled {
   color: rgba(226, 232, 240, 0.72);
 }
 
+:root[data-theme="dark"] .parallel-fast-axis-missing-rail span {
+  background: var(--plot-bg, #0f172a);
+}
+
 :root[data-theme="dark"] .parallel-fast-axis-overflow-rail {
   background: rgba(96, 165, 250, 0.86);
   color: #93c5fd;
+}
+
+:root[data-theme="dark"] .parallel-fast-axis-range-reset {
+  border-color: #3b70b0;
+  background: #172d4d;
+  color: #bfdbfe;
+}
+
+:root[data-theme="dark"] .parallel-fast-axis-range-reset:hover {
+  border-color: #93c5fd;
+  background: #24446f;
+}
+
+:root[data-theme="dark"] .parallel-fast-axis-range-reset:focus-visible {
+  outline-color: #93c5fd;
 }
 
 :root[data-theme="dark"] .parallel-fast-axis-line {

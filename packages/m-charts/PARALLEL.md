@@ -241,3 +241,9 @@ The default binding also reserves left drag for axis box zoom and middle drag
 for axis pan. Middle click invokes viewport undo. Programmatic hosts can use
 `setAxisViewports`, `undoAxisViewport`, and `resetAxisViewports`; viewport
 ranges do not change brush selection semantics.
+
+The shared WebGL2/WebGPU demo overlay shows ↑ Reset / ↓ Reset pills connected to overflow
+rails only where a range is clipped. Each restores just that axis's full
+maximum/minimum through `setAxisViewports`, preserving its opposite bound,
+other axes, and brushes. The buttons support keyboard activation; the
+separate ∅ Missing rail remains noninteractive.

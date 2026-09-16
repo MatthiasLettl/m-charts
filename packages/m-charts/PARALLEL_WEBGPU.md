@@ -20,6 +20,13 @@ WebGPU instance and create the WebGL2 plot as its product fallback.
 See the [copy-ready migration example](../../docs/examples/parallel-webgpu-migration.md)
 for source-copy paths, startup handling, and a complete fallback lifecycle.
 
+The demo's ↑ Reset / ↓ Reset pills restore only the maximum/minimum of one axis,
+leaving its opposite bound, other axes, and brushes unchanged. They appear only
+on clipped sides, support keyboard activation, and connect to the overflow
+rails. Missing values retain a separate, noninteractive ∅ Missing rail. The shared
+WebGL2 demo overlay provides the same controls using `setAxisViewports`; no
+renderer or package API change is required.
+
 ## Live typed streams
 
 Static `buffers` remain supported. To create the plot as soon as the first

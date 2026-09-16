@@ -311,6 +311,12 @@ neutral missing-value rail. Hosts can use
 `ParallelBuffers.missingValueCountByAxis` to show missing-value affordances
 only where they apply; keeping all rail coordinates reserved avoids layout
 movement when zoom state changes.
+The parallel demos place keyboard-accessible ↑ Reset / ↓ Reset pills connected to overflow
+rails only on clipped sides. Clicking ↑ restores the full maximum and clicking
+↓ restores the full minimum through `setAxisViewports`, preserving the other
+bound, other axes, and brushes. The ∅ Missing rail remains separate and
+noninteractive. This is host overlay UI shared by the WebGL2 and WebGPU demos;
+the package API and renderer rail coordinates are unchanged.
 The demo persists committed parallel viewports as
 `pf.<axis>.min`/`pf.<axis>.max` and restores them through the existing
 `axisViewports` option; previews do not write the URL. Hover projection uses

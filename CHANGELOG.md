@@ -4,6 +4,19 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Directional parallel range reset
+
+- Add keyboard-accessible ↑/↓ pills to the shared WebGPU and WebGL2 demo axis
+  overlay. Restore only one axis bound, preserving other bounds and brushes,
+  using the existing viewport command and URL persistence.
+- Keep missing-value ∅ rails inert and spatially separate from the reset
+  pills, with light/dark styling and tooltips distinguishing both meanings.
+- Label the pills “↑ Reset” / “↓ Reset” and center them directly on their blue
+  rails without elbow connectors; use matching rounded styles for endpoint labels.
+  Place the lower control above overflow, label the separate rail “∅ Missing”,
+  and align endpoint values away from the controls. Truncate long endpoint
+  labels with their full values available on hover.
+
 ## Parallel zoom preserves the population
 
 - Keep the same hybrid representative source rows across axis zoom, pan, and
