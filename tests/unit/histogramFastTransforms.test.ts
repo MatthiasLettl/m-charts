@@ -233,6 +233,56 @@ assert.equal(hover?.source, 'shift-hover');
 assert.equal(hover?.bin.count, 3);
 assert.deepEqual(hover?.bin.sampleIds, ['row-0', 'row-2', 'row-3']);
 
+// A zoomed bar can extend into neighboring subplots in pixel space. Inspection
+// anchors must stay at the center of its visible portion, including after pan.
+const activeRect = requiredRect('active');
+for (const yRange of [
+  { min: 0, max: 0.5 },
+  { min: 2.5, max: 3.5 },
+  { min: 1, max: 1.5 },
+]) {
+  const zoomedViewport = {
+    subplotById: {
+      ...viewport.subplotById,
+      active: { x: { min: 0.75, max: 2 }, y: yRange },
+    },
+  };
+  const visibleCountMin = Math.max(0, yRange.min);
+  const visibleCountMax = Math.min(3, yRange.max);
+  const expectedPoint = {
+    canvasX: histogramAxisToPixel(
+      (0.75 + 1.5) / 2,
+      zoomedViewport.subplotById.active.x,
+      activeRect.xCssPx,
+      activeRect.xCssPx + activeRect.widthCssPx,
+    ),
+    canvasY: histogramAxisToPixel(
+      (visibleCountMin + visibleCountMax) / 2,
+      yRange,
+      activeRect.yCssPx + activeRect.heightCssPx,
+      activeRect.yCssPx,
+    ),
+  };
+  const input = {
+    aggregation,
+    ...expectedPoint,
+    layout,
+    viewport: zoomedViewport,
+  };
+  const hit = locateHistogramBinAtPixel(input);
+  assert.ok(hit);
+  assert.equal(hit.subplot.subplotId, 'active');
+  assert.equal(hit.bin.totalCount, 3);
+  assert.ok(Math.abs(hit.canvasPoint.canvasX - expectedPoint.canvasX) < 1e-9);
+  assert.ok(Math.abs(hit.canvasPoint.canvasY - expectedPoint.canvasY) < 1e-9);
+  assert.deepEqual(lookupHistogramHoverAtPixel(input)?.canvasPoint, hit.canvasPoint);
+  assert.deepEqual(createHistogramMeasurementReference(hit)?.canvasPoint, hit.canvasPoint);
+  assert.equal(locateHistogramBinAtPixel({
+    ...input,
+    canvasY: activeRect.yCssPx - 1,
+  }), null, 'the gap above the subplot must not hit the extended bar');
+}
+
 const normalized = normalizeHistogramViewport(
   {
     subplotById: {

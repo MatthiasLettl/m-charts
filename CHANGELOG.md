@@ -4,6 +4,12 @@ This changelog documents the standalone `m-charts` repository, beginning with
 its initial migration. Entries are ordered newest first, and released entries
 should remain unchanged.
 
+## Histogram inspection anchors after zoom
+
+- Keep hover and measurement anchors at the center of each bar's visible
+  portion after zooming or panning. Fix tooltips appearing over neighboring
+  subplots in WebGPU/Rust-WASM and WebGL2 histograms.
+
 ## Parallel WebGPU interaction and startup performance
 
 - Fuse picking and highlight projection into one compute pass. Reuse GPU geometry

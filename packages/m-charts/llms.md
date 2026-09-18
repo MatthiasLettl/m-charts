@@ -812,6 +812,8 @@ Histogram:
 - A right-click without a real rectangle cancels without changing selection.
 - Holding `Shift` while moving the pointer performs temporary bin inspection.
   Releasing `Shift`, blur, or moving without `Shift` clears the transient hover.
+  Hover and measurement `canvasPoint` anchors use the center of the bar clipped
+  to its subplot, so zooming/panning cannot move an anchor into another subplot.
 - `Shift` + right drag starts a measurement guide from the hovered bin and
   clears it on release/cancel.
 - `Escape` clears committed selection and committed-selection overlays.

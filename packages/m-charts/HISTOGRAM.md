@@ -15,6 +15,10 @@ aggregation, and migration guidance, see
 [HISTOGRAM_WEBGPU.md](HISTOGRAM_WEBGPU.md). Existing integrations keep this
 histogram contract and switch the constructor entry point.
 
+Hover and measurement `canvasPoint` anchors are centered on the visible portion
+of the bar clipped to its subplot. Zooming or panning therefore keeps inspection
+anchors inside the correct subplot in both renderers.
+
 ## Source-Copy Imports
 
 For public source-copy integration, copy `plot-engine` and `client-data-view` plus

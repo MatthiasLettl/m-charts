@@ -442,8 +442,13 @@ export function locateHistogramBinAtPixel(
     pixelBounds === null
       ? { canvasX: input.canvasX, canvasY: input.canvasY }
       : {
-          canvasX: (pixelBounds.minX + pixelBounds.maxX) / 2,
-          canvasY: (pixelBounds.minY + pixelBounds.maxY) / 2,
+          // Anchor inspection to the visible bar, not its offscreen extent.
+          canvasX:
+            (Math.max(pixelBounds.minX, plotRect.xCssPx) +
+              Math.min(pixelBounds.maxX, plotRect.xCssPx + plotRect.widthCssPx)) / 2,
+          canvasY:
+            (Math.max(pixelBounds.minY, plotRect.yCssPx) +
+              Math.min(pixelBounds.maxY, plotRect.yCssPx + plotRect.heightCssPx)) / 2,
         };
 
   return {

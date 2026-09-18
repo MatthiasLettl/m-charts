@@ -404,6 +404,9 @@ copy-ready migration and fallback example is
 
 ### Histogram
 
+Histogram hover and measurement anchors use the center of the visible bar
+portion, keeping them inside their subplot after zooming or panning.
+
 ```ts
 import {
   createDefaultHistogramBindings,
